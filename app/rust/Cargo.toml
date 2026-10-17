@@ -1,0 +1,18 @@
+[package]
+name = "hubbub_app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+hubbub-core = { path = "../../core" }
+anyhow = "1.0.104"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync"] }
+sysinfo = "0.39.6"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

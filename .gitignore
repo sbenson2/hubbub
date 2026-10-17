@@ -1,0 +1,8 @@
+.superpowers/
+/target/
+/vendor/
+*.log
+.DS_Store
+
+# Session handoffs hold machine details; they stay local.
+HANDOFF*.md
