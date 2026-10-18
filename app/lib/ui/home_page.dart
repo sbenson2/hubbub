@@ -63,7 +63,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late final NodeController _idle;
   final _texts = <String, TextController>{};
   final _views = <String, ChannelRef>{};
-  final _attached = <NodeController>{};
+  final _attached = <String, NodeController>{};
   StreamSubscription<RoomSignal>? _signalSub;
   StreamSubscription<List<RoomParticipant>>? _peopleSub;
   List<RoomParticipant> _people = const [];
@@ -71,7 +71,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// The voice channel whose call we are in (and its server), and the one being joined.
   /// Switching server leaves the call running, as Discord does.
   _Call? _call;
-  String? _joining;
+  (String, String)? _joining;
   bool _muted = false;
   bool _deafened = false;
   bool _mutedBeforeDeafen = false;
@@ -180,7 +180,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _hub.removeListener(_refresh);
-    for (final n in _attached) {
+    for (final n in _attached.values) {
       n.removeListener(_refresh);
     }
     _signalSub?.cancel();
@@ -197,11 +197,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _attach() {
     for (final c in _hub.communities) {
       final n = _hub.node(c.cid);
-      if (_attached.add(n)) n.addListener(_refresh);
+      final old = _attached[c.cid];
+      if (identical(old, n)) continue;
+      old?.removeListener(_refresh);
+      _attached[c.cid] = n;
+      n.addListener(_refresh);
     }
   }
 
+  /// Drops everything held for servers that are no longer in the hub, so re-joining the
+  /// same cid starts fresh, and hangs up a call that was in one of them.
+  void _prune() {
+    final live = {for (final c in _hub.communities) c.cid};
+    for (final cid in _attached.keys.where((k) => !live.contains(k)).toList()) {
+      _attached.remove(cid)!.removeListener(_refresh);
+      _texts.remove(cid)?.dispose();
+      _views.remove(cid);
+    }
+    if (_call != null && !live.contains(_call!.key)) unawaited(_leave());
+  }
+
   void _refresh() => setState(() {
+        _prune();
         _attach();
         _openFirstChannel();
       });
@@ -261,7 +278,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _join(String channel) async {
     if (_joining != null) return;
-    setState(() => _joining = channel);
+    setState(() => _joining = (_key, channel));
     try {
       if (_call != null) await _leave();
       final node = _node;
@@ -484,7 +501,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         channel: v.name,
         participants: here ? _voiceMembers : const [],
         connected: here,
-        connecting: _joining == v.name,
+        connecting: _joining == (_key, v.name),
         muted: _muted,
         onToggleMute: _toggleMute,
         onLeave: _leave,

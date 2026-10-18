@@ -127,6 +127,9 @@ class FakeRoom implements RoomAdapter {
   /// What a connect publishes as the call's participants.
   List<RoomParticipant> onConnect = const [];
 
+  /// When set, a connect waits for this to complete.
+  Completer<void>? connectGate;
+
   void emitParticipants(List<RoomParticipant> p) => _participants.add(p);
   void emitSignal(RoomSignal s) => _signals.add(s);
 
@@ -138,6 +141,7 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> connect(String url, String token, Uint8List e2eeKey) async {
     calls.add('connect');
+    await connectGate?.future;
     _participants.add(onConnect);
   }
 

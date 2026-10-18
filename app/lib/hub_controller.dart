@@ -18,6 +18,7 @@ class HubController extends ChangeNotifier {
   List<AppCommunity> _communities = const [];
   String? _selected;
   StreamSubscription<JoinEvent>? _joinSub;
+  StreamController<JoinEvent>? _joinOut;
 
   List<AppCommunity> get communities => _communities;
   String? get selectedCid => _selected;
@@ -63,24 +64,50 @@ class HubController extends ChangeNotifier {
     return cid;
   }
 
-  /// Joins from an invite link; a successful join selects the new server.
+  /// Joins from an invite link; a successful join selects the new server. Starting another
+  /// join, cancelling, or cancelling the returned stream ends this one; the stream is closed.
   Stream<JoinEvent> join(String link) {
+    _endJoin();
     final out = StreamController<JoinEvent>();
-    _joinSub?.cancel();
-    _joinSub = _api!.join(link).listen((e) {
+    _joinOut = out;
+    final sub = _api!.join(link).listen((e) {
       if (e is JoinJoined) {
         refresh();
         select(e.cid);
       }
-      out.add(e);
-    }, onError: out.addError, onDone: out.close);
+      if (!out.isClosed) out.add(e);
+    }, onError: (Object e, StackTrace st) {
+      if (!out.isClosed) out.addError(e, st);
+    }, onDone: () {
+      if (identical(_joinOut, out)) _joinOut = null;
+      if (!out.isClosed) out.close();
+    });
+    _joinSub = sub;
+    // The caller dropping the stream stops the inner join too (not awaited: see joinCancel).
+    out.onCancel = () {
+      if (identical(_joinSub, sub)) _joinSub = null;
+      if (identical(_joinOut, out)) _joinOut = null;
+      unawaited(sub.cancel());
+    };
     return out.stream;
   }
 
-  Future<void> joinCancel() async {
+  /// Stops the running join and closes its output stream, so listeners see it end.
+  void _endJoin() {
     // Not awaited: cancelling a single-subscription stream can wait for the source to close.
-    unawaited(_joinSub?.cancel() ?? Future<void>.value());
+    final sub = _joinSub;
+    final out = _joinOut;
     _joinSub = null;
+    _joinOut = null;
+    if (sub != null) unawaited(sub.cancel());
+    if (out != null && !out.isClosed) {
+      out.onCancel = null;
+      unawaited(out.close());
+    }
+  }
+
+  Future<void> joinCancel() async {
+    _endJoin();
     await _api!.joinCancel();
   }
 
@@ -97,7 +124,7 @@ class HubController extends ChangeNotifier {
   }
 
   Future<void> shutdown() async {
-    await _joinSub?.cancel();
+    _endJoin();
     await _api?.shutdown();
   }
 }

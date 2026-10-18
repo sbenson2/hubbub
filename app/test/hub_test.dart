@@ -10,6 +10,7 @@ import 'package:hubbub/ui/home_page.dart';
 import 'package:hubbub/ui/member_list.dart';
 import 'package:hubbub/ui/theme.dart';
 import 'package:hubbub/ui/user_panel.dart';
+import 'package:hubbub/ui/voice_channel_view.dart';
 
 import 'support/fakes.dart';
 
@@ -139,6 +140,138 @@ void main() {
     expect(book.credentialRequests, ['cafe']);
     expect(room.calls.first, 'disconnect');
     expect(find.text('cafe / Book Club'), findsOneWidget);
+  });
+
+  testWidgets('leaving_a_server_and_rejoining_the_same_cid_starts_fresh', (tester) async {
+    final controller = arrange();
+    await pumpHub(tester, controller);
+    expect(find.text('general'), findsWidgets);
+
+    await controller.leave('c1');
+    await tester.pumpAndSettle();
+    expect(controller.selectedCid, 'c2');
+
+    final me = member('aaaa', 'Shawn');
+    final events = StreamController<AppNodeEvent>.broadcast();
+    final reborn = FakeNode(
+      events: events,
+      me: me,
+      roster: [me],
+      name: 'Game Night',
+      textChannels: ['newchat'],
+      voiceChannels: ['lobby'],
+    );
+    addTearDown(() async {
+      reborn.dispose();
+      await events.close();
+    });
+    hub.willJoin('hubbub://g', 'c1', 'Game Night', reborn);
+    await controller.join('hubbub://g').toList();
+    events.add(AppNodeEvent.hostChanged(host: me.id, term: BigInt.one, isMe: true));
+    await tester.pumpAndSettle();
+
+    // The old view and text controller are gone: the new node's own first channel opens.
+    expect(controller.selectedCid, 'c1');
+    expect(find.text('newchat'), findsWidgets);
+    expect(find.text('general'), findsNothing);
+  });
+
+  testWidgets('leaving_the_server_that_holds_the_call_hangs_up', (tester) async {
+    final controller = arrange();
+    await pumpHub(tester, controller);
+    await tester.tap(find.text('lobby'));
+    await tester.pumpAndSettle();
+    expect(find.byType(VoiceConnectedBar), findsOneWidget);
+    room.calls.clear();
+
+    await controller.leave('c1');
+    await tester.pumpAndSettle();
+
+    expect(room.calls, contains('disconnect'));
+    expect(find.byType(VoiceConnectedBar), findsNothing);
+  });
+
+  testWidgets('connecting_is_per_server_not_per_channel_name', (tester) async {
+    final controller = arrange();
+    final me = member('aaaa', 'Shawn');
+    final events = StreamController<AppNodeEvent>.broadcast();
+    final third = FakeNode(
+      events: events,
+      me: me,
+      roster: [me],
+      name: 'Third',
+      textChannels: ['talk'],
+      voiceChannels: ['lobby'],
+    );
+    addTearDown(() async {
+      third.dispose();
+      await events.close();
+    });
+    hub.add('c3', 'Third', third);
+    controller.refresh();
+    await pumpHub(tester, controller);
+
+    room.connectGate = Completer<void>();
+    await tester.tap(find.text('lobby'));
+    await tester.pump();
+    await tester.pump();
+    expect(tester.widget<VoiceChannelView>(find.byType(VoiceChannelView)).connecting, isTrue);
+
+    // Another server's own "lobby" is not the one being joined.
+    await tester.tap(find.byTooltip('Third'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('lobby'));
+    await tester.pump();
+    expect(tester.widget<VoiceChannelView>(find.byType(VoiceChannelView)).connecting, isFalse);
+
+    room.connectGate!.complete();
+    await tester.pumpAndSettle();
+  });
+
+  group('join stream', () {
+    test('joinCancel_closes_the_output_and_stops_the_source', () async {
+      final controller = arrange();
+      var sourceCancelled = false;
+      final source = StreamController<JoinEvent>(onCancel: () => sourceCancelled = true);
+      hub.scriptedJoin = source.stream;
+      final done = Completer<void>();
+      final seen = <JoinEvent>[];
+      controller.join('x').listen(seen.add, onDone: done.complete);
+      source.add(const JoinTrying());
+      await Future<void>.delayed(Duration.zero);
+
+      await controller.joinCancel();
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(seen.map((e) => e.runtimeType), [JoinTrying]);
+      expect(sourceCancelled, isTrue);
+    });
+
+    test('a_second_join_closes_the_first_output', () async {
+      final controller = arrange();
+      final first = StreamController<JoinEvent>();
+      hub.scriptedJoin = first.stream;
+      final done = Completer<void>();
+      controller.join('x').listen((_) {}, onDone: done.complete);
+      await Future<void>.delayed(Duration.zero);
+
+      hub.scriptedJoin = StreamController<JoinEvent>().stream;
+      controller.join('y').listen((_) {});
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(first.hasListener, isFalse);
+    });
+
+    test('cancelling_the_output_cancels_the_source', () async {
+      final controller = arrange();
+      var sourceCancelled = false;
+      final source = StreamController<JoinEvent>(onCancel: () => sourceCancelled = true);
+      hub.scriptedJoin = source.stream;
+      final sub = controller.join('x').listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+
+      await sub.cancel();
+      await Future<void>.delayed(Duration.zero);
+      expect(sourceCancelled, isTrue);
+    });
   });
 
   testWidgets('members_changed_updates_the_member_list', (tester) async {
