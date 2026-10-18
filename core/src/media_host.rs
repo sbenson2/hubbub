@@ -256,6 +256,8 @@ impl MediaHost for LiveKitHost {
         if self.child.is_some() {
             bail!("livekit host already started");
         }
+        std::fs::create_dir_all(&self.work_dir)
+            .with_context(|| format!("creating {}", self.work_dir.display()))?;
         #[cfg(windows)]
         let pidfile = self.work_dir.join("livekit.pid");
         #[cfg(windows)]
@@ -595,6 +597,18 @@ mod tests {
         let mut host = LiveKitHost::new(bin, dir.path().to_path_buf(), ports);
         let r = host.start("127.0.0.1".parse().unwrap()).await;
         assert!(r.is_err(), "start must not trust a foreign server on the port");
+    }
+
+    /// The work dir may not exist yet (a fresh hub root): `start` creates it before
+    /// writing the config. The binary is missing, so start fails at spawn, after the write.
+    #[tokio::test]
+    async fn start_creates_a_missing_work_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("not").join("yet");
+        let mut host = LiveKitHost::new(tmp.path().join("no-such-livekit"), work.clone(), LkPorts::default());
+        let err = host.start("127.0.0.1".parse().unwrap()).await.unwrap_err();
+        assert!(format!("{err:#}").contains("spawning"), "unexpected failure: {err:#}");
+        assert!(work.join("livekit.yaml").exists(), "config not written into the created dir");
     }
 
     #[tokio::test]
