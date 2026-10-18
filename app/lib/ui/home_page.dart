@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../hub_api.dart';
 import '../hub_controller.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
@@ -12,6 +13,12 @@ import '../text_controller.dart';
 import 'avatar.dart';
 import 'channel_sidebar.dart';
 import 'community_rail.dart';
+import 'dialogs/clipboard_banner.dart';
+import 'dialogs/create_server_dialog.dart';
+import 'dialogs/invite_dialog.dart';
+import 'dialogs/join_dialog.dart';
+import 'dialogs/leave_dialog.dart';
+import 'dialogs/name_dialog.dart';
 import 'member_list.dart';
 import 'text_channel_view.dart';
 import 'theme.dart';
@@ -38,7 +45,7 @@ class HomePage extends StatefulWidget {
   final NodeController? controller;
   final HubController? hub;
 
-  /// The rail's "+"; without it the "+" imports a community file.
+  /// Replaces the rail's "+" (Create a server); tests use it.
   final VoidCallback? onAddServer;
   final RoomAdapter room;
   final Future<AppNodeConfig> Function() loadConfig;
@@ -50,7 +57,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _scaffold = GlobalKey<ScaffoldState>();
   late final HubController _hub;
   late final NodeController _idle;
@@ -71,6 +78,14 @@ class _HomePageState extends State<HomePage> {
   bool _memberList = true;
   bool _starting = false;
   String? _error;
+
+  /// An unseen invite found on the clipboard, offered in a banner.
+  AppInvitePreview? _offered;
+  String? _offeredLink;
+  final _seenLinks = <String>{};
+
+  /// Only the multi-server hub can create, join and leave.
+  bool get _multi => widget.hub != null;
 
   /// The selected server's controller; an unstarted placeholder when there is none.
   NodeController get _node => _hub.current ?? _idle;
@@ -96,6 +111,7 @@ class _HomePageState extends State<HomePage> {
     _idle = NodeController();
     _hub = widget.hub ?? HubController.single(widget.controller!);
     _hub.addListener(_refresh);
+    WidgetsBinding.instance.addObserver(this);
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
     _peopleSub = widget.room.participants.listen((p) => setState(() => _people = p));
@@ -104,10 +120,65 @@ class _HomePageState extends State<HomePage> {
       _starting = true;
       unawaited(_startIfConfigured());
     }
+    if (_multi) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _askName();
+        await _checkClipboard();
+      });
+    }
+  }
+
+  /// First run: nobody has a display name yet.
+  Future<void> _askName() async {
+    if (!mounted || _hub.profileName.isNotEmpty) return;
+    final name = await showNameDialog(context);
+    if (name != null) await _hub.setProfileName(name);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _multi) unawaited(_checkClipboard());
+  }
+
+  /// Offers an invite on the clipboard once; it never joins by itself.
+  Future<void> _checkClipboard() async {
+    String? text;
+    try {
+      text = (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || text == null || text.isEmpty || _seenLinks.contains(text)) return;
+    final preview = _hub.inviteParse(text);
+    if (preview == null) return;
+    _seenLinks.add(text);
+    setState(() {
+      _offered = preview;
+      _offeredLink = text;
+    });
+  }
+
+  void _joinOffered() {
+    final link = _offeredLink;
+    setState(() => _offered = null);
+    if (link != null) showJoinDialog(context, _hub, link: link);
+  }
+
+  void _invite() {
+    final cid = _hub.selectedCid;
+    if (cid == null) return;
+    showInviteDialog(context, _hub, cid: cid, serverName: _node.communityName);
+  }
+
+  Future<void> _leaveServer() async {
+    final cid = _hub.selectedCid;
+    if (cid == null) return;
+    if (await confirmLeaveServer(context, _node.communityName)) await _hub.leave(cid);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _hub.removeListener(_refresh);
     for (final n in _attached) {
       n.removeListener(_refresh);
@@ -177,20 +248,6 @@ class _HomePageState extends State<HomePage> {
       setState(() => _error = null);
     } catch (e) {
       setState(() => _error = 'Could not start: $e');
-    }
-  }
-
-  Future<void> _importCommunity() async {
-    final pick = await FilePicker.pickFiles(type: FileType.any);
-    if (pick.isEmpty) return;
-    final path = pick.single.path;
-    if (path == null) return;
-    final cfg = await widget.loadConfig();
-    await File(path).copy(cfg.communityFile);
-    if (_node.started) {
-      _toast('Community file imported. Restart Hubbub to load it.');
-    } else {
-      await _start(cfg);
     }
   }
 
@@ -276,6 +333,12 @@ class _HomePageState extends State<HomePage> {
       final narrow = box.maxWidth < narrowWidth;
       final nav = _navigation();
       final main = Column(children: [
+        if (_offered != null)
+          ClipboardBanner(
+            preview: _offered!,
+            onJoin: _joinOffered,
+            onDismiss: () => setState(() => _offered = null),
+          ),
         _header(narrow: narrow),
         Expanded(
           child: Row(children: [
@@ -322,7 +385,8 @@ class _HomePageState extends State<HomePage> {
               ? null
               : _hub.communities.indexWhere((c) => c.cid == _hub.selectedCid),
           onSelect: (i) => _hub.select(_hub.communities[i].cid),
-          onAdd: widget.onAddServer ?? _importCommunity,
+          onAdd: widget.onAddServer ??
+              (_multi ? () => showCreateServerDialog(context, _hub) : () {}),
         ),
         SizedBox(
           width: 240,
@@ -339,6 +403,8 @@ class _HomePageState extends State<HomePage> {
                   connectedVoice: _callHere,
                   voiceMembers: _callHere == null ? const [] : _voiceMembers,
                   onSelect: _select,
+                  onInvite: _multi && started ? _invite : null,
+                  onLeave: _multi && started ? _leaveServer : null,
                 ),
               ),
             ),
@@ -361,7 +427,6 @@ class _HomePageState extends State<HomePage> {
                   context,
                   memberId: _node.memberId ?? '',
                   tag: _node.memberTag ?? '',
-                  onImport: _importCommunity,
                 ),
               ),
           ]),
@@ -409,7 +474,8 @@ class _HomePageState extends State<HomePage> {
       return _EmptyState(
         starting: _starting,
         error: _error,
-        onImport: _importCommunity,
+        onCreate: _multi ? () => showCreateServerDialog(context, _hub) : null,
+        onJoin: _multi ? () => showJoinDialog(context, _hub) : null,
       );
     }
     if (v.isVoice) {
@@ -431,17 +497,24 @@ class _HomePageState extends State<HomePage> {
       nameOf: _nameOf,
       online: _node.host != null,
       clock: widget.clock,
+      onInvite: _multi ? _invite : null,
     );
   }
 }
 
 /// No community yet: how to get one.
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.starting, required this.error, required this.onImport});
+  const _EmptyState({
+    required this.starting,
+    required this.error,
+    this.onCreate,
+    this.onJoin,
+  });
 
   final bool starting;
   final String? error;
-  final VoidCallback onImport;
+  final VoidCallback? onCreate;
+  final VoidCallback? onJoin;
 
   @override
   Widget build(BuildContext context) => Center(
@@ -458,7 +531,9 @@ class _EmptyState extends StatelessWidget {
                 )),
             const SizedBox(height: 8),
             if (!starting)
-              Text('Import the community file a friend sent you to join their community.',
+              Text(onCreate == null
+                  ? 'Waiting for a community.'
+                  : 'Create a server, or join one with an invite from a friend.',
                   textAlign: TextAlign.center,
                   style: HubText.message.copyWith(color: HubColors.interactive)),
             if (error != null) ...[
@@ -468,7 +543,17 @@ class _EmptyState extends StatelessWidget {
                   style: HubText.message.copyWith(color: HubColors.red)),
             ],
             const SizedBox(height: 20),
-            if (!starting) HubButton(label: 'Import community file', onPressed: onImport),
+            if (!starting && onCreate != null)
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                HubButton(label: 'Create My Own', onPressed: onCreate),
+                const SizedBox(width: 8),
+                HubButton(
+                  label: 'Join a Server',
+                  color: HubColors.tertiary,
+                  hoverColor: HubColors.selected,
+                  onPressed: onJoin,
+                ),
+              ]),
           ]),
         ),
       );

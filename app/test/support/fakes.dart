@@ -186,6 +186,10 @@ class FakeHub implements HubApi {
 
   final _joinable = <String, (String, String, FakeNode)>{};
 
+  /// When set, every join follows this stream and every link parses to this preview.
+  Stream<JoinEvent>? scriptedJoin;
+  AppInvitePreview? scriptedPreview;
+
   @override
   Future<void> open(String root, {required bool canHost, String? livekitBin}) async =>
       calls.add('open:$root');
@@ -222,12 +226,15 @@ class FakeHub implements HubApi {
 
   @override
   AppInvitePreview? inviteParse(String text) {
+    if (scriptedPreview != null && text.startsWith('hubbub://')) return scriptedPreview;
     final j = _joinable[text];
     return j == null ? null : AppInvitePreview(cid: j.$1, name: j.$2, expiresMin: 0);
   }
 
   @override
-  Stream<JoinEvent> join(String link) async* {
+  Stream<JoinEvent> join(String link) => scriptedJoin ?? _join(link);
+
+  Stream<JoinEvent> _join(String link) async* {
     yield const JoinTrying();
     final j = _joinable[link];
     if (j == null) {

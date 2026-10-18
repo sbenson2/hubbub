@@ -60,6 +60,8 @@ class ChannelSidebar extends StatefulWidget {
     required this.connectedVoice,
     required this.voiceMembers,
     required this.onSelect,
+    this.onInvite,
+    this.onLeave,
   });
 
   final String communityName;
@@ -72,6 +74,10 @@ class ChannelSidebar extends StatefulWidget {
   final String? connectedVoice;
   final List<VoiceMember> voiceMembers;
   final ValueChanged<ChannelRef> onSelect;
+
+  /// The header's dropdown offers Invite People and Leave Server when these are given.
+  final VoidCallback? onInvite;
+  final VoidCallback? onLeave;
 
   @override
   State<ChannelSidebar> createState() => _ChannelSidebarState();
@@ -97,6 +103,7 @@ class _ChannelSidebarState extends State<ChannelSidebar> {
             selected: w.selected == ChannelRef.text(name),
             unread: w.isUnread(name),
             onTap: () => w.onSelect(ChannelRef.text(name)),
+            onInvite: w.onInvite,
           ),
       _Category(
         label: 'VOICE CHANNELS',
@@ -120,7 +127,7 @@ class _ChannelSidebarState extends State<ChannelSidebar> {
     return ColoredBox(
       color: HubColors.sidebar,
       child: Column(children: [
-        _CommunityHeader(name: w.communityName),
+        _CommunityHeader(name: w.communityName, onInvite: w.onInvite, onLeave: w.onLeave),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.only(top: 0, bottom: 8, right: 8),
@@ -157,17 +164,66 @@ class HeaderBar extends StatelessWidget {
 }
 
 class _CommunityHeader extends StatelessWidget {
-  const _CommunityHeader({required this.name});
+  const _CommunityHeader({required this.name, this.onInvite, this.onLeave});
 
   final String name;
+  final VoidCallback? onInvite;
+  final VoidCallback? onLeave;
 
   @override
-  Widget build(BuildContext context) => HeaderBar(
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: HubText.title),
+  Widget build(BuildContext context) {
+    final title = Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: HubText.title);
+    if (onInvite == null && onLeave == null) {
+      return HeaderBar(child: Align(alignment: Alignment.centerLeft, child: title));
+    }
+    return HeaderBar(
+      padding: EdgeInsets.zero,
+      child: PopupMenuButton<VoidCallback>(
+        tooltip: 'Server Settings',
+        color: HubColors.rail,
+        offset: const Offset(8, 44),
+        constraints: const BoxConstraints(minWidth: 220, maxWidth: 220),
+        onSelected: (action) => action(),
+        itemBuilder: (context) => [
+          if (onInvite != null)
+            PopupMenuItem(
+              value: onInvite!,
+              child: const _MenuRow('Invite People', Icons.person_add_alt_1_rounded, HubColors.accent),
+            ),
+          if (onLeave != null)
+            PopupMenuItem(
+              value: onLeave!,
+              child: const _MenuRow('Leave Server', Icons.logout_rounded, HubColors.red),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(children: [
+            Expanded(child: title),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 20, color: HubColors.header),
+          ]),
         ),
-      );
+      ),
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow(this.label, this.icon, this.color);
+
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Expanded(
+          child: Text(label,
+              style: TextStyle(
+                  fontFamily: hubFont, fontSize: 14, fontWeight: FontWeight.w500, color: color)),
+        ),
+        Icon(icon, size: 18, color: color),
+      ]);
 }
 
 class _Category extends StatefulWidget {
@@ -222,12 +278,16 @@ class _ChannelRow extends StatefulWidget {
     required this.selected,
     required this.unread,
     required this.onTap,
+    this.onInvite,
   });
 
   final ChannelRef channel;
   final bool selected;
   final bool unread;
   final VoidCallback onTap;
+
+  /// A text channel shows an invite icon on hover or when open.
+  final VoidCallback? onInvite;
 
   @override
   State<_ChannelRow> createState() => _ChannelRowState();
@@ -296,6 +356,14 @@ class _ChannelRowState extends State<_ChannelRow> {
                     ),
                   ),
                 ),
+                if (w.onInvite != null && !w.channel.isVoice && (_hover || w.selected))
+                  GestureDetector(
+                    onTap: w.onInvite,
+                    child: Tooltip(
+                      message: 'Create Invite',
+                      child: Icon(Icons.person_add_alt_1_rounded, size: 16, color: glyphColor),
+                    ),
+                  ),
               ]),
             ),
           ]),

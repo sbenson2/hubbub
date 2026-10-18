@@ -206,13 +206,11 @@ class VoiceConnectedBar extends StatelessWidget {
       );
 }
 
-/// Your member id (selectable, for adding you to the community file), your tag, and
-/// importing a community file.
+/// Your member id (selectable) and your tag.
 Future<void> showSettingsDialog(
   BuildContext context, {
   required String memberId,
   required String tag,
-  required VoidCallback onImport,
 }) =>
     showDialog<void>(
       context: context,
@@ -257,13 +255,6 @@ Future<void> showSettingsDialog(
                 SelectableText(tag, style: HubText.message),
                 const SizedBox(height: 24),
                 Row(children: [
-                  HubButton(
-                    label: 'Import community file',
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      onImport();
-                    },
-                  ),
                   const Spacer(),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),

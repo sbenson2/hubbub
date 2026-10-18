@@ -78,7 +78,8 @@ class HubController extends ChangeNotifier {
   }
 
   Future<void> joinCancel() async {
-    await _joinSub?.cancel();
+    // Not awaited: cancelling a single-subscription stream can wait for the source to close.
+    unawaited(_joinSub?.cancel() ?? Future<void>.value());
     _joinSub = null;
     await _api!.joinCancel();
   }

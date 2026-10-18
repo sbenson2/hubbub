@@ -70,7 +70,7 @@ class CommunityRail extends StatelessWidget {
             idle: HubColors.main,
             active: HubColors.green,
             onTap: onAdd,
-            child: const _ImportGlyph(),
+            child: const _AddGlyph(),
           ),
         ],
       ),
@@ -184,8 +184,8 @@ class _RailItemState extends State<_RailItem> {
   }
 }
 
-class _ImportGlyph extends StatelessWidget {
-  const _ImportGlyph();
+class _AddGlyph extends StatelessWidget {
+  const _AddGlyph();
 
   @override
   Widget build(BuildContext context) => const Icon(Icons.add_rounded, size: 26);
