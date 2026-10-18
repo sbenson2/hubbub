@@ -319,3 +319,26 @@ async fn a_hub_that_has_shut_down_answers_no_join() {
     assert!(!matches!(dialed, Ok(Ok(_))), "the door is closed");
     b.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_link_joined_twice_at_once_starts_one_node_and_shutdown_stops_it() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, b) = (open(da.path()).await, open(db.path()).await);
+    introduce(&[&a, &b]);
+    let cid = a.create_community("Friends").await.unwrap();
+    let link = invite(da.path(), &cid, 60, 0, &[]).to_link();
+    let (r1, r2) = tokio::join!(join(&b, &link), join(&b, &link));
+    let (oks, errs): (Vec<_>, Vec<_>) = [r1.0, r2.0].into_iter().partition(|r| r.is_ok());
+    assert_eq!((oks.len(), errs.len()), (1, 1), "one join wins, the other is told it is already joining");
+    assert!(errs[0].as_ref().unwrap_err().to_string().contains("already joining"));
+    assert_eq!(b.communities().len(), 1);
+    // The guard is released: joining again is the "already a member" no-op.
+    assert_eq!(join(&b, &link).await.0.unwrap(), cid);
+
+    // Shutdown stops the node: its route is gone, so the hub's endpoint serves no ALPN of it.
+    let node = b.node(&cid).unwrap();
+    b.shutdown().await;
+    assert!(b.switch().alpns().is_empty(), "no server left on the endpoint");
+    drop(node);
+    a.shutdown().await;
+}

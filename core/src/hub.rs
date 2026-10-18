@@ -7,13 +7,13 @@
 //! - `communities/<cid-hex>/`: `community.json` and the text store;
 //! - `livekit/`: the work dir of the machine's one LiveKit, shared by every server;
 //! - `archive/<cid-hex>-<unix-secs>/`: servers this device left.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -57,6 +57,8 @@ pub struct Hub {
     /// The join door: a second, relay-only endpoint that strangers with a link may dial.
     door: Door,
     join_timing: Mutex<JoinTiming>,
+    /// Servers a `join` is working on, so one link joined twice at once starts one node.
+    joining: Mutex<HashSet<CommunityId>>,
     /// Held for the hub's life; the OS releases the lock when this is dropped.
     _lock: File,
 }
@@ -129,6 +131,7 @@ impl Hub {
             servers,
             door,
             join_timing: Mutex::new(JoinTiming::default()),
+            joining: Mutex::default(),
             _lock: lock,
         };
         let dir = hub.communities_dir();
@@ -183,6 +186,7 @@ impl Hub {
             let _ = events.send(JoinEvent::Joined(invite.cid));
             return Ok(invite.cid);
         }
+        let _joining = JoinGuard::new(&self.joining, invite.cid)?;
         let timing = *self.join_timing.lock().unwrap();
         let answer = join::request(
             &self.switch,
@@ -292,10 +296,11 @@ impl Hub {
         self.root.join("communities")
     }
 
-    /// Starts the node of the server saved in `dir`.
+    /// Starts the node of the server saved in `dir`. Refuses a server that is already running.
     async fn start_server(&self, dir: &Path) -> Result<()> {
         let file = dir.join("community.json");
         let state = CommunityState::load(&file)?;
+        ensure!(!self.servers.lock().unwrap().contains_key(&state.id), "server {} is already running", state.id);
         let cfg = NodeConfig {
             data_dir: dir.to_path_buf(),
             community_file: file,
@@ -303,8 +308,35 @@ impl Hub {
             relay: self.cfg.relay,
         };
         let node = Node::start_in_hub(cfg, self.media.clone(), self.switch.clone(), self.identity.clone()).await?;
-        self.servers.lock().unwrap().insert(state.id, Server { name: state.name.clone(), node: Arc::new(node) });
-        Ok(())
+        {
+            let mut servers = self.servers.lock().unwrap();
+            if !servers.contains_key(&state.id) {
+                servers.insert(state.id, Server { name: state.name.clone(), node: Arc::new(node) });
+                return Ok(());
+            }
+        }
+        // Another start won while this node was coming up: stop ours rather than leave it running.
+        node.shutdown().await;
+        bail!("server {} is already running", state.id)
+    }
+}
+
+/// Marks a server as being joined until dropped (also when the join is cancelled).
+struct JoinGuard<'a> {
+    set: &'a Mutex<HashSet<CommunityId>>,
+    cid: CommunityId,
+}
+
+impl<'a> JoinGuard<'a> {
+    fn new(set: &'a Mutex<HashSet<CommunityId>>, cid: CommunityId) -> Result<Self> {
+        ensure!(set.lock().unwrap().insert(cid), "already joining server {cid}");
+        Ok(JoinGuard { set, cid })
+    }
+}
+
+impl Drop for JoinGuard<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.cid);
     }
 }
 
