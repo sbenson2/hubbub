@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, watch};
 use crate::community::CommunityState;
 use crate::identity::Identity;
 use crate::ids::MemberId;
-use crate::proto::{ctl_alpn, sig_alpn, CTL_PREFIX};
+use crate::proto::{ctl_alpn, rejoin_alpn, sig_alpn, CTL_PREFIX, REJOIN_PREFIX};
 
 /// Application close code for a connection from a non-member or with an unknown ALPN.
 const CLOSE_FORBIDDEN: u32 = 403;
@@ -88,25 +88,27 @@ impl Switch {
     /// Starts serving `community`'s ALPN pair and returns its view of this endpoint.
     pub fn register(self: &Arc<Self>, community: watch::Receiver<Arc<CommunityState>>) -> Net {
         let cid = community.borrow().id;
-        let (ctl, sig) = (ctl_alpn(&cid), sig_alpn(&cid));
+        let (ctl, sig, rejoin) = (ctl_alpn(&cid), sig_alpn(&cid), rejoin_alpn(&cid));
         let (tx, rx) = mpsc::channel(32);
         let route = Route { community, conns: Arc::default(), live: Arc::default(), tx };
         {
             let mut routes = self.routes.lock().unwrap();
             routes.insert(ctl.clone(), route.clone());
             routes.insert(sig.clone(), route.clone());
+            routes.insert(rejoin.clone(), route.clone());
             self.endpoint.set_alpns(routes.keys().cloned().collect());
         }
-        Net { switch: self.clone(), owns: false, ctl, sig, route, incoming: tokio::sync::Mutex::new(rx) }
+        Net { switch: self.clone(), owns: false, ctl, sig, rejoin, route, incoming: tokio::sync::Mutex::new(rx) }
     }
 
     /// Stops serving a community, but only if `route` is still the registered one.
-    fn unregister(&self, ctl: &[u8], sig: &[u8], route: &Route) {
+    fn unregister(&self, ctl: &[u8], sig: &[u8], rejoin: &[u8], route: &Route) {
         let mut routes = self.routes.lock().unwrap();
         let ours = routes.get(ctl).is_some_and(|r| Arc::ptr_eq(&r.live, &route.live));
         if ours {
             routes.remove(ctl);
             routes.remove(sig);
+            routes.remove(rejoin);
             self.endpoint.set_alpns(routes.keys().cloned().collect());
         }
     }
@@ -119,15 +121,7 @@ impl Switch {
     /// This endpoint's address for same-machine tests: its id plus loopback
     /// addresses on the bound ports.
     pub fn addr(&self) -> EndpointAddr {
-        let mut addr = EndpointAddr::new(self.endpoint.id());
-        for s in self.endpoint.bound_sockets() {
-            let loopback: std::net::IpAddr = match s {
-                std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
-                std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
-            };
-            addr = addr.with_ip_addr(std::net::SocketAddr::new(loopback, s.port()));
-        }
-        addr
+        loopback_addr(&self.endpoint)
     }
 
     /// The ALPNs currently accepted, sorted.
@@ -148,6 +142,19 @@ impl Switch {
     }
 }
 
+/// `endpoint`'s id plus loopback addresses on its bound ports (same-machine tests).
+pub(crate) fn loopback_addr(endpoint: &Endpoint) -> EndpointAddr {
+    let mut addr = EndpointAddr::new(endpoint.id());
+    for s in endpoint.bound_sockets() {
+        let loopback: std::net::IpAddr = match s {
+            std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+            std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+        };
+        addr = addr.with_ip_addr(std::net::SocketAddr::new(loopback, s.port()));
+    }
+    addr
+}
+
 /// A community's view of an endpoint: its ALPN pair, its accepted connections, its dials.
 pub struct Net {
     switch: Arc<Switch>,
@@ -155,13 +162,14 @@ pub struct Net {
     owns: bool,
     ctl: Vec<u8>,
     sig: Vec<u8>,
+    rejoin: Vec<u8>,
     route: Route,
     incoming: tokio::sync::Mutex<mpsc::Receiver<Accepted>>,
 }
 
 impl Drop for Net {
     fn drop(&mut self) {
-        self.switch.unregister(&self.ctl, &self.sig, &self.route);
+        self.switch.unregister(&self.ctl, &self.sig, &self.rejoin, &self.route);
     }
 }
 
@@ -187,6 +195,11 @@ impl Net {
     /// This community's LiveKit signal-tunnel ALPN.
     pub fn sig_alpn(&self) -> &[u8] {
         &self.sig
+    }
+
+    /// This community's rejoin ALPN, open to members the others have not yet heard of.
+    pub fn rejoin_alpn(&self) -> &[u8] {
+        &self.rejoin
     }
 
     /// The endpoint's loopback address, for same-machine tests.
@@ -218,7 +231,7 @@ impl Net {
             self.switch.close().await;
             return;
         }
-        self.switch.unregister(&self.ctl, &self.sig, &self.route);
+        self.switch.unregister(&self.ctl, &self.sig, &self.rejoin, &self.route);
         let live = std::mem::take(&mut *self.route.live.lock().unwrap());
         for c in live {
             c.close(VarInt::from_u32(0), b"bye");
@@ -267,7 +280,8 @@ async fn accept_loop(endpoint: Endpoint, routes: Arc<Mutex<HashMap<Vec<u8>, Rout
                 conn.close(VarInt::from_u32(CLOSE_FORBIDDEN), b"403");
                 return;
             };
-            if !route.community.borrow().is_member(&who) {
+            // The rejoin ALPN is how a not-yet-known member proves itself; the node checks it.
+            if !alpn.starts_with(REJOIN_PREFIX) && !route.community.borrow().is_member(&who) {
                 conn.close(VarInt::from_u32(CLOSE_FORBIDDEN), b"403");
                 return;
             }

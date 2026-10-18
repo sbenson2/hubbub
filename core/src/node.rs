@@ -40,7 +40,8 @@ use crate::media_host::{LkPorts, MediaHost};
 use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
-use crate::proto::{read_msg, write_msg, CtlMsg, PeerReport};
+use crate::join::JoinMsg;
+use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, PeerReport};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
 use crate::view::build_view;
@@ -245,6 +246,11 @@ impl Node {
 
     pub fn channels(&self) -> Channels {
         self.inner.chat.channels().clone()
+    }
+
+    /// The current community state, secret included (the door hands it to a new member).
+    pub(crate) fn state(&self) -> Arc<CommunityState> {
+        self.inner.community()
     }
 
     /// Every member of the community with its name, this node included.
@@ -622,7 +628,16 @@ impl Inner {
                 sleep(Duration::from_millis(250)).await;
             }
             let established = match self.dial(peer, self.net.ctl_alpn()).await {
-                Ok(conn) => self.clone().run_session(peer, conn, true).await,
+                Ok(conn) => {
+                    let ran = self.clone().run_session(peer, conn, true).await;
+                    // Refused at the door of a member that has not heard of us (we were admitted
+                    // while it was offline): show our signed entries, then dial again at once.
+                    if !ran && self.rejoin(peer).await {
+                        backoff = DIAL_BACKOFF_MIN;
+                        continue;
+                    }
+                    ran
+                }
                 Err(_) => false,
             };
             // A session that ran resets the backoff; either way wait before redialing, so a
@@ -635,6 +650,54 @@ impl Inner {
                 backoff = (backoff * 2).min(DIAL_BACKOFF_MAX);
             }
         }
+    }
+
+    /// Shows `peer` the chain of signed entries that proves this node is a member. Returns whether
+    /// `peer` learned of us just now (and so will accept a control session).
+    async fn rejoin(&self, peer: MemberId) -> bool {
+        let chain = self.community().chain_for(&self.me);
+        if chain.len() < 2 {
+            return false; // the owner is known to everyone
+        }
+        let cid = self.community().id;
+        let attempt = async {
+            let conn = self.dial(peer, self.net.rejoin_alpn()).await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            write_json(&mut send, &JoinMsg::Rejoin { cid, chain }).await?;
+            let reply: Option<JoinMsg> = timeout(HELLO_TIMEOUT, read_json(&mut recv)).await.context("waiting for the reply")??;
+            conn.close(VarInt::from_u32(0), b"done");
+            anyhow::Ok(matches!(reply, Some(JoinMsg::RejoinOk { added: true })))
+        };
+        attempt.await.unwrap_or(false)
+    }
+
+    /// Answers a `Rejoin` from `who`, who may not be a member here yet. Its chain is merged like
+    /// any other state, so only entries that verify against ours count.
+    async fn serve_rejoin(self: Arc<Self>, who: MemberId, conn: Connection) {
+        let work = async {
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let Some(JoinMsg::Rejoin { cid, chain }) = read_json(&mut recv).await? else { bail!("expected Rejoin") };
+            let before = self.community();
+            let reply = if cid != before.id {
+                JoinMsg::RejoinRefused
+            } else {
+                let mut other = before.public_view();
+                other.members = chain.into_iter().map(|e| (e.id, e)).collect();
+                let added = self.apply_state(&other).unwrap_or(false) && !before.is_member(&who);
+                if self.community().is_member(&who) {
+                    JoinMsg::RejoinOk { added }
+                } else {
+                    JoinMsg::RejoinRefused
+                }
+            };
+            write_json(&mut send, &reply).await?;
+            let _ = send.finish();
+            // Let the dialer read the reply before the connection goes.
+            conn.closed().await;
+            anyhow::Ok(())
+        };
+        let _ = timeout(HELLO_TIMEOUT, work).await;
+        conn.close(VarInt::from_u32(0), b"done");
     }
 
     /// Runs one control session to its end; returns whether the Hello exchange completed.
@@ -1101,6 +1164,9 @@ async fn accept_loop(inner: Arc<Inner>) {
             });
         } else if alpn == inner.net.sig_alpn() {
             inner.serve_signal(member, conn);
+        } else if alpn == inner.net.rejoin_alpn() {
+            let node = inner.clone();
+            inner.spawn(node.serve_rejoin(member, conn));
         }
     }
 }

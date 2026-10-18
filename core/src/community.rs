@@ -207,6 +207,21 @@ impl CommunityState {
         }
     }
 
+    /// `id`'s entry and those of its admitters up to the owner's own: what a member shows to
+    /// prove itself to others who have not heard of it. Empty if `id` is not a member here.
+    pub fn chain_for(&self, id: &MemberId) -> Vec<MemberEntry> {
+        let mut chain = Vec::new();
+        let mut cur = *id;
+        while let Some(e) = self.members.get(&cur) {
+            chain.push(e.clone());
+            if e.admitted_by == e.id || chain.len() > self.members.len() {
+                break;
+            }
+            cur = e.admitted_by;
+        }
+        chain
+    }
+
     /// Whether the id is the one derived from this state's owner and nonce.
     pub fn id_matches_owner(&self) -> bool {
         self.id == derive_id(&self.owner, &self.nonce)

@@ -2,6 +2,7 @@
 pub mod b64;
 pub mod community;
 pub mod invite;
+pub mod join;
 pub mod election;
 pub mod identity;
 pub mod hub;

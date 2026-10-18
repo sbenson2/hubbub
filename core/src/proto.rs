@@ -20,6 +20,18 @@ pub fn sig_alpn(cid: &CommunityId) -> Vec<u8> {
     format!("hubbub/sig/1/{cid}").into_bytes()
 }
 
+/// Prefix of a community's rejoin ALPN, the one route a non-member may use (see `join`).
+pub const REJOIN_PREFIX: &[u8] = b"hubbub/rejoin/1/";
+
+/// The rejoin ALPN of one community: `hubbub/rejoin/1/<cid-hex>`. A member that the others
+/// have not heard of yet shows its signed entry chain here, so they let it in.
+pub fn rejoin_alpn(cid: &CommunityId) -> Vec<u8> {
+    format!("hubbub/rejoin/1/{cid}").into_bytes()
+}
+
+/// The ALPN of a member's join door, a fixed name: a stranger knows no community yet.
+pub const JOIN_ALPN: &[u8] = b"hubbub/join/1";
+
 /// Largest frame body accepted or written, in bytes.
 pub const MAX_FRAME: usize = 65_536;
 
@@ -84,6 +96,17 @@ mod hex_bytes {
 
 /// Write one frame: u32 big-endian length, then JSON.
 pub async fn write_msg(s: &mut iroh::endpoint::SendStream, m: &CtlMsg) -> Result<()> {
+    write_json(s, m).await
+}
+
+/// Read one frame. `Ok(None)` means the peer finished the stream cleanly
+/// between frames. An oversized length is an error and the stream is closed.
+pub async fn read_msg(r: &mut iroh::endpoint::RecvStream) -> Result<Option<CtlMsg>> {
+    read_json(r).await
+}
+
+/// `write_msg` for any message type (the join protocol has its own).
+pub async fn write_json<T: Serialize>(s: &mut iroh::endpoint::SendStream, m: &T) -> Result<()> {
     let body = serde_json::to_vec(m).context("encoding control message")?;
     if body.len() > MAX_FRAME {
         bail!("control message too large: {} bytes", body.len());
@@ -95,9 +118,8 @@ pub async fn write_msg(s: &mut iroh::endpoint::SendStream, m: &CtlMsg) -> Result
     Ok(())
 }
 
-/// Read one frame. `Ok(None)` means the peer finished the stream cleanly
-/// between frames. An oversized length is an error and the stream is closed.
-pub async fn read_msg(r: &mut iroh::endpoint::RecvStream) -> Result<Option<CtlMsg>> {
+/// `read_msg` for any message type.
+pub async fn read_json<T: serde::de::DeserializeOwned>(r: &mut iroh::endpoint::RecvStream) -> Result<Option<T>> {
     let mut len_buf = [0u8; 4];
     match r.read_exact(&mut len_buf).await {
         Ok(()) => {}

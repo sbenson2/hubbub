@@ -15,8 +15,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use crate::community::{clamp_name, CommunityState};
+use crate::invite::Invite;
+use crate::join::{self, Door, JoinEvent, JoinTiming};
 use crate::identity::Identity;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::{LiveKitHost, LkPorts, MediaHost, NoMediaHost};
@@ -50,7 +53,10 @@ pub struct Hub {
     switch: Arc<Switch>,
     /// The machine's one media host and UPnP mapping, leased by each hosting server.
     media: Arc<SharedMedia>,
-    servers: Mutex<BTreeMap<CommunityId, Server>>,
+    servers: Arc<Mutex<BTreeMap<CommunityId, Server>>>,
+    /// The join door: a second, relay-only endpoint that strangers with a link may dial.
+    door: Door,
+    join_timing: Mutex<JoinTiming>,
     /// Held for the hub's life; the OS releases the lock when this is dropped.
     _lock: File,
 }
@@ -109,6 +115,10 @@ impl Hub {
         // One LiveKit per machine, working in `<root>/livekit/`.
         let upnp = uses_upnp(cfg.can_host, cfg.relay);
         let media = Arc::new(SharedMedia::new(media(root), upnp, LkPorts::default().rtc_udp));
+        let servers: Arc<Mutex<BTreeMap<CommunityId, Server>>> = Arc::default();
+        let by_cid = servers.clone();
+        let nodes: join::NodeLookup = Arc::new(move |cid| by_cid.lock().unwrap().get(cid).map(|s| s.node.clone()));
+        let door = Door::start(&identity, cfg.relay, nodes).await?;
         let hub = Hub {
             root: root.to_path_buf(),
             cfg,
@@ -116,7 +126,9 @@ impl Hub {
             profile: Mutex::new(profile),
             switch,
             media,
-            servers: Mutex::new(BTreeMap::new()),
+            servers,
+            door,
+            join_timing: Mutex::new(JoinTiming::default()),
             _lock: lock,
         };
         let dir = hub.communities_dir();
@@ -159,6 +171,45 @@ impl Hub {
         Ok(state.id)
     }
 
+    /// Joins the server `link` invites to, through the door of whichever member is online, and
+    /// starts its node: afterwards `communities()` lists it and `node(cid)` runs it, as for
+    /// `create_community`. `events` reports progress: `Trying`, `Offline` while no door answers
+    /// (the dialing then repeats), and a final `Denied(reason)` (also returned as an error,
+    /// which downcasts to `Deny`) or `Joined(cid)`. A join that is already a member returns
+    /// at once. Dropping the returned future cancels the join.
+    pub async fn join(&self, link: &str, events: mpsc::UnboundedSender<JoinEvent>) -> Result<CommunityId> {
+        let invite = Invite::parse(link)?;
+        if self.servers.lock().unwrap().contains_key(&invite.cid) {
+            let _ = events.send(JoinEvent::Joined(invite.cid));
+            return Ok(invite.cid);
+        }
+        let timing = *self.join_timing.lock().unwrap();
+        let answer = join::request(
+            &self.switch,
+            &self.identity,
+            &invite,
+            link,
+            &self.profile_name(),
+            self.cfg.can_host,
+            timing,
+            &events,
+        )
+        .await?;
+        let state = match answer {
+            Ok(state) => state,
+            Err(reason) => {
+                let _ = events.send(JoinEvent::Denied(reason));
+                return Err(reason.into());
+            }
+        };
+        let dir = self.communities_dir().join(state.id.to_string());
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        state.save_atomic(&dir.join("community.json"))?;
+        self.start_server(&dir).await?;
+        let _ = events.send(JoinEvent::Joined(state.id));
+        Ok(state.id)
+    }
+
     /// Every server this device is in, with its name.
     pub fn communities(&self) -> Vec<(CommunityId, String)> {
         self.servers.lock().unwrap().iter().map(|(id, s)| (*id, s.name.clone())).collect()
@@ -197,6 +248,8 @@ impl Hub {
 
     /// Leaves every server gracefully, then closes the endpoint.
     pub async fn shutdown(&self) {
+        // The door first, so no join is answered while the servers go.
+        self.door.close().await;
         let servers = std::mem::take(&mut *self.servers.lock().unwrap());
         for server in servers.into_values() {
             server.node.shutdown_ref().await;
@@ -214,6 +267,19 @@ impl Hub {
     #[cfg(feature = "test-util")]
     pub fn endpoint_addr(&self) -> iroh::EndpointAddr {
         self.switch.addr()
+    }
+
+    /// Where to dial this hub's join door in a same-machine test; teach it to the joiner's hub
+    /// with `add_peer_addr`.
+    #[cfg(feature = "test-util")]
+    pub fn door_addr(&self) -> iroh::EndpointAddr {
+        self.door.addr()
+    }
+
+    /// Shortens the joiner's stagger, attempt time-out and retry cycle (tests).
+    #[cfg(feature = "test-util")]
+    pub fn set_join_timing(&self, timing: JoinTiming) {
+        *self.join_timing.lock().unwrap() = timing;
     }
 
     /// Teaches this hub's endpoint where a peer is (tests have no address lookup service).

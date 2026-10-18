@@ -19,7 +19,8 @@ pub const MAX_INVITE_NAME_BYTES: usize = 24;
 pub const MAX_DOORS: usize = 3;
 
 /// Why a member refuses an invite.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Deny {
     Expired,
     Revoked,
@@ -82,6 +83,18 @@ impl Invite {
         max_uses: u8,
         doors: &[MemberId],
     ) -> Invite {
+        Self::create_at(inviter, state, expires_in_min, max_uses, doors, now_min())
+    }
+
+    /// `create` as of `now_min` minutes since the Unix epoch (a past time makes an expired invite).
+    pub fn create_at(
+        inviter: &Identity,
+        state: &CommunityState,
+        expires_in_min: u32,
+        max_uses: u8,
+        doors: &[MemberId],
+        now_min: u32,
+    ) -> Invite {
         let mut all = vec![inviter.door_id()];
         for d in doors {
             if all.len() < MAX_DOORS && !all.contains(d) {
@@ -92,7 +105,7 @@ impl Invite {
             v: VERSION,
             cid: state.id,
             invite_id: InviteId::random(),
-            expires_min: if expires_in_min == 0 { 0 } else { now_min().saturating_add(expires_in_min) },
+            expires_min: if expires_in_min == 0 { 0 } else { now_min.saturating_add(expires_in_min) },
             max_uses,
             name: clamp_invite_name(&state.name),
             doors: all,
@@ -179,13 +192,18 @@ impl Invite {
         if self.v != VERSION || self.cid != state.id {
             return Err(Deny::UnknownInviter);
         }
-        let inviter = self
-            .doors
-            .first()
-            .and_then(|door| state.members.values().find(|m| m.door == *door && state.verify_entry(m)))
-            .ok_or(Deny::UnknownInviter)?;
-        let key = iroh::PublicKey::from_bytes(&inviter.id.0).map_err(|_| Deny::BadSignature)?;
-        key.verify(&self.signed_bytes(), &self.sig).map_err(|_| Deny::BadSignature)?;
+        // Doors are self-reported, so two members may share one; the signature says which is the inviter.
+        let mut known = false;
+        let signed = state.members.values().filter(|m| m.door == self.doors[0] && state.verify_entry(m)).any(|m| {
+            known = true;
+            iroh::PublicKey::from_bytes(&m.id.0).is_ok_and(|k| k.verify(&self.signed_bytes(), &self.sig).is_ok())
+        });
+        if !known {
+            return Err(Deny::UnknownInviter);
+        }
+        if !signed {
+            return Err(Deny::BadSignature);
+        }
         if state.revoked.contains(&self.invite_id) {
             return Err(Deny::Revoked);
         }
@@ -249,6 +267,20 @@ mod tests {
         let dup = Invite::create(&owner, &state, 0, 0, &[owner.door_id(), extra[0], extra[0], extra[1], ident(9).door_id()]);
         assert_eq!(dup.doors, vec![owner.door_id(), extra[0], extra[1]]);
         assert_eq!(dup.expires_min, 0);
+    }
+
+    #[test]
+    fn a_member_claiming_the_inviters_door_cannot_make_its_invites_fail() {
+        let (owner, mut state) = setup();
+        // Doors are self-reported: ids 2..=9 each claim the owner's door.
+        for n in 2..10 {
+            let m = NewMember { id: ident(n).member_id(), name: "x".into(), can_host: true, door: owner.door_id(), via_invite: None };
+            state.admit(&owner, m).unwrap();
+        }
+        let inv = Invite::create(&owner, &state, 60, 0, &[]);
+        assert_eq!(inv.verify(&state), Ok(()));
+        let forged = Invite::create(&ident(2), &state, 60, 0, &[]);
+        assert_eq!(forged.verify(&state), Err(Deny::UnknownInviter), "its own door is not a member's");
     }
 
     #[test]

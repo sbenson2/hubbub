@@ -50,3 +50,7 @@ required-features = ["test-util"]
 [[test]]
 name = "hub"
 required-features = ["test-util"]
+
+[[test]]
+name = "join"
+required-features = ["test-util"]
