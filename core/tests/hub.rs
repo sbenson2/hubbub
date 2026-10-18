@@ -246,3 +246,17 @@ async fn two_hosting_servers_share_one_media_host_and_name_their_rooms_apart() {
     assert_eq!(starts.load(Ordering::SeqCst), 1, "one media host for both servers");
     hub.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_host_denies_a_token_for_a_channel_that_is_not_a_voice_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = open(dir.path()).await;
+    let cid = hub.create_community("one").await.unwrap();
+    let node = hub.node(&cid).unwrap();
+    // The host is up and mints for the real voice channel, so a denial below is the channel check.
+    node.voice_credentials("lobby").await.unwrap();
+    // "general" exists, as a text channel.
+    let err = node.voice_credentials("general").await.err().expect("a text channel must be denied");
+    assert!(format!("{err:#}").contains("is not a voice channel"), "unexpected error: {err:#}");
+    hub.shutdown().await;
+}
