@@ -74,8 +74,7 @@ pub async fn recv_probe(mut r: RecvStream) -> Result<u32> {
 mod tests {
     use super::*;
     use crate::net::test_support::two_member_nets;
-    use crate::proto::ALPN_CTL;
-
+    
     #[test]
     fn mbps_math() {
         assert_eq!(mbps(10_000_000, Duration::from_secs(1)), 80);
@@ -84,7 +83,7 @@ mod tests {
     #[tokio::test]
     async fn probe_measures_nonzero_in_process() {
         let (a, b) = two_member_nets().await;
-        let conn = a.connect_addr(b.addr().await.unwrap(), ALPN_CTL).await.unwrap();
+        let conn = a.connect_addr(b.addr().await.unwrap(), a.ctl_alpn()).await.unwrap();
         let send = async {
             send_probe(&conn).await.unwrap();
             // Keep the connection alive until the receiver has read everything.
@@ -107,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn probe_stops_at_its_time_limit_and_still_measures() {
         let (a, b) = two_member_nets().await;
-        let conn = a.connect_addr(b.addr().await.unwrap(), ALPN_CTL).await.unwrap();
+        let conn = a.connect_addr(b.addr().await.unwrap(), a.ctl_alpn()).await.unwrap();
         let limit = Duration::from_millis(50);
         let send = async {
             let start = std::time::Instant::now();

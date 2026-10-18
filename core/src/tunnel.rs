@@ -84,7 +84,6 @@ mod tests {
     use super::*;
     use crate::media_host::{FakeHost, MediaHost};
     use crate::net::test_support::two_member_nets;
-    use crate::proto::ALPN_LK_SIGNAL;
 
     const T: Duration = Duration::from_secs(1);
     // Windows retries a refused connect for about 2 s before the close reaches the peer.
@@ -96,7 +95,7 @@ mod tests {
         let b_addr = b.addr().await.unwrap();
         tokio::spawn(async move {
             while let Some((_, alpn, conn)) = b.accept().await {
-                if alpn == ALPN_LK_SIGNAL {
+                if alpn == b.sig_alpn() {
                     tokio::spawn(serve_host(conn, target));
                 }
             }
@@ -108,7 +107,7 @@ mod tests {
             let _ = serve_local(listener, move || {
                 let (a, b_addr) = (a.clone(), b_addr.clone());
                 async move {
-                    let conn = a.connect_addr(b_addr, ALPN_LK_SIGNAL).await?;
+                    let conn = a.connect_addr(b_addr, a.sig_alpn()).await?;
                     Ok(conn.open_bi().await?)
                 }
             })

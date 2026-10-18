@@ -4,10 +4,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::community::CommunityState;
 use crate::election::RankKey;
-use crate::ids::MemberId;
+use crate::ids::{CommunityId, MemberId};
 
-pub const ALPN_CTL: &[u8] = b"hubbub/ctl/1";
-pub const ALPN_LK_SIGNAL: &[u8] = b"hubbub/lk-signal/1";
+/// Prefix of a community's control ALPN; the full ALPN ends in the community id in hex.
+pub const CTL_PREFIX: &[u8] = b"hubbub/ctl/1/";
+
+/// The control ALPN of one community: `hubbub/ctl/1/<cid-hex>`. One iroh endpoint serves
+/// many communities and routes each connection by this name.
+pub fn ctl_alpn(cid: &CommunityId) -> Vec<u8> {
+    format!("hubbub/ctl/1/{cid}").into_bytes()
+}
+
+/// The LiveKit signal-tunnel ALPN of one community: `hubbub/sig/1/<cid-hex>`.
+pub fn sig_alpn(cid: &CommunityId) -> Vec<u8> {
+    format!("hubbub/sig/1/{cid}").into_bytes()
+}
 
 /// Largest frame body accepted or written, in bytes.
 pub const MAX_FRAME: usize = 65_536;
@@ -106,6 +117,14 @@ pub async fn read_msg(r: &mut iroh::endpoint::RecvStream) -> Result<Option<CtlMs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpns_name_the_community() {
+        let cid: CommunityId = "000102030405060708090a0b0c0d0e0f".parse().unwrap();
+        assert_eq!(ctl_alpn(&cid), b"hubbub/ctl/1/000102030405060708090a0b0c0d0e0f");
+        assert_eq!(sig_alpn(&cid), b"hubbub/sig/1/000102030405060708090a0b0c0d0e0f");
+        assert!(ctl_alpn(&cid).starts_with(CTL_PREFIX));
+    }
 
     #[test]
     fn msgs_are_tagged_with_t() {

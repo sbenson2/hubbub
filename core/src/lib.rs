@@ -4,6 +4,7 @@ pub mod community;
 pub mod invite;
 pub mod election;
 pub mod identity;
+pub mod hub;
 pub mod ids;
 pub mod media_host;
 pub mod net;

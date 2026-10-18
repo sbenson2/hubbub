@@ -38,9 +38,9 @@ use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
 use crate::ids::MemberId;
 use crate::media_host::MediaHost;
-use crate::net::{ConnKind, Net, RelayChoice};
+use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
-use crate::proto::{read_msg, write_msg, CtlMsg, PeerReport, ALPN_CTL, ALPN_LK_SIGNAL};
+use crate::proto::{read_msg, write_msg, CtlMsg, PeerReport};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
 use crate::upnp::Gateway;
@@ -109,15 +109,21 @@ pub struct Node {
 impl Node {
     pub async fn start(cfg: NodeConfig, media: Box<dyn MediaHost>) -> Result<Node> {
         let community = CommunityState::load(&cfg.community_file)?;
-        let peers = community
-            .members
-            .values()
-            .map(|m| {
-                let key = iroh::PublicKey::from_bytes(&m.id.0).context("invalid member id in community file")?;
-                Ok(EndpointAddr::new(key))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Self::launch(cfg, media, community, peers).await
+        let peers = listed_peers(&community)?;
+        Self::launch(cfg, media, community, peers, None).await
+    }
+
+    /// Starts a node on a hub's shared endpoint, with the hub's identity. `cfg.data_dir` is
+    /// this community's own folder (its text store); no identity is read from it.
+    pub async fn start_in_hub(
+        cfg: NodeConfig,
+        media: Box<dyn MediaHost>,
+        switch: Arc<Switch>,
+        identity: Arc<Identity>,
+    ) -> Result<Node> {
+        let community = CommunityState::load(&cfg.community_file)?;
+        let peers = listed_peers(&community)?;
+        Self::launch(cfg, media, community, peers, Some((switch, identity))).await
     }
 
     /// Starts a node that dials only `peers`, at their given addresses (in-process tests).
@@ -128,7 +134,7 @@ impl Node {
         peers: Vec<EndpointAddr>,
     ) -> Result<Node> {
         let community = CommunityState::load(&cfg.community_file)?;
-        Self::launch(cfg, media, community, peers).await
+        Self::launch(cfg, media, community, peers, None).await
     }
 
     /// This node's loopback address, for `start_with_addrs` in tests.
@@ -142,8 +148,12 @@ impl Node {
         media: Box<dyn MediaHost>,
         community: CommunityState,
         peers: Vec<EndpointAddr>,
+        shared: Option<(Arc<Switch>, Arc<Identity>)>,
     ) -> Result<Node> {
-        let identity = Identity::load_or_create(&cfg.data_dir)?;
+        let (switch, identity) = match shared {
+            Some((switch, identity)) => (Some(switch), identity),
+            None => (None, Arc::new(Identity::load_or_create(&cfg.data_dir)?)),
+        };
         let me = identity.member_id();
         let entry = community.member(&me).with_context(|| format!("member {me} is not in the community file"))?;
         let can_host = cfg.can_host && entry.can_host;
@@ -154,7 +164,10 @@ impl Node {
             .collect();
         let (chat, relay) = (Chat::new(me, &community, &cfg.data_dir), Relay::new(&community.channels()));
         let (community_tx, community_rx) = watch::channel(Arc::new(community));
-        let net = Net::bind(&identity, community_rx, cfg.relay).await?;
+        let net = match switch {
+            Some(switch) => switch.register(community_rx),
+            None => Net::bind(&identity, community_rx, cfg.relay).await?,
+        };
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.context("binding the local signal tunnel")?;
         let tunnel_port = listener.local_addr()?.port();
@@ -305,6 +318,13 @@ impl Node {
     /// Leaves gracefully: Resign if hosting, then stop the media host and remove the UPnP
     /// mapping, then close every connection.
     pub async fn shutdown(self) {
+        self.shutdown_ref().await;
+    }
+
+    /// `shutdown` for a node that is shared (a hub's): the same graceful leave, and then
+    /// every task is stopped even while other handles to the node remain. Closes only this
+    /// node's connections, never a shared endpoint.
+    pub async fn shutdown_ref(&self) {
         let inner = &self.inner;
         let (tx, rx) = oneshot::channel();
         if inner.election.send(Cmd::Shutdown(tx)).is_ok() {
@@ -333,6 +353,7 @@ impl Node {
             let _ = rx.await;
         }
         let _ = timeout(CLOSE_TIMEOUT, inner.net.close()).await;
+        let _ = self._stop.send(());
     }
 }
 
@@ -417,7 +438,7 @@ struct Inner {
     community_file: PathBuf,
     /// Held while the state is merged and saved: `save_atomic` uses one temp path.
     save_lock: Mutex<()>,
-    identity: Identity,
+    identity: Arc<Identity>,
     net: Net,
     /// Addresses to use for peers this node dials; others are dialed by id.
     dial_addrs: Mutex<HashMap<MemberId, EndpointAddr>>,
@@ -600,7 +621,7 @@ impl Inner {
             while self.has_session(peer) {
                 sleep(Duration::from_millis(250)).await;
             }
-            let established = match self.dial(peer, ALPN_CTL).await {
+            let established = match self.dial(peer, self.net.ctl_alpn()).await {
                 Ok(conn) => self.clone().run_session(peer, conn, true).await,
                 Err(_) => false,
             };
@@ -917,7 +938,7 @@ impl Inner {
             let conn = match cached {
                 Some(c) => c,
                 None => {
-                    let c = self.dial(host, ALPN_LK_SIGNAL).await?;
+                    let c = self.dial(host, self.net.sig_alpn()).await?;
                     self.state.lock().unwrap().lk_client = Some((host, c.clone()));
                     c
                 }
@@ -983,6 +1004,18 @@ impl Inner {
 }
 
 /// One report per (reporter, member about), the latest, and only from reporters who are online.
+/// Every member of `community` as a peer to dial by id alone.
+fn listed_peers(community: &CommunityState) -> Result<Vec<EndpointAddr>> {
+    community
+        .members
+        .values()
+        .map(|m| {
+            let key = iroh::PublicKey::from_bytes(&m.id.0).context("invalid member id in community file")?;
+            Ok(EndpointAddr::new(key))
+        })
+        .collect()
+}
+
 fn latest_reports(
     reports: &HashMap<MemberId, Vec<PeerReport>>,
     online: &[(MemberId, bool, u64)],
@@ -1055,7 +1088,7 @@ async fn ping_loop(out: OutTx, pings: Pings) {
 
 async fn accept_loop(inner: Arc<Inner>) {
     while let Some((member, alpn, conn)) = inner.net.accept().await {
-        if alpn == ALPN_CTL {
+        if alpn == inner.net.ctl_alpn() {
             if both_phones(&inner.community(), &inner.me, &member) {
                 conn.close(VarInt::from_u32(1), b"phones do not connect to each other");
                 continue;
@@ -1064,7 +1097,7 @@ async fn accept_loop(inner: Arc<Inner>) {
             inner.spawn(async move {
                 session.await;
             });
-        } else if alpn == ALPN_LK_SIGNAL {
+        } else if alpn == inner.net.sig_alpn() {
             inner.serve_signal(member, conn);
         }
     }
