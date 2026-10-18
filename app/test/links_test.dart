@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/links.dart';
 
@@ -43,10 +45,54 @@ void main() {
   });
 
   group('LinkRouter', () {
+    test('the stream replay arriving before the launch link resolves opens it once', () async {
+      final got = <String>[];
+      final src = _SlowSource();
+      final router = LinkRouter(src, (l) async {
+        got.add(l);
+        await Completer<void>().future; // the dialog stays open
+      });
+      final started = router.start();
+      src.replay.add('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      router.markReady(); // the replay opens the link
+      expect(got, ['hubbub://join/a']);
+      src.first.complete('hubbub://join/a'); // now the launch link resolves
+      await started;
+      expect(got, ['hubbub://join/a']);
+      router.dispose();
+    });
+
+    test('the same link opens again once its flow has ended', () async {
+      final got = <String>[];
+      final src = FakeLinks();
+      var done = Completer<void>();
+      final router = LinkRouter(src, (l) {
+        got.add(l);
+        return done.future;
+      })..markReady();
+      await router.start();
+      src.send('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      src.send('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      expect(got.length, 1);
+      done.complete();
+      await Future<void>.delayed(Duration.zero);
+      done = Completer<void>();
+      src.send('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      expect(got.length, 2);
+      router.dispose();
+    });
+
     test('the launch link replayed on the stream is delivered once', () async {
       final got = <String>[];
       final src = FakeLinks(initialLink: 'hubbub://join/a');
-      final router = LinkRouter(src, got.add);
+      final router = LinkRouter(src, (l) {
+        got.add(l);
+        return Completer<void>().future; // its dialog stays open
+      });
       await router.start();
       src.send('hubbub://join/a');
       await Future<void>.delayed(Duration.zero);
@@ -74,4 +120,16 @@ void main() {
       router.dispose();
     });
   });
+}
+
+/// A source whose launch link resolves when the test says so.
+class _SlowSource implements LinkSource {
+  final first = Completer<String?>();
+  final replay = StreamController<String>.broadcast();
+
+  @override
+  Future<String?> initial() => first.future;
+
+  @override
+  Stream<String> get stream => replay.stream;
 }

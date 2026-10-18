@@ -365,6 +365,20 @@ void main() {
     expect(find.textContaining('Could not save your name'), findsOneWidget);
   });
 
+  testWidgets('a_link_still_opens_when_the_name_cannot_be_saved', (tester) async {
+    arrange(tester, name: '');
+    hub
+      ..failWrites = true
+      ..scriptedPreview = const AppInvitePreview(cid: 'x', name: 'Quiet Club', expiresMin: 0);
+    await pump(tester, links: FakeLinks(initialLink: 'hubbub://join/x'));
+    await tester.enterText(dialogField, 'Ada');
+    await tester.pump();
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Quiet Club'), findsWidgets);
+  });
+
   testWidgets('dialog_cards_clip_the_footer_to_the_rounded_corners', (tester) async {
     arrange(tester);
     await pump(tester);

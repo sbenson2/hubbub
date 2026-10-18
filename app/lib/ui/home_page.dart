@@ -133,8 +133,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         await _askName();
-        // Links that arrived before a name was set wait for it.
-        if (_hub.profileName.isNotEmpty) _links?.markReady();
+        // Links that arrived before the name was asked for wait for it. If the person
+        // dismissed the dialog or saving failed, they open anyway: the core has a default name.
+        _links?.markReady();
         await _checkClipboard();
       });
     }
@@ -177,9 +178,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
-  void _openLink(String link) {
+  Future<void> _openLink(String link) async {
     if (!mounted) return;
-    showJoinDialog(context, _hub, link: link);
+    await showJoinDialog(context, _hub, link: link);
   }
 
   void _joinOffered() {

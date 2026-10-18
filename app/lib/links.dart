@@ -57,10 +57,14 @@ class LinkQueue {
 /// Feeds a [LinkSource] into [onLink], holding links until [markReady]. app_links replays the
 /// launch link on first listen, so a stream event equal to the link delivered last is dropped.
 class LinkRouter {
-  LinkRouter(this._source, void Function(String link) onLink) {
+  /// [onLink] may return a future that completes when the link's flow ends (its Join dialog
+  /// closes); only then may the same link be opened again.
+  LinkRouter(this._source, FutureOr<void> Function(String link) onLink) {
     _queue = LinkQueue((link) {
       _last = link;
-      onLink(link);
+      Future<void>.sync(() => onLink(link)).catchError((Object _) {}).whenComplete(() {
+        if (_last == link) _last = null;
+      });
     });
   }
 
@@ -73,11 +77,15 @@ class LinkRouter {
   /// Starts listening. The stream is attached first so no link is missed while the launch
   /// link is read.
   Future<void> start() async {
-    _sub = _source.stream.listen((link) {
-      if (link != _last) _queue.add(link);
-    });
+    _sub = _source.stream.listen(_accept);
     final first = await _source.initial();
-    if (first != null && !_disposed) _queue.add(first);
+    if (first != null && !_disposed) _accept(first);
+  }
+
+  /// The launch link and its replay on the stream are one link: drop a link that is still
+  /// open, or waiting (the queue does that).
+  void _accept(String link) {
+    if (link != _last) _queue.add(link);
   }
 
   /// Call once the profile name is set.
