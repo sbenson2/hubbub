@@ -1,5 +1,7 @@
 //! Hubbub core library.
+pub mod b64;
 pub mod community;
+pub mod invite;
 pub mod election;
 pub mod identity;
 pub mod ids;
