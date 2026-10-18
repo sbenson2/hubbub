@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hubbub_core::community::{CommunityFile, MemberEntry};
+use hubbub_core::community::CommunityState;
 use hubbub_core::election::HOST_TIMEOUT_MS;
 use hubbub_core::identity::Identity;
 use hubbub_core::ids::MemberId;
@@ -22,13 +22,13 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(3);
 /// One identity per entry in its own temp dir, and a community file listing them all.
 fn community(can_host: &[bool]) -> (Vec<tempfile::TempDir>, PathBuf) {
     let dirs: Vec<tempfile::TempDir> = can_host.iter().map(|_| tempfile::tempdir().unwrap()).collect();
-    let mut community = CommunityFile::create("handover");
-    for (i, (dir, &host)) in dirs.iter().zip(can_host).enumerate() {
-        let id = Identity::load_or_create(dir.path()).unwrap().member_id();
-        community.add_member(MemberEntry { id, name: format!("node{i}"), can_host: host });
-    }
+    let ids: Vec<Identity> = dirs.iter().map(|d| Identity::load_or_create(d.path()).unwrap()).collect();
+    let names: Vec<String> = (0..ids.len()).map(|i| format!("node{i}")).collect();
+    let members: Vec<(&Identity, &str, bool)> =
+        ids.iter().zip(&names).zip(can_host).map(|((id, n), &h)| (id, n.as_str(), h)).collect();
+    let community = CommunityState::for_tests("handover", &members);
     let community_file = dirs[0].path().join("community.json");
-    community.save(&community_file).unwrap();
+    community.save_atomic(&community_file).unwrap();
     (dirs, community_file)
 }
 
@@ -403,7 +403,7 @@ async fn phone_closes_a_control_connection_from_another_phone() {
     let addr = node.endpoint_addr().await.unwrap();
 
     let other = Identity::load_or_create(dirs[1].path()).unwrap();
-    let community = Arc::new(CommunityFile::load(&community_file).unwrap());
+    let community = Arc::new(CommunityState::load(&community_file).unwrap());
     let net = Net::bind(&other, community, RelayChoice::Disabled).await.unwrap();
     let hello = CtlMsg::Hello { member: other.member_id(), can_host: false, online_since_ms: 0 };
     let answer = tokio::time::timeout(Duration::from_secs(5), async {
@@ -433,7 +433,7 @@ async fn probe_never_starves_heartbeats_and_stops_at_its_time_limit() {
     wait_for(Duration::from_secs(4), "the node to host", || (node.host_state().host == Some(host)).then_some(())).await;
 
     let member = Identity::load_or_create(dirs[1].path()).unwrap();
-    let community = Arc::new(CommunityFile::load(&community_file).unwrap());
+    let community = Arc::new(CommunityState::load(&community_file).unwrap());
     let net = Net::bind(&member, community, RelayChoice::Disabled).await.unwrap();
     let conn = net.connect_addr(node.endpoint_addr().await.unwrap(), ALPN_CTL).await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();

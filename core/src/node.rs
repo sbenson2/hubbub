@@ -33,7 +33,7 @@ mod hosting;
 
 use hosting::{gateway_loop, media_actor};
 
-use crate::community::CommunityFile;
+use crate::community::CommunityState;
 use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
 use crate::ids::MemberId;
@@ -105,10 +105,10 @@ pub struct Node {
 
 impl Node {
     pub async fn start(cfg: NodeConfig, media: Box<dyn MediaHost>) -> Result<Node> {
-        let community = CommunityFile::load(&cfg.community_file)?;
+        let community = CommunityState::load(&cfg.community_file)?;
         let peers = community
             .members
-            .iter()
+            .values()
             .map(|m| {
                 let key = iroh::PublicKey::from_bytes(&m.id.0).context("invalid member id in community file")?;
                 Ok(EndpointAddr::new(key))
@@ -124,7 +124,7 @@ impl Node {
         media: Box<dyn MediaHost>,
         peers: Vec<EndpointAddr>,
     ) -> Result<Node> {
-        let community = CommunityFile::load(&cfg.community_file)?;
+        let community = CommunityState::load(&cfg.community_file)?;
         Self::launch(cfg, media, community, peers).await
     }
 
@@ -137,7 +137,7 @@ impl Node {
     async fn launch(
         cfg: NodeConfig,
         media: Box<dyn MediaHost>,
-        community: CommunityFile,
+        community: CommunityState,
         peers: Vec<EndpointAddr>,
     ) -> Result<Node> {
         let identity = Identity::load_or_create(&cfg.data_dir)?;
@@ -222,7 +222,7 @@ impl Node {
 
     /// Every member of the community with its name, this node included.
     pub fn members(&self) -> Vec<(MemberId, String)> {
-        self.inner.community.members.iter().map(|m| (m.id, m.name.clone())).collect()
+        self.inner.community.members.values().map(|m| (m.id, m.name.clone())).collect()
     }
 
     /// Sends `body` to text channel `channel` and returns its client id. Without a live host it
@@ -388,7 +388,7 @@ struct Inner {
     upnp: bool,
     online_since_ms: u64,
     started: Instant,
-    community: Arc<CommunityFile>,
+    community: Arc<CommunityState>,
     net: Net,
     /// Peers this node dials, with the addresses to use.
     dial_addrs: HashMap<MemberId, EndpointAddr>,
@@ -920,7 +920,7 @@ fn latest_reports(
 }
 
 /// Two members listed as unable to host (phones) never connect to each other directly.
-fn both_phones(community: &CommunityFile, a: &MemberId, b: &MemberId) -> bool {
+fn both_phones(community: &CommunityState, a: &MemberId, b: &MemberId) -> bool {
     let listed_can_host = |m: &MemberId| community.member(m).is_some_and(|e| e.can_host);
     !listed_can_host(a) && !listed_can_host(b)
 }

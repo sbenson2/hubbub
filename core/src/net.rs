@@ -7,7 +7,7 @@ use iroh::endpoint::{presets, Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use tokio::sync::mpsc;
 
-use crate::community::CommunityFile;
+use crate::community::CommunityState;
 use crate::identity::Identity;
 use crate::ids::MemberId;
 use crate::proto::{ALPN_CTL, ALPN_LK_SIGNAL};
@@ -47,7 +47,7 @@ impl Drop for Net {
 }
 
 impl Net {
-    pub async fn bind(id: &Identity, community: Arc<CommunityFile>, relay: RelayChoice) -> Result<Net> {
+    pub async fn bind(id: &Identity, community: Arc<CommunityState>, relay: RelayChoice) -> Result<Net> {
         let builder = match relay {
             RelayChoice::N0Default => Endpoint::builder(presets::N0),
             RelayChoice::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
@@ -132,7 +132,7 @@ impl Net {
 
 async fn accept_loop(
     endpoint: Endpoint,
-    community: Arc<CommunityFile>,
+    community: Arc<CommunityState>,
     conns: Arc<Mutex<HashMap<MemberId, Connection>>>,
     tx: mpsc::Sender<Accepted>,
 ) {
@@ -162,13 +162,7 @@ async fn accept_loop(
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
     use super::*;
-    use crate::community::MemberEntry;
-
-    fn entry(id: &Identity, name: &str) -> MemberEntry {
-        MemberEntry { id: id.member_id(), name: name.into(), can_host: true }
-    }
-
-    async fn bind_in_tempdir(id: &Identity, community: &Arc<CommunityFile>) -> Net {
+    async fn bind_in_tempdir(id: &Identity, community: &Arc<CommunityState>) -> Net {
         Net::bind(id, community.clone(), RelayChoice::Disabled).await.unwrap()
     }
 
@@ -176,10 +170,7 @@ pub mod test_support {
     pub async fn two_member_nets() -> (Net, Net) {
         let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let (ia, ib) = (Identity::load_or_create(da.path()).unwrap(), Identity::load_or_create(db.path()).unwrap());
-        let mut c = CommunityFile::create("test");
-        c.add_member(entry(&ia, "a"));
-        c.add_member(entry(&ib, "b"));
-        let c = Arc::new(c);
+        let c = Arc::new(CommunityState::for_tests("test", &[(&ia, "a", true), (&ib, "b", true)]));
         (bind_in_tempdir(&ia, &c).await, bind_in_tempdir(&ib, &c).await)
     }
 
@@ -187,8 +178,7 @@ pub mod test_support {
     pub async fn stranger_net() -> Net {
         let d = tempfile::tempdir().unwrap();
         let id = Identity::load_or_create(d.path()).unwrap();
-        let mut c = CommunityFile::create("stranger-view");
-        c.add_member(entry(&id, "stranger"));
+        let c = CommunityState::for_tests("stranger-view", &[(&id, "stranger", true)]);
         bind_in_tempdir(&id, &Arc::new(c)).await
     }
 }

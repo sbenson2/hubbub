@@ -24,7 +24,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use serde::{Deserialize, Serialize};
 
-use crate::community::CommunityFile;
+use crate::community::CommunityState;
 use crate::ids::MemberId;
 use crate::proto::CtlMsg;
 
@@ -44,7 +44,7 @@ pub const DEDUP_WINDOW: usize = 512;
 /// What names a message for good: its sender and the client id the sender gave it.
 pub type MessageKey = (MemberId, u64);
 
-/// A community's channels. `CommunityFile::channels` gives these defaults when the file has
+/// A community's channels. `CommunityState::channels` gives these defaults when the file has
 /// none, and a file that lists only one kind gets the default for the other.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -342,7 +342,7 @@ pub(crate) struct Chat {
 }
 
 impl Chat {
-    pub fn new(me: MemberId, community: &CommunityFile, data_dir: &Path) -> Self {
+    pub fn new(me: MemberId, community: &CommunityState, data_dir: &Path) -> Self {
         let (channels, store) = (community.channels(), Store::new(data_dir));
         let mut received = Recent::default();
         for channel in &channels.text {
@@ -487,6 +487,10 @@ impl Relay {
 
 #[cfg(test)]
 mod tests {
+    fn test_state() -> CommunityState {
+        CommunityState::create("t", &crate::identity::Identity::from_secret_bytes([7; 32]), true)
+    }
+
     use serde_json::json;
 
     use super::*;
@@ -644,46 +648,47 @@ mod tests {
         assert!(!d.path().join("general.jsonl").exists());
 
         let p = d.path().join("c.json");
-        let mut c = CommunityFile::create("t");
-        c.channels = Some(Channels { text: vec!["../oops".into()], voice: vec![] });
-        c.save(&p).unwrap();
-        assert!(CommunityFile::load(&p).is_err(), "a community file naming a bad text channel");
+        let mut c = test_state();
+        c.channels = Channels { text: vec!["../oops".into()], voice: vec![] };
+        c.save_atomic(&p).unwrap();
+        assert!(CommunityState::load(&p).is_err(), "a community file naming a bad text channel");
     }
 
     #[test]
     fn community_channels_default_when_the_field_is_absent() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.json");
-        std::fs::write(&p, r#"{"name": "old", "secret_hex": "00ff", "members": []}"#).unwrap();
-        let old = CommunityFile::load(&p).unwrap();
-        assert_eq!(old.channels(), Channels { text: vec!["general".into()], voice: vec!["lobby".into()] });
-        old.save(&p).unwrap();
-        assert!(!std::fs::read_to_string(&p).unwrap().contains("channels"), "saving adds no field");
+        let fresh = test_state();
+        assert_eq!(fresh.channels(), Channels { text: vec!["general".into()], voice: vec!["lobby".into()] });
+        // A state file without the field gets the defaults.
+        let mut v = serde_json::to_value(&fresh).unwrap();
+        v.as_object_mut().unwrap().remove("channels");
+        std::fs::write(&p, v.to_string()).unwrap();
+        assert_eq!(CommunityState::load(&p).unwrap().channels(), fresh.channels());
 
-        let listed = r#"{"name": "c", "secret_hex": "00", "members": [],
-            "channels": {"text": ["general", "games"], "voice": ["lobby", "afk"]}}"#;
-        std::fs::write(&p, listed).unwrap();
-        let c = CommunityFile::load(&p).unwrap();
+        v["channels"] = serde_json::json!({"text": ["general", "games"], "voice": ["lobby", "afk"]});
+        std::fs::write(&p, v.to_string()).unwrap();
+        let c = CommunityState::load(&p).unwrap();
         assert_eq!(c.channels().text, ["general", "games"]);
         assert_eq!(c.channels().voice, ["lobby", "afk"]);
 
-        std::fs::write(&p, r#"{"name": "c", "secret_hex": "00", "members": [], "channels": {"text": ["games"]}}"#)
-            .unwrap();
-        assert_eq!(CommunityFile::load(&p).unwrap().channels().voice, ["lobby"]);
+        v["channels"] = serde_json::json!({"text": ["games"]});
+        std::fs::write(&p, v.to_string()).unwrap();
+        assert_eq!(CommunityState::load(&p).unwrap().channels().voice, ["lobby"]);
     }
 
     #[test]
     fn text_key_is_derived_and_separate_from_the_media_key() {
-        let c = CommunityFile::create("t");
+        let c = test_state();
         assert_eq!(c.text_key(), c.clone().text_key());
         assert_ne!(c.text_key(), c.e2ee_key());
-        assert_ne!(c.text_key(), CommunityFile::create("t").text_key());
+        assert_ne!(c.text_key(), test_state().text_key());
     }
 
     #[test]
     fn compose_rejects_unknown_channels_and_empty_or_long_bodies() {
         let d = tempfile::tempdir().unwrap();
-        let chat = Chat::new(id(1), &CommunityFile::create("t"), d.path());
+        let chat = Chat::new(id(1), &test_state(), d.path());
         assert!(chat.compose("random", "hi").is_err(), "not a channel of this community");
         assert!(chat.compose("../general", "hi").is_err());
         assert!(chat.compose("general", "").is_err());
@@ -697,7 +702,7 @@ mod tests {
     #[test]
     fn pending_messages_go_once_per_route_until_seen_delivered() {
         let d = tempfile::tempdir().unwrap();
-        let community = CommunityFile::create("t");
+        let community = test_state();
         let chat = Chat::new(id(1), &community, d.path());
         let a = chat.compose("general", "one").unwrap();
         let b = chat.compose("general", "two").unwrap();
@@ -725,7 +730,7 @@ mod tests {
     #[test]
     fn receive_drops_deliveries_that_do_not_open() {
         let d = tempfile::tempdir().unwrap();
-        let community = CommunityFile::create("t");
+        let community = test_state();
         let chat = Chat::new(id(1), &community, d.path());
         let key = community.text_key();
         let honest = Delivery {
@@ -767,7 +772,7 @@ mod tests {
     #[test]
     fn a_second_delivery_of_a_message_is_neither_stored_nor_shown_even_after_a_reload() {
         let d = tempfile::tempdir().unwrap();
-        let community = CommunityFile::create("t");
+        let community = test_state();
         let key = community.text_key();
         let chat = Chat::new(id(1), &community, d.path());
         let first = delivery(&key, id(2), 7, "once");
@@ -795,7 +800,7 @@ mod tests {
         std::fs::create_dir_all(d.path().join("text")).unwrap();
         let legacy = json!({"term": 1, "seq": 1, "from": id(2).to_string(), "sent_ms": 5, "body": "old"});
         std::fs::write(d.path().join("text").join("general.jsonl"), format!("{legacy}\n")).unwrap();
-        let community = CommunityFile::create("t");
+        let community = test_state();
         let key = community.text_key();
         let chat = Chat::new(id(1), &community, d.path());
         let stored = chat.history("general", 10).unwrap();

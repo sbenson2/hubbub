@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use hubbub_core::community::{CommunityFile, MemberEntry};
+use hubbub_core::community::{CommunityState, NewMember};
 use hubbub_core::identity::Identity;
 use hubbub_core::ids::MemberId;
 use hubbub_core::media_host::{LiveKitHost, LkPorts};
@@ -51,17 +51,29 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum CommunityCmd {
-    /// Create a new community file.
+    /// Create a new community file, owned by this node's identity.
     New {
         name: String,
         #[arg(long)]
         out: PathBuf,
+        /// Identity folder of the owner; defaults to the node's.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// The owner never hosts (e.g. a phone).
+        #[arg(long)]
+        no_host: bool,
     },
-    /// Add a member to a community file.
+    /// Add a member to a community file, signed by this node's identity (which must be a member).
     Add {
         file: PathBuf,
         member_hex: String,
         name: String,
+        /// Identity folder of the admitting member; defaults to the node's.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// The new member's join door id. Until doors are wired in, defaults to the member id.
+        #[arg(long)]
+        door_hex: Option<String>,
         /// Member never hosts (e.g. a phone).
         #[arg(long)]
         no_host: bool,
@@ -187,14 +199,28 @@ fn main() -> Result<()> {
             let args = NodeArgs { community, data_dir, livekit_bin, no_host, print_lk_keys };
             tokio::runtime::Runtime::new()?.block_on(run_node(args))?;
         }
-        Cmd::Community { cmd: CommunityCmd::New { name, out } } => {
-            CommunityFile::create(&name).save(&out)?;
+        Cmd::Community { cmd: CommunityCmd::New { name, out, data_dir, no_host } } => {
+            let dir = match data_dir {
+                Some(d) => d,
+                None => default_data_dir()?,
+            };
+            let owner = Identity::load_or_create(&dir)?;
+            CommunityState::create(&name, &owner, !no_host).save_atomic(&out)?;
         }
-        Cmd::Community { cmd: CommunityCmd::Add { file, member_hex, name, no_host } } => {
+        Cmd::Community { cmd: CommunityCmd::Add { file, member_hex, name, data_dir, door_hex, no_host } } => {
             let id: MemberId = member_hex.parse()?;
-            let mut c = CommunityFile::load(&file)?;
-            c.add_member(MemberEntry { id, name, can_host: !no_host });
-            c.save(&file)?;
+            let door: MemberId = match door_hex {
+                Some(h) => h.parse()?,
+                None => id,
+            };
+            let dir = match data_dir {
+                Some(d) => d,
+                None => default_data_dir()?,
+            };
+            let admitter = Identity::load_or_create(&dir)?;
+            let mut c = CommunityState::load(&file)?;
+            c.admit(&admitter, NewMember { id, name, can_host: !no_host, door, via_invite: None })?;
+            c.save_atomic(&file)?;
         }
     }
     Ok(())

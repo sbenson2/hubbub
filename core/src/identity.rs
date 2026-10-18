@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 use crate::ids::MemberId;
 
@@ -28,12 +30,34 @@ impl Identity {
         Ok(Identity { secret })
     }
 
+    /// An identity from raw key bytes, for tests that need many without temp dirs.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn from_secret_bytes(secret: [u8; 32]) -> Identity {
+        Identity { secret }
+    }
+
     pub fn secret_key(&self) -> iroh::SecretKey {
         iroh::SecretKey::from_bytes(&self.secret)
     }
 
     pub fn member_id(&self) -> MemberId {
         MemberId(*self.secret_key().public().as_bytes())
+    }
+
+    /// The key of this member's join door, a second endpoint that strangers may dial:
+    /// HKDF-SHA256 over the identity's secret bytes, info `hubbub door v1`, no salt.
+    /// Deterministic, and unrelated to the member key, so the door's address says nothing
+    /// about the member's own endpoint.
+    pub fn door_secret(&self) -> iroh::SecretKey {
+        let mut out = [0u8; 32];
+        Hkdf::<Sha256>::new(None, &self.secret)
+            .expand(b"hubbub door v1", &mut out)
+            .expect("32 bytes is a valid HKDF output length");
+        iroh::SecretKey::from_bytes(&out)
+    }
+
+    pub fn door_id(&self) -> MemberId {
+        MemberId(*self.door_secret().public().as_bytes())
     }
 }
 
@@ -65,6 +89,16 @@ mod tests {
         let a = Identity::load_or_create(d.path()).unwrap();
         let b = Identity::load_or_create(d.path()).unwrap();
         assert_eq!(a.member_id(), b.member_id());
+    }
+    #[test] fn door_key_is_deterministic_and_not_the_member_key() {
+        let d = tempfile::tempdir().unwrap();
+        let a = Identity::load_or_create(d.path()).unwrap();
+        let b = Identity::load_or_create(d.path()).unwrap();
+        assert_eq!(a.door_id(), b.door_id());
+        assert_eq!(a.door_secret().to_bytes(), b.door_secret().to_bytes());
+        assert_ne!(a.door_id(), a.member_id());
+        let other = Identity::load_or_create(tempfile::tempdir().unwrap().path()).unwrap();
+        assert_ne!(a.door_id(), other.door_id());
     }
     #[test] fn tag_is_first_four_hex_upper() {
         let id = MemberId([0x4f, 0x2a, 0, 0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]);

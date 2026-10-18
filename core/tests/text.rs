@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use hubbub_core::community::{CommunityFile, MemberEntry};
+use hubbub_core::community::CommunityState;
 use hubbub_core::identity::Identity;
 use hubbub_core::ids::MemberId;
 use hubbub_core::media_host::FakeHost;
@@ -13,15 +13,15 @@ use tokio::sync::broadcast;
 
 /// One identity per entry in its own temp dir, and a community listing them all, saved in the
 /// first dir. The dirs must outlive the nodes: each node stores its messages there.
-fn community(can_host: &[bool]) -> (Vec<tempfile::TempDir>, CommunityFile, PathBuf) {
+fn community(can_host: &[bool]) -> (Vec<tempfile::TempDir>, CommunityState, PathBuf) {
     let dirs: Vec<tempfile::TempDir> = can_host.iter().map(|_| tempfile::tempdir().unwrap()).collect();
-    let mut community = CommunityFile::create("text");
-    for (i, (dir, &host)) in dirs.iter().zip(can_host).enumerate() {
-        let id = Identity::load_or_create(dir.path()).unwrap().member_id();
-        community.add_member(MemberEntry { id, name: format!("node{i}"), can_host: host });
-    }
+    let ids: Vec<Identity> = dirs.iter().map(|d| Identity::load_or_create(d.path()).unwrap()).collect();
+    let names: Vec<String> = (0..ids.len()).map(|i| format!("node{i}")).collect();
+    let members: Vec<(&Identity, &str, bool)> =
+        ids.iter().zip(&names).zip(can_host).map(|((id, n), &h)| (id, n.as_str(), h)).collect();
+    let community = CommunityState::for_tests("text", &members);
     let file = dirs[0].path().join("community.json");
-    community.save(&file).unwrap();
+    community.save_atomic(&file).unwrap();
     (dirs, community, file)
 }
 
@@ -215,9 +215,9 @@ async fn host_relays_without_decrypting() {
     // it still connects and hosts, but it cannot open a single message.
     let (dirs, community, file) = community(&[true, false, false]);
     let mut blind = community.clone();
-    blind.secret_hex = CommunityFile::create("other").secret_hex;
+    blind.secret_hex = CommunityState::create("other", &Identity::from_secret_bytes([9; 32]), true).secret_hex;
     let blind_file = dirs[0].path().join("blind.json");
-    blind.save(&blind_file).unwrap();
+    blind.save_atomic(&blind_file).unwrap();
     let (host, mut host_rx) = start(&dirs[0], &blind_file, true, vec![]).await;
     let host_addr = host.endpoint_addr().await.unwrap();
     let (b, mut b_rx) = start(&dirs[1], &file, false, vec![host_addr.clone()]).await;
