@@ -2,11 +2,12 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::community::CommunityState;
 use crate::election::RankKey;
 use crate::ids::MemberId;
 
-pub const ALPN_CTL: &[u8] = b"hubbub/ctl/0";
-pub const ALPN_LK_SIGNAL: &[u8] = b"hubbub/lk-signal/0";
+pub const ALPN_CTL: &[u8] = b"hubbub/ctl/1";
+pub const ALPN_LK_SIGNAL: &[u8] = b"hubbub/lk-signal/1";
 
 /// Largest frame body accepted or written, in bytes.
 pub const MAX_FRAME: usize = 65_536;
@@ -23,6 +24,9 @@ pub struct PeerReport {
 #[serde(tag = "t")]
 pub enum CtlMsg {
     Hello { member: MemberId, can_host: bool, online_since_ms: u64 },
+    /// The sender's community state without the secret, sent after `Hello` and on every
+    /// change. The receiver merges it; see `Node::apply_state`.
+    StateSync { state: CommunityState },
     Ping { nonce: u64 },
     Pong { nonce: u64 },
     Report { about: Vec<PeerReport> },

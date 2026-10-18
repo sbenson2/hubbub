@@ -33,7 +33,7 @@ mod hosting;
 
 use hosting::{gateway_loop, media_actor};
 
-use crate::community::CommunityState;
+use crate::community::{CommunityState, NewMember};
 use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
 use crate::ids::MemberId;
@@ -86,6 +86,9 @@ pub enum NodeEvent {
     /// which `(from, client_id)` names; events come in arrival order, the order `text_history`
     /// keeps. `(term, seq)` is not an id: it changes when a message is resent after a hand-over.
     Text { channel: String, term: u64, seq: u64, from: MemberId, sent_ms: u64, body: String, client_id: u64 },
+    /// The member list changed: someone joined, or a member's name or hosting ability did.
+    /// `Node::members` has the new list. A change of who vouched for a member does not count.
+    MembersChanged,
 }
 
 #[derive(Clone)]
@@ -144,13 +147,14 @@ impl Node {
         let me = identity.member_id();
         let entry = community.member(&me).with_context(|| format!("member {me} is not in the community file"))?;
         let can_host = cfg.can_host && entry.can_host;
-        let community = Arc::new(community);
-        let dial_addrs = peers
+        let dial_addrs: HashMap<MemberId, EndpointAddr> = peers
             .into_iter()
             .map(|a| (MemberId(*a.id.as_bytes()), a))
             .filter(|(m, _)| *m != me && community.is_member(m) && !both_phones(&community, &me, m))
             .collect();
-        let net = Net::bind(&identity, community.clone(), cfg.relay).await?;
+        let (chat, relay) = (Chat::new(me, &community, &cfg.data_dir), Relay::new(&community.channels()));
+        let (community_tx, community_rx) = watch::channel(Arc::new(community));
+        let net = Net::bind(&identity, community_rx, cfg.relay).await?;
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.context("binding the local signal tunnel")?;
         let tunnel_port = listener.local_addr()?.port();
@@ -160,16 +164,20 @@ impl Node {
         let (media_tx, media_rx) = mpsc::unbounded_channel();
         let online_since_ms =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let (chat, relay) = (Chat::new(me, &community, &cfg.data_dir), Relay::new(&community.channels()));
+        let dialing = Mutex::new(dial_addrs.keys().copied().collect::<HashSet<_>>());
         let inner = Arc::new(Inner {
             me,
             can_host,
             upnp: uses_upnp(can_host, cfg.relay),
             online_since_ms,
             started: Instant::now(),
-            community,
+            community: community_tx,
+            community_file: cfg.community_file,
+            save_lock: Mutex::new(()),
+            identity,
             net,
-            dial_addrs,
+            dial_addrs: Mutex::new(dial_addrs),
+            dialing,
             tunnel_port,
             state: Mutex::new(State {
                 host: HostState { host: None, term: 0 },
@@ -198,7 +206,8 @@ impl Node {
         if inner.upnp {
             inner.spawn(gateway_loop(inner.clone()));
         }
-        for &peer in inner.dial_addrs.keys() {
+        let initial: Vec<MemberId> = inner.dialing.lock().unwrap().iter().copied().collect();
+        for peer in initial {
             inner.spawn(inner.clone().dial_loop(peer));
         }
         Ok(Node { inner, _stop: stop_tx })
@@ -222,7 +231,22 @@ impl Node {
 
     /// Every member of the community with its name, this node included.
     pub fn members(&self) -> Vec<(MemberId, String)> {
-        self.inner.community.members.values().map(|m| (m.id, m.name.clone())).collect()
+        self.inner.community().members.values().map(|m| (m.id, m.name.clone())).collect()
+    }
+
+    /// Admits `m`, signed by this node, and tells every connected peer; a loop dials the new
+    /// member. Returns whether the member list changed (false if `m` was already a member).
+    pub fn admit(&self, m: NewMember) -> Result<bool> {
+        let mut next = (*self.inner.community()).clone();
+        next.admit(&self.inner.identity, m)?;
+        self.inner.apply_state(&next)
+    }
+
+    /// Where to dial `peer` when it is admitted or listed (in-process tests, which have no
+    /// address lookup).
+    #[cfg(feature = "test-util")]
+    pub fn add_peer_addr(&self, addr: EndpointAddr) {
+        self.inner.dial_addrs.lock().unwrap().insert(MemberId(*addr.id.as_bytes()), addr);
     }
 
     /// Sends `body` to text channel `channel` and returns its client id. Without a live host it
@@ -267,7 +291,7 @@ impl Node {
                     return Ok(VoiceCredentials {
                         url,
                         token,
-                        e2ee_key: inner.community.e2ee_key(),
+                        e2ee_key: inner.community().e2ee_key(),
                         host,
                         term: hs.term,
                     })
@@ -388,10 +412,17 @@ struct Inner {
     upnp: bool,
     online_since_ms: u64,
     started: Instant,
-    community: Arc<CommunityState>,
+    /// The live membership; `Net` holds a receiver. Replace it only through `apply_state`.
+    community: watch::Sender<Arc<CommunityState>>,
+    community_file: PathBuf,
+    /// Held while the state is merged and saved: `save_atomic` uses one temp path.
+    save_lock: Mutex<()>,
+    identity: Identity,
     net: Net,
-    /// Peers this node dials, with the addresses to use.
-    dial_addrs: HashMap<MemberId, EndpointAddr>,
+    /// Addresses to use for peers this node dials; others are dialed by id.
+    dial_addrs: Mutex<HashMap<MemberId, EndpointAddr>>,
+    /// Members that have a dial loop.
+    dialing: Mutex<HashSet<MemberId>>,
     tunnel_port: u16,
     state: Mutex<State>,
     events: broadcast::Sender<NodeEvent>,
@@ -450,7 +481,46 @@ impl Inner {
     }
 
     fn listed_can_host(&self, m: &MemberId) -> bool {
-        self.community.member(m).is_some_and(|e| e.can_host)
+        self.community().member(m).is_some_and(|e| e.can_host)
+    }
+
+    /// The current community state.
+    fn community(&self) -> Arc<CommunityState> {
+        self.community.borrow().clone()
+    }
+
+    /// Merges `other` into the live state. If anything changed: saves it, wakes the readers,
+    /// starts dial loops for new members, sends the new state to every peer, and emits
+    /// `MembersChanged` when the member list (ids, names, hosting ability) differs. Fails only
+    /// when `other` belongs to another community; a failed save is logged and the state is
+    /// still used.
+    fn apply_state(self: &Arc<Self>, other: &CommunityState) -> Result<bool> {
+        let (next, listed_before) = {
+            let _saving = self.save_lock.lock().unwrap();
+            let before = self.community();
+            let mut next = (*before).clone();
+            if !next.merge(other)? {
+                return Ok(false);
+            }
+            if let Err(e) = next.save_atomic(&self.community_file) {
+                eprintln!("hubbub: could not save {}: {e:#}", self.community_file.display());
+            }
+            self.community.send_replace(Arc::new(next.clone()));
+            (next, before)
+        };
+        for m in next.members.keys() {
+            if *m != self.me && !listed_before.is_member(m) && !both_phones(&next, &self.me, m) {
+                if self.dialing.lock().unwrap().insert(*m) {
+                    self.spawn(self.clone().dial_loop(*m));
+                }
+            }
+        }
+        self.broadcast(&CtlMsg::StateSync { state: next.public_view() });
+        let listed = |s: &CommunityState| -> Vec<_> { s.members.values().map(|e| (e.id, e.name.clone(), e.can_host)).collect() };
+        if listed(&listed_before) != listed(&next) {
+            self.emit(NodeEvent::MembersChanged);
+        }
+        Ok(true)
     }
 
     /// With `HUBBUB_DEBUG_CTL=1`, logs one line about the session with `peer` to stderr, stamped
@@ -465,7 +535,7 @@ impl Inner {
     }
 
     fn member_name(&self, m: &MemberId) -> String {
-        self.community.member(m).map(|e| e.name.clone()).unwrap_or_default()
+        self.community().member(m).map(|e| e.name.clone()).unwrap_or_default()
     }
 
     fn view(&self) -> Vec<Candidate> {
@@ -510,8 +580,9 @@ impl Inner {
     }
 
     async fn dial(&self, to: MemberId, alpn: &[u8]) -> Result<Connection> {
-        let addr = match self.dial_addrs.get(&to) {
-            Some(a) => a.clone(),
+        let known = self.dial_addrs.lock().unwrap().get(&to).cloned();
+        let addr = match known {
+            Some(a) => a,
             // Not dialed at start (tests): iroh still knows the paths of a live connection.
             None => EndpointAddr::new(iroh::PublicKey::from_bytes(&to.0).context("invalid member id")?),
         };
@@ -596,6 +667,7 @@ impl Inner {
         if self.add_session(peer, id, out.clone(), can_host, since) {
             self.emit(NodeEvent::PeerUp { member: peer, kind: self.net.conn_kind(peer) });
         }
+        let _ = out.send(Out::Msg(CtlMsg::StateSync { state: self.community().public_view() }));
         let _ = self.election.send(Cmd::SessionUp(out.clone()));
         // This may be a new session to the host.
         self.flush_text();
@@ -657,7 +729,7 @@ impl Inner {
     }
 
     async fn read_loop(
-        &self,
+        self: &Arc<Self>,
         peer: MemberId,
         id: u64,
         recv: &mut RecvStream,
@@ -676,6 +748,14 @@ impl Inner {
                     }
                 }
                 CtlMsg::Hello { .. } => bail!("Hello for another member from {}", peer.tag()),
+                CtlMsg::StateSync { state } => {
+                    // The connection was accepted from a member, but the list may have changed.
+                    if self.community().is_member(&peer) {
+                        if let Err(e) = self.apply_state(&state) {
+                            eprintln!("hubbub: ignoring state from {}: {e:#}", peer.tag());
+                        }
+                    }
+                }
                 CtlMsg::Ping { nonce } => {
                     let _ = out.send(Out::Msg(CtlMsg::Pong { nonce }));
                 }
@@ -976,7 +1056,7 @@ async fn ping_loop(out: OutTx, pings: Pings) {
 async fn accept_loop(inner: Arc<Inner>) {
     while let Some((member, alpn, conn)) = inner.net.accept().await {
         if alpn == ALPN_CTL {
-            if both_phones(&inner.community, &inner.me, &member) {
+            if both_phones(&inner.community(), &inner.me, &member) {
                 conn.close(VarInt::from_u32(1), b"phones do not connect to each other");
                 continue;
             }

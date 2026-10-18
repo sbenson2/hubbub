@@ -780,14 +780,17 @@ mod tests {
         assert_eq!(c.members.len(), 150);
         assert!(c.members.values().filter(|e| e.id != c.owner).all(|e| e.name.chars().count() == 32 && serde_json::to_string(&e.name).unwrap().len() == 86));
         assert!(c.members.values().all(|e| c.verify_entry(e)));
-        // Same serializer and length-prefixed JSON framing as `proto::write_msg`, in an
-        // envelope tagged like a CtlMsg.
-        let body = serde_json::to_vec(&serde_json::json!({"t": "StateSync", "state": c.public_view()})).unwrap();
+        // The real `CtlMsg::StateSync`, serialized as `proto::write_msg` does. It also carries
+        // 100 revoked invite ids.
+        for n in 0..100u8 {
+            c.revoke(InviteId([n; 8]));
+        }
+        assert_eq!(c.revoked.len(), 100);
+        let msg = crate::proto::CtlMsg::StateSync { state: c.public_view() };
+        let body = serde_json::to_vec(&msg).unwrap();
         assert!(body.len() + 1024 <= crate::proto::MAX_FRAME, "{} bytes leaves too little headroom", body.len());
         // And it comes back intact.
-        let back: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let state: CommunityState = serde_json::from_value(back["state"].clone()).unwrap();
-        assert_eq!(state, c.public_view());
+        assert_eq!(serde_json::from_slice::<crate::proto::CtlMsg>(&body).unwrap(), msg);
     }
 
     #[test]

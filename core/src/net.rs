@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use iroh::endpoint::{presets, Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::community::CommunityState;
 use crate::identity::Identity;
@@ -47,7 +47,8 @@ impl Drop for Net {
 }
 
 impl Net {
-    pub async fn bind(id: &Identity, community: Arc<CommunityState>, relay: RelayChoice) -> Result<Net> {
+    /// `community` is the live membership: a member admitted later gets through at once.
+    pub async fn bind(id: &Identity, community: watch::Receiver<Arc<CommunityState>>, relay: RelayChoice) -> Result<Net> {
         let builder = match relay {
             RelayChoice::N0Default => Endpoint::builder(presets::N0),
             RelayChoice::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
@@ -132,7 +133,7 @@ impl Net {
 
 async fn accept_loop(
     endpoint: Endpoint,
-    community: Arc<CommunityState>,
+    community: watch::Receiver<Arc<CommunityState>>,
     conns: Arc<Mutex<HashMap<MemberId, Connection>>>,
     tx: mpsc::Sender<Accepted>,
 ) {
@@ -147,7 +148,8 @@ async fn accept_loop(
             let who = MemberId(*conn.remote_id().as_bytes());
             let alpn = conn.alpn().to_vec();
             let known_alpn = alpn == ALPN_CTL || alpn == ALPN_LK_SIGNAL;
-            if !community.is_member(&who) || !known_alpn {
+            let member = community.borrow().is_member(&who);
+            if !member || !known_alpn {
                 conn.close(VarInt::from_u32(CLOSE_FORBIDDEN), b"403");
                 return;
             }
@@ -163,7 +165,8 @@ async fn accept_loop(
 pub mod test_support {
     use super::*;
     async fn bind_in_tempdir(id: &Identity, community: &Arc<CommunityState>) -> Net {
-        Net::bind(id, community.clone(), RelayChoice::Disabled).await.unwrap()
+        // The sender may go: a receiver still reads the last value.
+        Net::bind(id, watch::channel(community.clone()).1, RelayChoice::Disabled).await.unwrap()
     }
 
     /// Two nets that belong to one shared community, with no relays.
