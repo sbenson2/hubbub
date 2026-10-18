@@ -87,6 +87,8 @@ mod tests {
     use crate::proto::ALPN_LK_SIGNAL;
 
     const T: Duration = Duration::from_secs(1);
+    // Windows retries a refused connect for about 2 s before the close reaches the peer.
+    const CLOSE_T: Duration = Duration::from_secs(5);
 
     /// Start `serve_host` on b toward `target`, and a local port on a that dials b.
     async fn tunnel_to(target: SocketAddr) -> SocketAddr {
@@ -138,7 +140,7 @@ mod tests {
         // iroh only surfaces the stream to the peer once the opener writes.
         c.write_all(b"x").await.unwrap();
         let mut buf = [0u8; 8];
-        let n = timeout(T, c.read(&mut buf)).await.expect("EOF within 1 s").unwrap_or(0);
+        let n = timeout(CLOSE_T, c.read(&mut buf)).await.expect("EOF within 5 s").unwrap_or(0);
         assert_eq!(n, 0);
     }
 }
