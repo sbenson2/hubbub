@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/node_controller.dart';
 import 'package:hubbub/room_adapter.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
@@ -65,11 +66,13 @@ class FakeNode extends NodeController {
     this.voiceChannels = const ['lobby'],
     this.name = 'Game Night',
     FakeTextService? text,
+    super.membersChanged,
   })  : text = text ?? FakeTextService(),
         super(eventsOverride: events.stream);
 
   final AppMember me;
   final List<AppMember> roster;
+  bool _refreshed = false;
   final List<String> textChannels;
   final List<String> voiceChannels;
   final String name;
@@ -86,8 +89,14 @@ class FakeNode extends NodeController {
   String get communityName => name;
   @override
   AppChannels get channels => AppChannels(text: textChannels, voice: voiceChannels);
+  // The roster is what the core would report; the UI only sees changes after a refresh.
   @override
-  List<AppMember> get members => roster;
+  List<AppMember> get members => _refreshed ? super.members : List.of(roster);
+  @override
+  List<AppMember> loadMembers() {
+    _refreshed = true;
+    return List.of(roster);
+  }
 
   @override
   Future<AppVoiceCredentials> credentials(String room) async {
@@ -150,4 +159,93 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> subscribeVideo(String participantId, String trackSid, bool on) async =>
       calls.add('video:$participantId:$on');
+}
+
+/// An in-memory hub: servers are [FakeNode]s the test registers; create, join and leave
+/// behave like the core's.
+class FakeHub implements HubApi {
+  FakeHub({this.name = 'Shawn', Map<String, FakeNode>? nodes, List<AppCommunity>? servers})
+      : _nodes = nodes ?? {},
+        _servers = servers ?? [];
+
+  String name;
+  final Map<String, FakeNode> _nodes;
+  final List<AppCommunity> _servers;
+  final calls = <String>[];
+
+  /// Registers a server that is already joined.
+  void add(String cid, String name, FakeNode node, {bool isOwner = false}) {
+    _nodes[cid] = node;
+    _servers.add(AppCommunity(cid: cid, name: name, isOwner: isOwner));
+  }
+
+  /// Makes a join of [link] succeed with this server once the test lets it.
+  void willJoin(String link, String cid, String name, FakeNode node) {
+    _joinable[link] = (cid, name, node);
+  }
+
+  final _joinable = <String, (String, String, FakeNode)>{};
+
+  @override
+  Future<void> open(String root, {required bool canHost, String? livekitBin}) async =>
+      calls.add('open:$root');
+  @override
+  String get memberId => memberIdFor('aaaa');
+  @override
+  String get memberTag => 'AAAA';
+  @override
+  String profileName() => name;
+  @override
+  Future<void> setProfileName(String n) async => name = n;
+  @override
+  List<AppCommunity> communities() => List.of(_servers);
+  @override
+  NodeController node(String cid) => _nodes[cid]!;
+
+  @override
+  Future<String> createCommunity(String n) async {
+    final cid = 'cid-${_servers.length + 1}';
+    final me = member('aaaa', name);
+    add(cid, n, FakeNode(events: StreamController<AppNodeEvent>.broadcast(), me: me, roster: [me], name: n),
+        isOwner: true);
+    return cid;
+  }
+
+  @override
+  Future<String> inviteCreate(String cid, {required int expiresMin, required int maxUses}) async {
+    calls.add('invite:$cid:$expiresMin:$maxUses');
+    return 'hubbub://join/$cid';
+  }
+
+  @override
+  Future<void> inviteRevoke(String cid, String link) async => calls.add('revoke:$cid');
+
+  @override
+  AppInvitePreview? inviteParse(String text) {
+    final j = _joinable[text];
+    return j == null ? null : AppInvitePreview(cid: j.$1, name: j.$2, expiresMin: 0);
+  }
+
+  @override
+  Stream<JoinEvent> join(String link) async* {
+    yield const JoinTrying();
+    final j = _joinable[link];
+    if (j == null) {
+      yield const JoinDenied('invalid invite');
+      return;
+    }
+    add(j.$1, j.$2, j.$3);
+    yield JoinJoined(j.$1);
+  }
+
+  @override
+  Future<void> joinCancel() async => calls.add('joinCancel');
+  @override
+  Future<void> leave(String cid) async {
+    _servers.removeWhere((c) => c.cid == cid);
+    _nodes.remove(cid);
+  }
+
+  @override
+  Future<void> shutdown() async => calls.add('shutdown');
 }

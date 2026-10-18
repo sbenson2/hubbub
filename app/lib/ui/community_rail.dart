@@ -4,21 +4,22 @@ import 'package:flutter/material.dart';
 
 import 'theme.dart';
 
-/// The leftmost column: the Hubbub home mark, one icon per community, and importing a
-/// community file.
+/// The leftmost column: the Hubbub home mark, one icon per server, and the "+" that adds one.
 class CommunityRail extends StatelessWidget {
   const CommunityRail({
     super.key,
     required this.communities,
     required this.selected,
-    required this.onImport,
+    required this.onSelect,
+    required this.onAdd,
   });
 
   final List<String> communities;
 
   /// Index into [communities], or null.
   final int? selected;
-  final VoidCallback onImport;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +53,7 @@ class CommunityRail extends StatelessWidget {
               selected: i == selected,
               idle: HubColors.accent,
               active: HubColors.accent,
+              onTap: () => onSelect(i),
               child: Text(
                 initials(communities[i]),
                 style: const TextStyle(
@@ -63,11 +65,11 @@ class CommunityRail extends StatelessWidget {
               ),
             ),
           _RailItem(
-            tooltip: 'Import community file',
+            tooltip: 'Add a Server',
             selected: false,
             idle: HubColors.main,
             active: HubColors.green,
-            onTap: onImport,
+            onTap: onAdd,
             child: const _ImportGlyph(),
           ),
         ],

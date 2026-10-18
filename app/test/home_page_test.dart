@@ -154,7 +154,7 @@ void main() {
 
     expect(find.text('No community yet'), findsOneWidget);
     expect(find.text('Import community file'), findsOneWidget);
-    expect(find.byTooltip('Import community file'), findsOneWidget);
+    expect(find.byTooltip('Add a Server'), findsOneWidget);
   }, skip: kIsWeb); // The check reads the file system.
 
   testWidgets('room_signals_keep_their_hubbub_log_lines', (tester) async {

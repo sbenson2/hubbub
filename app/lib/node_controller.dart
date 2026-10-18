@@ -11,9 +11,12 @@ import 'text_controller.dart';
 /// Owns the in-process core node and exposes the election state, the community and its
 /// text channels to the UI.
 class NodeController extends ChangeNotifier implements TextService {
-  /// [eventsOverride] replaces the core's event stream (tests).
-  NodeController({Stream<AppNodeEvent>? eventsOverride}) {
+  /// [eventsOverride] replaces the core's event stream (tests). [membersChanged] stands in
+  /// for the core's MembersChanged event until the generated events carry it: each tick
+  /// re-reads the member list.
+  NodeController({Stream<AppNodeEvent>? eventsOverride, Stream<void>? membersChanged}) {
     if (eventsOverride != null) _listen(eventsOverride);
+    _membersSub = membersChanged?.listen((_) => refreshMembers());
   }
 
   AppNode? _node;
@@ -27,6 +30,7 @@ class NodeController extends ChangeNotifier implements TextService {
   List<AppMember> _members = const [];
   final _online = <String>{};
   StreamSubscription<AppNodeEvent>? _sub;
+  StreamSubscription<void>? _membersSub;
   final _events = StreamController<AppNodeEvent>.broadcast();
 
   String? get memberId => _memberId;
@@ -59,6 +63,15 @@ class NodeController extends ChangeNotifier implements TextService {
     _listen(nodeEvents(n: node));
     notifyListeners();
   }
+
+  /// Re-reads the roster after the core says it changed.
+  void refreshMembers() {
+    _members = loadMembers();
+    notifyListeners();
+  }
+
+  @protected
+  List<AppMember> loadMembers() => nodeMembers(n: _started());
 
   Future<AppVoiceCredentials> credentials(String room) =>
       nodeVoiceCredentials(n: _started(), room: room);
@@ -139,6 +152,7 @@ class NodeController extends ChangeNotifier implements TextService {
   @override
   void dispose() {
     _sub?.cancel();
+    _membersSub?.cancel();
     _events.close();
     unawaited(shutdown());
     super.dispose();

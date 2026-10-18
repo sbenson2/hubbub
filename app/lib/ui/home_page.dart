@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../hub_controller.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
 import '../src/rust/api/hubbub.dart';
@@ -25,13 +26,20 @@ const narrowWidth = 700.0;
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
-    required this.controller,
+    this.controller,
+    this.hub,
     required this.room,
     required this.loadConfig,
+    this.onAddServer,
     this.clock,
-  });
+  }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
-  final NodeController controller;
+  /// A single server (the pre-hub path); [hub] holds every server.
+  final NodeController? controller;
+  final HubController? hub;
+
+  /// The rail's "+"; without it the "+" imports a community file.
+  final VoidCallback? onAddServer;
   final RoomAdapter room;
   final Future<AppNodeConfig> Function() loadConfig;
 
@@ -44,14 +52,18 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _scaffold = GlobalKey<ScaffoldState>();
-  late final TextController _text;
+  late final HubController _hub;
+  late final NodeController _idle;
+  final _texts = <String, TextController>{};
+  final _views = <String, ChannelRef>{};
+  final _attached = <NodeController>{};
   StreamSubscription<RoomSignal>? _signalSub;
   StreamSubscription<List<RoomParticipant>>? _peopleSub;
   List<RoomParticipant> _people = const [];
-  ChannelRef? _view;
 
-  /// The voice channel whose call we are in, and the one being joined.
-  String? _call;
+  /// The voice channel whose call we are in (and its server), and the one being joined.
+  /// Switching server leaves the call running, as Discord does.
+  _Call? _call;
   String? _joining;
   bool _muted = false;
   bool _deafened = false;
@@ -60,22 +72,35 @@ class _HomePageState extends State<HomePage> {
   bool _starting = false;
   String? _error;
 
-  NodeController get _node => widget.controller;
+  /// The selected server's controller; an unstarted placeholder when there is none.
+  NodeController get _node => _hub.current ?? _idle;
+  String get _key => _hub.selectedCid ?? '';
+  ChannelRef? get _view => _views[_key];
+
+  TextController get _text => _texts.putIfAbsent(_key, () {
+        final n = _node;
+        return TextController(
+          service: n,
+          events: n.events,
+          me: () => n.memberId,
+          clock: widget.clock,
+        );
+      });
+
+  /// The call's voice channel, when it is in the server on screen.
+  String? get _callHere => _call?.key == _key ? _call!.channel : null;
 
   @override
   void initState() {
     super.initState();
-    _text = TextController(
-      service: _node,
-      events: _node.events,
-      me: () => _node.memberId,
-      clock: widget.clock,
-    );
-    _node.addListener(_refresh);
+    _idle = NodeController();
+    _hub = widget.hub ?? HubController.single(widget.controller!);
+    _hub.addListener(_refresh);
+    _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
     _peopleSub = widget.room.participants.listen((p) => setState(() => _people = p));
     _openFirstChannel();
-    if (!_node.started) {
+    if (widget.controller != null && !_node.started) {
       _starting = true;
       unawaited(_startIfConfigured());
     }
@@ -83,21 +108,39 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    _node.removeListener(_refresh);
+    _hub.removeListener(_refresh);
+    for (final n in _attached) {
+      n.removeListener(_refresh);
+    }
     _signalSub?.cancel();
     _peopleSub?.cancel();
-    _text.dispose();
+    for (final t in _texts.values) {
+      t.dispose();
+    }
+    if (widget.hub == null) _hub.dispose();
+    _idle.dispose();
     super.dispose();
   }
 
-  void _refresh() => setState(_openFirstChannel);
+  /// Each server's controller notifies on its own, so listen to every one.
+  void _attach() {
+    for (final c in _hub.communities) {
+      final n = _hub.node(c.cid);
+      if (_attached.add(n)) n.addListener(_refresh);
+    }
+  }
+
+  void _refresh() => setState(() {
+        _attach();
+        _openFirstChannel();
+      });
 
   /// Once the community is known, opens its first text channel.
   void _openFirstChannel() {
     if (_view != null || !_node.started) return;
     final text = _node.channels.text;
     if (text.isEmpty) return;
-    _view = ChannelRef.text(text.first);
+    _views[_key] = ChannelRef.text(text.first);
     _text.open(text.first);
   }
 
@@ -153,10 +196,10 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _select(ChannelRef channel) async {
     if (_scaffold.currentState?.isDrawerOpen ?? false) _scaffold.currentState!.closeDrawer();
-    setState(() => _view = channel);
+    setState(() => _views[_key] = channel);
     _text.open(channel.isVoice ? null : channel.name);
     // As in Discord, clicking a voice channel joins it.
-    if (channel.isVoice && _call != channel.name) await _join(channel.name);
+    if (channel.isVoice && _callHere != channel.name) await _join(channel.name);
   }
 
   Future<void> _join(String channel) async {
@@ -164,11 +207,13 @@ class _HomePageState extends State<HomePage> {
     setState(() => _joining = channel);
     try {
       if (_call != null) await _leave();
-      final c = await _node.credentials(channel);
+      final node = _node;
+      final key = _key;
+      final c = await node.credentials(channel);
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
-      if (mounted) setState(() => _call = channel);
+      if (mounted) setState(() => _call = _Call(key, channel, node));
     } catch (e) {
       _toast('Could not join $channel: $e');
     } finally {
@@ -205,22 +250,23 @@ class _HomePageState extends State<HomePage> {
     if (muteChanged || deafChanged) await widget.room.setMicrophoneEnabled(!muted);
   }
 
-  String _nameOf(String id) {
-    for (final m in _node.members) {
+  String _nameOf(String id, [NodeController? node]) {
+    for (final m in (node ?? _node).members) {
       if (m.id == id) return m.name.isEmpty ? m.tag : m.name;
     }
     return shortTag(id);
   }
 
+  /// The people in the call, named from the call's server.
   List<VoiceMember> get _voiceMembers => [
         for (final p in _people)
           VoiceMember(
             id: p.id,
-            name: _nameOf(p.id),
+            name: _nameOf(p.id, _call?.node),
             speaking: p.speaking,
             muted: p.isLocal ? _muted : p.muted,
             deafened: p.isLocal && _deafened,
-            hosting: p.id == _node.host,
+            hosting: p.id == (_call?.node ?? _node).host,
           ),
       ];
 
@@ -271,9 +317,12 @@ class _HomePageState extends State<HomePage> {
       width: 312,
       child: Row(children: [
         CommunityRail(
-          communities: [if (started) _node.communityName],
-          selected: started ? 0 : null,
-          onImport: _importCommunity,
+          communities: [for (final c in _hub.communities) c.name],
+          selected: _hub.communities.indexWhere((c) => c.cid == _hub.selectedCid) < 0
+              ? null
+              : _hub.communities.indexWhere((c) => c.cid == _hub.selectedCid),
+          onSelect: (i) => _hub.select(_hub.communities[i].cid),
+          onAdd: widget.onAddServer ?? _importCommunity,
         ),
         SizedBox(
           width: 240,
@@ -287,16 +336,16 @@ class _HomePageState extends State<HomePage> {
                   voiceChannels: channels.voice,
                   selected: _view,
                   isUnread: _text.isUnread,
-                  connectedVoice: _call,
-                  voiceMembers: _voiceMembers,
+                  connectedVoice: _callHere,
+                  voiceMembers: _callHere == null ? const [] : _voiceMembers,
                   onSelect: _select,
                 ),
               ),
             ),
             if (_call != null)
               VoiceConnectedBar(
-                channel: _call!,
-                community: _node.communityName,
+                channel: _call!.channel,
+                community: _call!.node.communityName,
                 onDisconnect: _leave,
               ),
             if (started)
@@ -364,7 +413,7 @@ class _HomePageState extends State<HomePage> {
       );
     }
     if (v.isVoice) {
-      final here = _call == v.name;
+      final here = _callHere == v.name;
       return VoiceChannelView(
         channel: v.name,
         participants: here ? _voiceMembers : const [],
@@ -423,4 +472,13 @@ class _EmptyState extends StatelessWidget {
           ]),
         ),
       );
+}
+
+/// The voice call in progress: its server's key, its channel, and the server's controller.
+class _Call {
+  const _Call(this.key, this.channel, this.node);
+
+  final String key;
+  final String channel;
+  final NodeController node;
 }
