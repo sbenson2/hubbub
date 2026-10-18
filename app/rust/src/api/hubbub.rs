@@ -85,9 +85,10 @@ pub enum AppNodeEvent {
     Text { message: AppTextMessage },
 }
 
-impl From<NodeEvent> for AppNodeEvent {
-    fn from(ev: NodeEvent) -> Self {
-        match ev {
+/// The app's view of a node event; None for events the app does not carry yet
+/// (`MembersChanged` until the hub API adds it).
+fn app_event(ev: NodeEvent) -> Option<AppNodeEvent> {
+    Some(match ev {
             NodeEvent::HostChanged { host, term, is_me } => {
                 AppNodeEvent::HostChanged { host: host.map(|h| h.to_string()), term, is_me }
             }
@@ -99,8 +100,8 @@ impl From<NodeEvent> for AppNodeEvent {
             NodeEvent::Text { channel, term, seq, from, sent_ms, body, client_id } => AppNodeEvent::Text {
                 message: AppTextMessage { channel, term, seq, from: from.to_string(), sent_ms, body, client_id },
             },
-        }
-    }
+            NodeEvent::MembersChanged => return None,
+    })
 }
 
 #[frb(opaque)]
@@ -172,8 +173,10 @@ pub fn node_events(n: &AppNode, sink: StreamSink<AppNodeEvent>) -> anyhow::Resul
         loop {
             match rx.recv().await {
                 Ok(ev) => {
-                    if sink.add(ev.into()).is_err() {
-                        break;
+                    if let Some(ev) = app_event(ev) {
+                        if sink.add(ev).is_err() {
+                            break;
+                        }
                     }
                 }
                 Err(RecvError::Lagged(_)) => continue,
@@ -291,7 +294,7 @@ mod tests {
             body: "hi".into(),
             client_id: 77,
         };
-        let AppNodeEvent::Text { message } = ev.into() else { panic!("expected Text") };
+        let AppNodeEvent::Text { message } = app_event(ev).unwrap() else { panic!("expected Text") };
         assert_eq!((message.channel.as_str(), message.term, message.seq), ("general", 2, 5));
         assert_eq!((message.from, message.body.as_str(), message.client_id), (from.to_string(), "hi", 77));
 
