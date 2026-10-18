@@ -132,7 +132,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _askName() async {
     if (!mounted || _hub.profileName.isNotEmpty) return;
     final name = await showNameDialog(context);
-    if (name != null) await _hub.setProfileName(name);
+    if (name == null) return;
+    try {
+      await _hub.setProfileName(name);
+    } catch (e) {
+      _toast('Could not save your name: $e');
+    }
   }
 
   @override
@@ -151,6 +156,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted || text == null || text.isEmpty || _seenLinks.contains(text)) return;
     final preview = _hub.inviteParse(text);
     if (preview == null) return;
+    // An invite to a server we are already in is our own (Copy in the Invite dialog).
+    if (_hub.communities.any((c) => c.cid == preview.cid)) return;
     _seenLinks.add(text);
     setState(() {
       _offered = preview;
@@ -173,7 +180,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _leaveServer() async {
     final cid = _hub.selectedCid;
     if (cid == null) return;
-    if (await confirmLeaveServer(context, _node.communityName)) await _hub.leave(cid);
+    if (!await confirmLeaveServer(context, _node.communityName)) return;
+    try {
+      await _hub.leave(cid);
+    } catch (e) {
+      _toast('Could not leave the server: $e');
+    }
   }
 
   @override

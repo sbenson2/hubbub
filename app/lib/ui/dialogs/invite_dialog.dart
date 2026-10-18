@@ -47,6 +47,9 @@ class _InviteDialog extends StatefulWidget {
 class _InviteDialogState extends State<_InviteDialog> {
   int _expiresMin = 10080;
   int _maxUses = 0;
+  // The editor's selection; it becomes the applied limits only when a link is made.
+  int _pendingExpiresMin = 10080;
+  int _pendingMaxUses = 0;
   String? _link;
   String? _error;
   bool _copied = false;
@@ -61,6 +64,8 @@ class _InviteDialogState extends State<_InviteDialog> {
 
   Future<void> _make() async {
     setState(() {
+      _expiresMin = _pendingExpiresMin;
+      _maxUses = _pendingMaxUses;
       _link = null;
       _error = null;
       _copied = false;
@@ -167,17 +172,17 @@ class _InviteDialogState extends State<_InviteDialog> {
         const HubFieldLabel('EXPIRE AFTER'),
         _Choice(
           key: const ValueKey('expiry'),
-          value: _expiresMin,
+          value: _pendingExpiresMin,
           choices: expiryChoices,
-          onChanged: (v) => setState(() => _expiresMin = v),
+          onChanged: (v) => setState(() => _pendingExpiresMin = v),
         ),
         const SizedBox(height: 12),
         const HubFieldLabel('MAX NUMBER OF USES'),
         _Choice(
           key: const ValueKey('uses'),
-          value: _maxUses,
+          value: _pendingMaxUses,
           choices: useChoices,
-          onChanged: (v) => setState(() => _maxUses = v),
+          onChanged: (v) => setState(() => _pendingMaxUses = v),
         ),
         const SizedBox(height: 16),
         Wrap(spacing: 8, runSpacing: 8, children: [

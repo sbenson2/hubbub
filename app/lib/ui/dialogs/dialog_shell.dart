@@ -35,6 +35,8 @@ class HubDialogCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Dialog(
+        // The footer strip is square; the rounded card must clip it.
+        clipBehavior: Clip.antiAlias,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: width),
           child: SingleChildScrollView(

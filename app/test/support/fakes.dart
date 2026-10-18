@@ -194,6 +194,9 @@ class FakeHub implements HubApi {
   Stream<JoinEvent>? scriptedJoin;
   AppInvitePreview? scriptedPreview;
 
+  /// Makes setProfileName and leave throw.
+  bool failWrites = false;
+
   @override
   Future<void> open(String root, {required bool canHost, String? livekitBin}) async =>
       calls.add('open:$root');
@@ -204,7 +207,10 @@ class FakeHub implements HubApi {
   @override
   String profileName() => name;
   @override
-  Future<void> setProfileName(String n) async => name = n;
+  Future<void> setProfileName(String n) async {
+    if (failWrites) throw StateError('disk full');
+    name = n;
+  }
   @override
   List<AppCommunity> communities() => List.of(_servers);
   @override
@@ -253,6 +259,7 @@ class FakeHub implements HubApi {
   Future<void> joinCancel() async => calls.add('joinCancel');
   @override
   Future<void> leave(String cid) async {
+    if (failWrites) throw StateError('offline');
     _servers.removeWhere((c) => c.cid == cid);
     _nodes.remove(cid);
   }

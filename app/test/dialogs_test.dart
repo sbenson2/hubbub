@@ -270,5 +270,78 @@ void main() {
     expect(find.textContaining('You copied an invite'), findsNothing,
         reason: 'a seen invite is not offered again');
   });
-}
 
+  testWidgets('copying_your_own_invite_does_not_raise_the_banner_on_resume', (tester) async {
+    arrange(tester);
+    await pump(tester);
+    hub.scriptedPreview = const AppInvitePreview(cid: 'c1', name: 'Game Night', expiresMin: 0);
+
+    await tester.tap(find.text('Invite your friends'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('You copied an invite'), findsNothing);
+  });
+
+  testWidgets('the_invite_footnote_describes_the_link_not_the_unsaved_dropdowns',
+      (tester) async {
+    arrange(tester);
+    await pump(tester);
+    await tester.tap(find.text('Invite your friends'));
+    await tester.pumpAndSettle();
+    final before = find.textContaining('expires in 7 days');
+    expect(before, findsOneWidget);
+
+    await tester.tap(find.text('Edit invite link'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('uses')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('5 uses').last);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('5 uses at most'), findsNothing);
+    expect(before, findsOneWidget);
+
+    await tester.tap(find.text('Generate a New Link'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('5 uses at most'), findsOneWidget);
+  });
+
+  testWidgets('a_failed_leave_or_name_save_shows_a_snackbar', (tester) async {
+    arrange(tester);
+    await pump(tester);
+    hub.failWrites = true;
+    await tester.tap(find.byTooltip('Server Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Leave Server'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Leave Server').last);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Could not leave the server'), findsOneWidget);
+    expect(controller.communities, hasLength(1));
+  });
+
+  testWidgets('a_failed_name_save_shows_a_snackbar', (tester) async {
+    arrange(tester, name: '');
+    hub.failWrites = true;
+    await pump(tester);
+    await tester.enterText(dialogField, 'Ada');
+    await tester.pump();
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Could not save your name'), findsOneWidget);
+  });
+
+  testWidgets('dialog_cards_clip_the_footer_to_the_rounded_corners', (tester) async {
+    arrange(tester);
+    await pump(tester);
+    await tester.tap(find.byTooltip('Add a Server'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Dialog>(find.byType(Dialog)).clipBehavior, Clip.antiAlias);
+  });
+}
