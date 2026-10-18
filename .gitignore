@@ -3,6 +3,19 @@
 /vendor/
 *.log
 .DS_Store
+Thumbs.db
+.claude/settings.local.json
 
 # Session handoffs hold machine details; they stay local.
 HANDOFF*.md
+
+# Secrets stay out of git; commit placeholders in .env.example instead.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.keystore
+*.jks
