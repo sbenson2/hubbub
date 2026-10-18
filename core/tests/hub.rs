@@ -1,12 +1,15 @@
 //! Hubs with in-process nodes: FakeHost media, relays disabled, peers found through each
 //! hub's in-memory address book.
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hubbub_core::community::NewMember;
 use hubbub_core::hub::{Hub, HubConfig};
 use hubbub_core::identity::Identity;
-use hubbub_core::ids::CommunityId;
+use hubbub_core::ids::{CommunityId, MemberId};
 use hubbub_core::media_host::{FakeHost, MediaHost};
 use hubbub_core::net::RelayChoice;
 use hubbub_core::proto::{ctl_alpn, sig_alpn};
@@ -200,5 +203,46 @@ async fn servers_and_the_profile_name_survive_a_restart() {
     assert_eq!(hub.communities(), vec![(cid, "Shawn's server".to_string())]);
     let members = hub.node(&cid).unwrap().members();
     assert_eq!(members, vec![(me, "Shawn".to_string())], "the owner is named by the profile");
+    hub.shutdown().await;
+}
+
+/// A FakeHost that counts its starts.
+struct CountingHost {
+    inner: FakeHost,
+    starts: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl MediaHost for CountingHost {
+    async fn start(&mut self, ip: IpAddr) -> anyhow::Result<SocketAddr> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.inner.start(ip).await
+    }
+    async fn stop(&mut self) {
+        self.inner.stop().await
+    }
+    fn mint(&self, member: &MemberId, name: &str, room: &str) -> anyhow::Result<String> {
+        self.inner.mint(member, name, room)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_hosting_servers_share_one_media_host_and_name_their_rooms_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let counter = starts.clone();
+    let media = move |_: &Path| -> Box<dyn MediaHost> { Box::new(CountingHost { inner: FakeHost::new(), starts: counter }) };
+    let hub = Hub::open_with_test_media(dir.path(), cfg(), media).await.unwrap();
+    let (s1, s2) = (hub.create_community("one").await.unwrap(), hub.create_community("two").await.unwrap());
+    let me = hub.member_id();
+    // Each server is just this device, so each elects it as host.
+    let mut tokens = Vec::new();
+    for cid in [s1, s2] {
+        let c = hub.node(&cid).unwrap().voice_credentials("lobby").await.unwrap();
+        assert_eq!(c.token, format!("fake:{me}:{cid}.lobby"));
+        tokens.push(c.token);
+    }
+    assert_ne!(tokens[0], tokens[1]);
+    assert_eq!(starts.load(Ordering::SeqCst), 1, "one media host for both servers");
     hub.shutdown().await;
 }

@@ -4,7 +4,8 @@
 //!
 //! Layout under the root folder:
 //! - `identity.key`, `profile.json` (`{ "name": … }`) and `hub.lock`;
-//! - `communities/<cid-hex>/`: `community.json`, the text store, and the LiveKit work dir;
+//! - `communities/<cid-hex>/`: `community.json` and the text store;
+//! - `livekit/`: the work dir of the machine's one LiveKit, shared by every server;
 //! - `archive/<cid-hex>-<unix-secs>/`: servers this device left.
 use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
@@ -19,11 +20,9 @@ use crate::community::{clamp_name, CommunityState};
 use crate::identity::Identity;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::{LiveKitHost, LkPorts, MediaHost, NoMediaHost};
+use crate::media_shared::SharedMedia;
 use crate::net::{RelayChoice, Switch};
-use crate::node::{Node, NodeConfig};
-
-/// Makes the media host of one server, given that server's folder.
-type MediaFactory = Box<dyn Fn(&Path) -> Box<dyn MediaHost> + Send + Sync>;
+use crate::node::{uses_upnp, Node, NodeConfig};
 
 pub struct HubConfig {
     /// Whether this device may host media for its servers.
@@ -49,7 +48,8 @@ pub struct Hub {
     identity: Arc<Identity>,
     profile: Mutex<Profile>,
     switch: Arc<Switch>,
-    media: MediaFactory,
+    /// The machine's one media host and UPnP mapping, leased by each hosting server.
+    media: Arc<SharedMedia>,
     servers: Mutex<BTreeMap<CommunityId, Server>>,
     /// Held for the hub's life; the OS releases the lock when this is dropped.
     _lock: File,
@@ -61,24 +61,30 @@ impl Hub {
     pub async fn open(root: &Path, cfg: HubConfig) -> Result<Hub> {
         let bin = cfg.livekit_bin.clone();
         let can_host = cfg.can_host;
-        let media: MediaFactory = Box::new(move |dir| match (&bin, can_host) {
-            (Some(bin), true) => Box::new(LiveKitHost::new(bin.clone(), dir.join("livekit"), LkPorts::default())),
-            _ => Box::new(NoMediaHost),
-        });
-        Self::open_with_media(root, cfg, media).await
+        let make = move |root: &Path| -> Box<dyn MediaHost> {
+            match (&bin, can_host) {
+                (Some(bin), true) => Box::new(LiveKitHost::new(bin.clone(), root.join("livekit"), LkPorts::default())),
+                _ => Box::new(NoMediaHost),
+            }
+        };
+        Self::open_with_media(root, cfg, make).await
     }
 
-    /// `open` with the media host of each server supplied by `media` (tests use `FakeHost`).
+    /// `open` with the machine's media host supplied by `media` (tests use `FakeHost`).
     #[cfg(feature = "test-util")]
     pub async fn open_with_test_media(
         root: &Path,
         cfg: HubConfig,
-        media: impl Fn(&Path) -> Box<dyn MediaHost> + Send + Sync + 'static,
+        media: impl FnOnce(&Path) -> Box<dyn MediaHost>,
     ) -> Result<Hub> {
-        Self::open_with_media(root, cfg, Box::new(media)).await
+        Self::open_with_media(root, cfg, media).await
     }
 
-    async fn open_with_media(root: &Path, cfg: HubConfig, media: MediaFactory) -> Result<Hub> {
+    async fn open_with_media(
+        root: &Path,
+        cfg: HubConfig,
+        media: impl FnOnce(&Path) -> Box<dyn MediaHost>,
+    ) -> Result<Hub> {
         fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
         let lock_path = root.join("hub.lock");
         let lock = File::options()
@@ -100,6 +106,9 @@ impl Hub {
         let identity = Arc::new(Identity::load_or_create(root)?);
         let profile = load_profile(root, &identity)?;
         let switch = Arc::new(Switch::bind(&identity, cfg.relay).await?);
+        // One LiveKit per machine, working in `<root>/livekit/`.
+        let upnp = uses_upnp(cfg.can_host, cfg.relay);
+        let media = Arc::new(SharedMedia::new(media(root), upnp, LkPorts::default().rtc_udp));
         let hub = Hub {
             root: root.to_path_buf(),
             cfg,
@@ -227,7 +236,7 @@ impl Hub {
             can_host: self.cfg.can_host,
             relay: self.cfg.relay,
         };
-        let node = Node::start_in_hub(cfg, (self.media)(dir), self.switch.clone(), self.identity.clone()).await?;
+        let node = Node::start_in_hub(cfg, self.media.clone(), self.switch.clone(), self.identity.clone()).await?;
         self.servers.lock().unwrap().insert(state.id, Server { name: state.name.clone(), node: Arc::new(node) });
         Ok(())
     }

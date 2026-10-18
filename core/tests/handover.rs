@@ -216,7 +216,7 @@ async fn hard_kill_handover_under_2_5s_and_creds_follow() {
     let follower = ns.iter().find(|n| n.member_id() != new_host).unwrap();
     let c = follower.voice_credentials("lobby").await.unwrap();
     assert_eq!(c.host, new_host);
-    assert_eq!(c.token, format!("fake:{}:lobby", follower.member_id()));
+    assert_eq!(c.token, format!("fake:{}:{}.lobby", follower.member_id(), follower.community_id()));
     assert_eq!(echo_via(&c.url, b"ping").await, b"ping"); // tunnel reaches the new host's FakeHost
 }
 
@@ -314,7 +314,7 @@ async fn host_start_failure_resigns() {
 
     let c = ns[f].voice_credentials("lobby").await.unwrap();
     assert_eq!(c.host, survivor);
-    assert_eq!(c.token, format!("fake:{}:lobby", ns[f].member_id()));
+    assert_eq!(c.token, format!("fake:{}:{}.lobby", ns[f].member_id(), ns[f].community_id()));
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(agreed_host(&ns), Some(survivor), "no dead host remains");
 }

@@ -7,6 +7,7 @@ pub mod identity;
 pub mod hub;
 pub mod ids;
 pub mod media_host;
+pub mod media_shared;
 pub mod net;
 pub mod node;
 pub mod probe;

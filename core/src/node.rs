@@ -3,11 +3,10 @@
 //!
 //! Tasks, all stopped when the `Node` is dropped:
 //! - the election loop owns the `Election`, ticks every 100 ms and carries out its actions;
-//! - the media actor owns the `MediaHost` and runs start, stop and mint strictly in order;
+//! - the media actor holds the node's lease on the shared media host and runs start, stop and mint strictly in order;
 //! - the accept loop, one dialer per known peer (never phone to phone), and one task per
 //!   control session, which closes it after 3 s of silence;
 //! - the report loop and the local signal tunnel;
-//! - on a host-capable node with relays, the background UPnP gateway search.
 //!
 //! They share `State` behind a std mutex that is never held across an await. Sessions feed
 //! the election loop and the media actor through channels; each session has its own writer
@@ -16,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,19 +30,19 @@ use tokio::time::{sleep, timeout, MissedTickBehavior};
 
 mod hosting;
 
-use hosting::{gateway_loop, media_actor};
+use hosting::media_actor;
 
 use crate::community::{CommunityState, NewMember};
 use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
-use crate::ids::MemberId;
-use crate::media_host::MediaHost;
+use crate::ids::{CommunityId, MemberId};
+use crate::media_host::{LkPorts, MediaHost};
+use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
 use crate::proto::{read_msg, write_msg, CtlMsg, PeerReport};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
-use crate::upnp::Gateway;
 use crate::view::build_view;
 
 const TICK: Duration = Duration::from_millis(100);
@@ -110,20 +109,20 @@ impl Node {
     pub async fn start(cfg: NodeConfig, media: Box<dyn MediaHost>) -> Result<Node> {
         let community = CommunityState::load(&cfg.community_file)?;
         let peers = listed_peers(&community)?;
-        Self::launch(cfg, media, community, peers, None).await
+        Self::launch(cfg, Media::Private(media), community, peers, None).await
     }
 
     /// Starts a node on a hub's shared endpoint, with the hub's identity. `cfg.data_dir` is
     /// this community's own folder (its text store); no identity is read from it.
     pub async fn start_in_hub(
         cfg: NodeConfig,
-        media: Box<dyn MediaHost>,
+        media: Arc<SharedMedia>,
         switch: Arc<Switch>,
         identity: Arc<Identity>,
     ) -> Result<Node> {
         let community = CommunityState::load(&cfg.community_file)?;
         let peers = listed_peers(&community)?;
-        Self::launch(cfg, media, community, peers, Some((switch, identity))).await
+        Self::launch(cfg, Media::Shared(media), community, peers, Some((switch, identity))).await
     }
 
     /// Starts a node that dials only `peers`, at their given addresses (in-process tests).
@@ -134,7 +133,7 @@ impl Node {
         peers: Vec<EndpointAddr>,
     ) -> Result<Node> {
         let community = CommunityState::load(&cfg.community_file)?;
-        Self::launch(cfg, media, community, peers, None).await
+        Self::launch(cfg, Media::Private(media), community, peers, None).await
     }
 
     /// This node's loopback address, for `start_with_addrs` in tests.
@@ -145,7 +144,7 @@ impl Node {
 
     async fn launch(
         cfg: NodeConfig,
-        media: Box<dyn MediaHost>,
+        media: Media,
         community: CommunityState,
         peers: Vec<EndpointAddr>,
         shared: Option<(Arc<Switch>, Arc<Identity>)>,
@@ -171,6 +170,13 @@ impl Node {
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.context("binding the local signal tunnel")?;
         let tunnel_port = listener.local_addr()?.port();
+        let media = match media {
+            Media::Shared(m) => m,
+            // Outside a hub the node has its own host and its own UPnP mapping.
+            Media::Private(host) => {
+                Arc::new(SharedMedia::new(host, uses_upnp(can_host, cfg.relay), LkPorts::default().rtc_udp))
+            }
+        };
         let (stop_tx, stop) = watch::channel(());
         let (events, _) = broadcast::channel(256);
         let (election, election_rx) = mpsc::unbounded_channel();
@@ -181,7 +187,6 @@ impl Node {
         let inner = Arc::new(Inner {
             me,
             can_host,
-            upnp: uses_upnp(can_host, cfg.relay),
             online_since_ms,
             started: Instant::now(),
             community: community_tx,
@@ -200,14 +205,12 @@ impl Node {
                 signal: None,
                 lk_served: Vec::new(),
                 lk_client: None,
-                gateway: None,
             }),
             events,
             election,
             media: media_tx,
             stop,
             next_session: AtomicU64::new(0),
-            upnp_warned: AtomicBool::new(false),
             chat,
             relay,
         });
@@ -216,9 +219,6 @@ impl Node {
         inner.spawn(accept_loop(inner.clone()));
         inner.spawn(report_loop(inner.clone()));
         inner.spawn(tunnel_loop(inner.clone(), listener));
-        if inner.upnp {
-            inner.spawn(gateway_loop(inner.clone()));
-        }
         let initial: Vec<MemberId> = inner.dialing.lock().unwrap().iter().copied().collect();
         for peer in initial {
             inner.spawn(inner.clone().dial_loop(peer));
@@ -228,6 +228,11 @@ impl Node {
 
     pub fn member_id(&self) -> MemberId {
         self.inner.me
+    }
+
+    /// The server this node runs.
+    pub fn community_id(&self) -> CommunityId {
+        self.inner.community().id
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<NodeEvent> {
@@ -400,8 +405,6 @@ struct State {
     lk_served: Vec<Connection>,
     /// This node's signal connection to the current host, reused across tunnel connections.
     lk_client: Option<(MemberId, Connection)>,
-    /// The UPnP gateway found by the background search, while it keeps working.
-    gateway: Option<Gateway>,
 }
 
 enum Cmd {
@@ -429,8 +432,6 @@ struct Inner {
     me: MemberId,
     /// Configured ability to host (config and community entry).
     can_host: bool,
-    /// Whether this node uses UPnP at all (see `uses_upnp`).
-    upnp: bool,
     online_since_ms: u64,
     started: Instant,
     /// The live membership; `Net` holds a receiver. Replace it only through `apply_state`.
@@ -451,7 +452,6 @@ struct Inner {
     media: mpsc::UnboundedSender<MediaCmd>,
     stop: watch::Receiver<()>,
     next_session: AtomicU64,
-    upnp_warned: AtomicBool,
     chat: Chat,
     /// Orders and passes on text messages while this node hosts.
     relay: Relay,
@@ -995,12 +995,6 @@ impl Inner {
             self.emit(NodeEvent::Text { channel: r.channel, term, seq, from, sent_ms, body, client_id });
         });
     }
-
-    fn warn_upnp_once(&self, msg: &str) {
-        if !self.upnp_warned.swap(true, Ordering::Relaxed) {
-            eprintln!("hubbub node: {msg}");
-        }
-    }
 }
 
 /// One report per (reporter, member about), the latest, and only from reporters who are online.
@@ -1038,8 +1032,16 @@ fn both_phones(community: &CommunityState, a: &MemberId, b: &MemberId) -> bool {
     !listed_can_host(a) && !listed_can_host(b)
 }
 
+/// Where a node's media host comes from.
+enum Media {
+    /// A hub's, shared by all its servers.
+    Shared(Arc<SharedMedia>),
+    /// A node outside a hub gets a host of its own.
+    Private(Box<dyn MediaHost>),
+}
+
 /// Only a node that may host maps a port, and never without relays (tests stay hermetic).
-fn uses_upnp(can_host: bool, relay: RelayChoice) -> bool {
+pub(crate) fn uses_upnp(can_host: bool, relay: RelayChoice) -> bool {
     can_host && relay != RelayChoice::Disabled
 }
 
