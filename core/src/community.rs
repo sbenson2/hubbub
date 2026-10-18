@@ -21,10 +21,11 @@ pub const MAX_NAME_CHARS: usize = 32;
 /// ... and at most this many UTF-8 bytes, which keeps 150 members inside one control frame.
 pub const MAX_NAME_BYTES: usize = 64;
 
-/// Cuts `name` to the limits on a character boundary.
+/// Cuts `name` to the limits on a char boundary and drops control characters.
 pub fn clamp_name(name: &str) -> String {
     let mut out = String::new();
-    for c in name.chars().take(MAX_NAME_CHARS) {
+    // Control characters are dropped: JSON writes each as 6 bytes, which would break the frame bound.
+    for c in name.chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS) {
         if out.len() + c.len_utf8() > MAX_NAME_BYTES {
             break;
         }
@@ -97,9 +98,13 @@ impl MemberEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommunityState {
+    /// `SHA-256("hubbub cid v1" || owner || nonce)[..16]`: a state cannot name another owner
+    /// under the same id.
     pub id: CommunityId,
     pub name: String,
     pub owner: MemberId,
+    #[serde(with = "nonce_hex")]
+    pub nonce: [u8; 16],
     /// The shared E2EE and text key. Absent in `public_view()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_hex: Option<String>,
@@ -123,10 +128,13 @@ impl CommunityState {
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).expect("system randomness unavailable");
         let id = owner.member_id();
+        let mut nonce = [0u8; 16];
+        getrandom::fill(&mut nonce).expect("system randomness unavailable");
         let mut s = CommunityState {
-            id: CommunityId::random(),
+            id: derive_id(&id, &nonce),
             name: name.to_string(),
             owner: id,
+            nonce,
             secret_hex: Some(hex::encode(secret)),
             channels: Channels::default(),
             revoked: BTreeSet::new(),
@@ -199,6 +207,11 @@ impl CommunityState {
         }
     }
 
+    /// Whether the id is the one derived from this state's owner and nonce.
+    pub fn id_matches_owner(&self) -> bool {
+        self.id == derive_id(&self.owner, &self.nonce)
+    }
+
     /// Records an invite as revoked. Any member may revoke (no signature in this spike).
     pub fn revoke(&mut self, invite: InviteId) -> bool {
         self.revoked.insert(invite)
@@ -213,53 +226,42 @@ impl CommunityState {
     pub fn merge(&mut self, other: &CommunityState) -> Result<bool> {
         ensure!(self.id == other.id, "state is for another community ({} not {})", other.id, self.id);
         ensure!(self.owner == other.owner, "state has another owner ({} not {})", other.owner, self.owner);
-        let pool: Vec<&MemberEntry> = self.members.values().chain(other.members.values()).collect();
-        let sound: Vec<&MemberEntry> = pool.into_iter().filter(|e| entry_well_formed(&self.id, e)).collect();
+        ensure!(other.id_matches_owner(), "state's community id does not belong to its owner");
+        // Signatures are checked once per entry here; the layers below only walk ids.
+        let sound: Vec<&MemberEntry> =
+            self.members.values().chain(other.members.values()).filter(|e| entry_well_formed(&self.id, e)).collect();
 
-        // Everyone reachable from the owner's self-signed entry through sound admissions.
-        let mut reach = BTreeSet::new();
-        if sound.iter().any(|e| e.id == self.owner && e.admitted_by == self.owner) {
-            reach.insert(self.owner);
+        // Settle members layer by layer from the owner's self-signed entry. A member joins in the
+        // first layer where some sound entry names an already settled admitter, and takes the
+        // lowest `(admitted_by, sig)` among the entries available then. Chosen admitters are
+        // always from earlier layers, so the result is a tree under the owner: no cycles, no
+        // member with a valid path dropped, and a pure function of the pooled entries.
+        let mut settled: BTreeMap<MemberId, MemberEntry> = BTreeMap::new();
+        if let Some(o) = sound.iter().filter(|e| e.id == self.owner && e.admitted_by == self.owner).min_by_key(|e| e.rank()) {
+            settled.insert(self.owner, (*o).clone());
             loop {
-                let before = reach.len();
+                let mut layer: BTreeMap<MemberId, &MemberEntry> = BTreeMap::new();
                 for e in &sound {
-                    if e.id != e.admitted_by && reach.contains(&e.admitted_by) {
-                        reach.insert(e.id);
+                    if e.id != e.admitted_by
+                        && !settled.contains_key(&e.id)
+                        && settled.contains_key(&e.admitted_by)
+                        && layer.get(&e.id).is_none_or(|c| e.rank() < c.rank())
+                    {
+                        layer.insert(e.id, e);
                     }
                 }
-                if reach.len() == before {
+                if layer.is_empty() {
                     break;
                 }
+                settled.extend(layer.into_iter().map(|(id, e)| (id, e.clone())));
             }
         }
-        let mut chosen: BTreeMap<MemberId, MemberEntry> = BTreeMap::new();
-        for e in sound {
-            let admitted = if e.id == self.owner { e.admitted_by == self.owner } else { reach.contains(&e.admitted_by) && reach.contains(&e.id) && e.admitted_by != e.id };
-            if admitted && chosen.get(&e.id).is_none_or(|c| e.rank() < c.rank()) {
-                chosen.insert(e.id, e.clone());
-            }
-        }
-        // The chosen entries might not chain to the owner among themselves (two members each
-        // admitted by the other in their winning entries): drop those until all verify.
-        let mut view = CommunityState { members: chosen, ..self.clone() };
-        loop {
-            let bad: Vec<MemberId> = view.members.values().filter(|e| !view.verify_entry(e)).map(|e| e.id).collect();
-            if bad.is_empty() {
-                break;
-            }
-            for id in bad {
-                view.members.remove(&id);
-            }
-        }
+        let view = CommunityState { members: settled, ..self.clone() };
 
         let revoked: BTreeSet<InviteId> = self.revoked.union(&other.revoked).copied().collect();
-        let adopt_secret = self.secret_hex.is_none() && other.secret_hex.is_some();
-        let changed = view.members != self.members || revoked != self.revoked || adopt_secret;
+        let changed = view.members != self.members || revoked != self.revoked;
         self.members = view.members;
         self.revoked = revoked;
-        if adopt_secret {
-            self.secret_hex = other.secret_hex.clone();
-        }
         Ok(changed)
     }
 
@@ -284,9 +286,11 @@ impl CommunityState {
         for name in &c.channels.text {
             check_channel_name(name).with_context(|| format!("{}: text channels", path.display()))?;
         }
-        if let Some(h) = &c.secret_hex {
-            hex::decode(h).with_context(|| format!("{}: secret_hex", path.display()))?;
-        }
+        // Public views are never saved, so a state file always has its secret.
+        let h = c.secret_hex.as_deref().with_context(|| format!("{}: no secret_hex", path.display()))?;
+        let secret = hex::decode(h).with_context(|| format!("{}: secret_hex", path.display()))?;
+        ensure!(secret.len() == 32, "{}: secret_hex must be 32 bytes", path.display());
+        ensure!(c.id_matches_owner(), "{}: the community id does not belong to its owner", path.display());
         for e in c.members.values() {
             ensure!(c.verify_entry(e), "{}: the entry for member {} does not verify", path.display(), e.id);
         }
@@ -351,6 +355,30 @@ impl CommunityState {
                 .unwrap();
         }
         s
+    }
+}
+
+fn derive_id(owner: &MemberId, nonce: &[u8; 16]) -> CommunityId {
+    use sha2::Digest;
+    let mut h = Sha256::new();
+    h.update(b"hubbub cid v1");
+    h.update(owner.0);
+    h.update(nonce);
+    let d = h.finalize();
+    CommunityId(d[..16].try_into().expect("16 of 32 bytes"))
+}
+
+mod nonce_hex {
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(n: &[u8; 16], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(n))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 16], D::Error> {
+        let mut out = [0u8; 16];
+        hex::decode_to_slice(String::deserialize(d)?, &mut out).map_err(de::Error::custom)?;
+        Ok(out)
     }
 }
 
@@ -587,6 +615,76 @@ mod tests {
         assert!(!c.verify_entry(&long));
     }
 
+    #[test]
+    fn control_characters_are_dropped_from_names_and_refused_in_entries() {
+        let (o, a) = (ident(1), ident(2));
+        let mut c = CommunityState::create("c", &o, true);
+        c.admit(&o, new_member(&a, "a\u{0}b\n\u{7f}c")).unwrap();
+        assert_eq!(c.member(&a.member_id()).unwrap().name, "abc");
+        let mut bad = c.signed_entry(&o, new_member(&ident(3), "x"));
+        bad.name = "x\u{1}".into();
+        bad.sig = o.secret_key().sign(&bad.signing_bytes(&c.id));
+        assert!(!c.verify_entry(&bad));
+    }
+
+    #[test]
+    fn re_admission_across_replicas_keeps_both_members() {
+        // P admits X, X admits Y in one replica; Q admits Y, Y admits X in the other. With ids
+        // such that Y < P and X < Q, picking each lowest admitter would form an X<->Y cycle.
+        let owner = ident(1);
+        let mut pool: Vec<Identity> = (2..=40).map(ident).collect();
+        pool.sort_by_key(|i| i.member_id());
+        let (x, y, p, q) = (pool.remove(0), pool.remove(0), pool.remove(0), pool.remove(0));
+        assert!(y.member_id() < p.member_id() && x.member_id() < q.member_id());
+        let base = CommunityState::create("c", &owner, true);
+        let mut r1 = base.clone();
+        r1.admit(&owner, new_member(&p, "p")).unwrap();
+        r1.admit(&p, new_member(&x, "x")).unwrap();
+        r1.admit(&x, new_member(&y, "y")).unwrap();
+        let mut r2 = base.clone();
+        r2.admit(&owner, new_member(&q, "q")).unwrap();
+        r2.admit(&q, new_member(&y, "y")).unwrap();
+        r2.admit(&y, new_member(&x, "x")).unwrap();
+        let (mut ab, mut ba) = (r1.clone(), r2.clone());
+        ab.merge(&r2).unwrap();
+        ba.merge(&r1).unwrap();
+        assert_eq!(ab, ba);
+        for m in [&p, &q, &x, &y] {
+            assert!(ab.is_member(&m.member_id()), "{} lost", m.member_id().tag());
+        }
+        assert!(ab.members.values().all(|e| ab.verify_entry(e)));
+    }
+
+    #[test]
+    fn a_grinding_attacker_cannot_delete_members_with_a_cycle() {
+        let (o, base) = pair();
+        let mut honest = base.clone();
+        let members: Vec<Identity> = (2..=6).map(ident).collect();
+        for m in &members {
+            honest.admit(&o, new_member(m, "m")).unwrap();
+        }
+        // K0 sorts below the owner; M is a real member.
+        let k0 = (100u8..=255).map(ident).find(|k| k.member_id() < o.member_id()).expect("a key below the owner");
+        let mal = &members[0];
+        let mut evil = base.clone();
+        let e = evil.signed_entry(mal, new_member(&k0, "k0"));
+        evil.members.insert(e.id, e);
+        let e = evil.signed_entry(&k0, new_member(mal, "m"));
+        evil.members.insert(e.id, e);
+        for m in &members[1..] {
+            let e = evil.signed_entry(&k0, new_member(m, "m"));
+            evil.members.insert(e.id, e);
+        }
+        let (mut a, mut b) = (honest.clone(), evil.clone());
+        a.merge(&evil).unwrap();
+        b.merge(&honest).unwrap();
+        assert_eq!(a, b);
+        for m in &members {
+            assert!(a.is_member(&m.member_id()), "{} deleted", m.member_id().tag());
+        }
+        assert!(a.members.values().all(|e| a.verify_entry(e)));
+    }
+
     fn pair() -> (Identity, CommunityState) {
         let o = ident(1);
         (ident(1), CommunityState::create("c", &o, true))
@@ -662,6 +760,19 @@ mod tests {
         let mut other_owner = m.clone();
         other_owner.owner = evil.member_id();
         assert!(m.merge(&other_owner).is_err(), "another owner");
+        // The same id with the owner swapped and the owner entry re-signed: the id no longer
+        // matches the owner, so it is refused (load and merge).
+        let mut fork = CommunityState::create_as("c", &evil, "evil", true);
+        fork.id = m.id;
+        assert!(!fork.id_matches_owner());
+        // Same owner and id, but a different nonce.
+        let mut renonced = m.clone();
+        renonced.nonce[0] ^= 1;
+        assert!(m.clone().merge(&renonced).is_err());
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.json");
+        fork.save_atomic(&p).unwrap();
+        assert!(CommunityState::load(&p).is_err(), "id not derived from the owner");
     }
 
     #[test]
@@ -692,10 +803,10 @@ mod tests {
         assert!(m.merge(&view).unwrap());
         assert_eq!(m.secret_hex, secret, "merging a public view keeps the secret");
         assert_eq!(m.members.len(), 2);
-        // A state that has no secret takes one when it is offered.
+        // A state without a secret does not take one from a peer.
         let mut blind = view.clone();
         blind.merge(&base).unwrap();
-        assert_eq!(blind.secret_hex, secret);
+        assert!(blind.secret_hex.is_none());
     }
 
     #[test]
@@ -706,13 +817,15 @@ mod tests {
         for n in 2..=150u8 {
             // Chains of several admitters, so the entries differ in who signed.
             let by = &ids[(n as usize - 2) / 3];
-            let name = "é".repeat(MAX_NAME_CHARS); // the longest name: 32 chars, 64 bytes
+            // Worst case in JSON: 22 quotes (2 bytes each escaped) + 10 four-byte chars = 84 bytes.
+            let name = format!("{}{}", "\"".repeat(22), "🦀".repeat(10));
             let m = ident(n);
             c.admit(by, NewMember { id: m.member_id(), name, can_host: true, door: m.door_id(), via_invite: Some(InviteId([n; 8])) })
                 .unwrap();
             ids.push(m);
         }
         assert_eq!(c.members.len(), 150);
+        assert!(c.members.values().filter(|e| e.id != c.owner).all(|e| e.name.chars().count() == 32 && serde_json::to_string(&e.name).unwrap().len() == 86));
         assert!(c.members.values().all(|e| c.verify_entry(e)));
         // Same serializer and length-prefixed JSON framing as `proto::write_msg`, in an
         // envelope tagged like a CtlMsg.
