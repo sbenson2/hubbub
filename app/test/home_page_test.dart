@@ -134,7 +134,7 @@ void main() {
     });
   }
 
-  testWidgets('without_a_community_file_the_import_prompt_shows', (tester) async {
+  testWidgets('without_a_community_file_no_import_path_shows', (tester) async {
     final idle = NodeController();
     addTearDown(idle.dispose);
     await tester.pumpWidget(MaterialApp(
@@ -153,8 +153,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('No community yet'), findsOneWidget);
-    expect(find.text('Import community file'), findsOneWidget);
-    expect(find.byTooltip('Import community file'), findsOneWidget);
+    expect(find.text('Import community file'), findsNothing);
+    expect(find.byTooltip('Add a Server'), findsOneWidget);
   }, skip: kIsWeb); // The check reads the file system.
 
   testWidgets('room_signals_keep_their_hubbub_log_lines', (tester) async {

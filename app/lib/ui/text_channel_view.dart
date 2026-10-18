@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../text_controller.dart';
 import 'avatar.dart';
 import 'theme.dart';
+import 'user_panel.dart';
 
 /// Consecutive messages from one author within this window share one header.
 const groupWindow = Duration(minutes: 7);
@@ -82,6 +83,7 @@ class TextChannelView extends StatelessWidget {
     required this.nameOf,
     required this.online,
     this.clock,
+    this.onInvite,
   });
 
   final String channel;
@@ -93,6 +95,9 @@ class TextChannelView extends StatelessWidget {
   /// Whether a host is up; without one, messages wait and a banner says so.
   final bool online;
   final DateTime Function()? clock;
+
+  /// When given, an empty channel's welcome card offers "Invite your friends".
+  final VoidCallback? onInvite;
 
   @override
   Widget build(BuildContext context) {
@@ -108,6 +113,7 @@ class TextChannelView extends StatelessWidget {
               reachedStart: text.reachedStart(channel),
               nameOf: nameOf,
               now: (clock ?? DateTime.now)(),
+              onInvite: onInvite,
             ),
           ),
         ),
@@ -130,8 +136,10 @@ class _MessageList extends StatelessWidget {
     required this.reachedStart,
     required this.nameOf,
     required this.now,
+    this.onInvite,
   });
 
+  final VoidCallback? onInvite;
   final String channel;
   final List<MessageRow> rows;
   final bool reachedStart;
@@ -148,7 +156,7 @@ class _MessageList extends StatelessWidget {
       itemCount: count,
       itemBuilder: (context, i) {
         final index = rows.length - 1 - i;
-        if (index < 0) return _ChannelWelcome(channel: channel);
+        if (index < 0) return _ChannelWelcome(channel: channel, onInvite: rows.isEmpty ? onInvite : null);
         final row = rows[index];
         return switch (row) {
           DayDivider(:final day) => _DayDividerView(label: dayDividerLabel(day)),
@@ -166,9 +174,10 @@ class _MessageList extends StatelessWidget {
 }
 
 class _ChannelWelcome extends StatelessWidget {
-  const _ChannelWelcome({required this.channel});
+  const _ChannelWelcome({required this.channel, this.onInvite});
 
   final String channel;
+  final VoidCallback? onInvite;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -192,6 +201,18 @@ class _ChannelWelcome extends StatelessWidget {
           const SizedBox(height: 8),
           Text('This is the start of the #$channel channel.',
               style: HubText.message.copyWith(color: HubColors.interactive)),
+          if (onInvite != null) ...[
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: HubButton(
+                label: 'Invite your friends',
+                color: HubColors.green,
+                hoverColor: const Color(0xFF1A7F44),
+                onPressed: onInvite,
+              ),
+            ),
+          ],
         ]),
       );
 }
