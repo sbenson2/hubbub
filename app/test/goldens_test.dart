@@ -13,7 +13,8 @@ import 'support/fakes.dart';
 import 'support/fonts.dart';
 
 /// Screenshots of the shell at 1280×800 with fake data. Web test runs cannot load the
-/// bundled fonts, so these run on the native tester only:
+/// bundled fonts, so these run on the native tester only. The goldens are rendered on
+/// Windows, the dev machine; other hosts antialias text differently (about 3% of pixels):
 ///   flutter test --update-goldens test/goldens_test.dart
 void main() {
   setUpAll(() async {

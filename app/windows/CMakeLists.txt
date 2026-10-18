@@ -106,3 +106,9 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# The media server a hosting desktop runs, next to the executable (see bundledLiveKit()
+# in lib/main.dart). Fetch it with tools/fetch-livekit.sh windows amd64.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/livekit/windows-amd64/livekit-server.exe"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)

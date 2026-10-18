@@ -12,10 +12,17 @@ import 'ui/theme.dart';
 
 /// Where the bundled livekit-server lives, or null when this build has none.
 String? bundledLiveKit() {
-  if (!Platform.isMacOS) return null;
-  // <App>.app/Contents/MacOS/<exe> -> <App>.app/Contents/Resources/livekit-server
   final exe = File(Platform.resolvedExecutable);
-  final bin = File('${exe.parent.parent.path}/Resources/livekit-server');
+  final File bin;
+  if (Platform.isMacOS) {
+    // <App>.app/Contents/MacOS/<exe> -> <App>.app/Contents/Resources/livekit-server
+    bin = File('${exe.parent.parent.path}/Resources/livekit-server');
+  } else if (Platform.isWindows) {
+    // Installed next to hubbub.exe by windows/CMakeLists.txt.
+    bin = File('${exe.parent.path}\\livekit-server.exe');
+  } else {
+    return null;
+  }
   return bin.existsSync() ? bin.path : null;
 }
 

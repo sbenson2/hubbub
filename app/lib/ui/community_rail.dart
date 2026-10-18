@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'theme.dart';
@@ -187,34 +189,45 @@ class _ImportGlyph extends StatelessWidget {
   Widget build(BuildContext context) => const Icon(Icons.add_rounded, size: 26);
 }
 
-/// Hubbub's own mark: a speech bubble holding three sound bars.
+/// Hubbub's own mark, as in the app icon: three heads whose shoulders join into one
+/// speech bubble.
 class _HubbubMark extends StatelessWidget {
   const _HubbubMark();
 
   @override
   Widget build(BuildContext context) =>
-      CustomPaint(size: const Size(28, 28), painter: _MarkPainter());
+      CustomPaint(size: const Size(28, 24), painter: _MarkPainter());
 }
 
+/// Circles and corners fitted to the 1254 px icon master (docs/brand/hubbub-icon.png),
+/// in its pixel coordinates; the symbol spans x 180–1073 and y 254–1016 there.
 class _MarkPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size s) {
-    final w = s.width, h = s.height;
-    final bubble = Path()
-      ..addRRect(RRect.fromLTRBR(0, h * 0.06, w, h * 0.78, Radius.circular(w * 0.26)))
-      ..moveTo(w * 0.22, h * 0.70)
-      ..lineTo(w * 0.16, h * 0.98)
-      ..lineTo(w * 0.48, h * 0.74)
-      ..close();
-    canvas.drawPath(bubble, Paint()..color = HubColors.white);
-    final bar = Paint()..color = HubColors.rail;
-    final bw = w * 0.11;
-    for (final (x, top, bottom) in [(0.30, 0.32, 0.54), (0.50, 0.22, 0.64), (0.70, 0.32, 0.54)]) {
-      canvas.drawRRect(
-        RRect.fromLTRBR(w * x - bw / 2, h * top, w * x + bw / 2, h * bottom, Radius.circular(bw / 2)),
-        bar,
-      );
+    const left = 180.0, top = 254.0, width = 893.0, height = 762.0;
+    final k = math.min(s.width / width, s.height / height);
+    canvas
+      ..translate((s.width - width * k) / 2, (s.height - height * k) / 2)
+      ..scale(k)
+      ..translate(-left, -top);
+    final paint = Paint()..color = HubColors.white;
+    // Heads, then the shoulders.
+    for (final (x, y, r) in [
+      (343.0, 452.0, 107.0), (626.0, 392.0, 138.0), (910.0, 455.0, 108.0),
+      (343.0, 714.0, 157.0), (626.0, 684.0, 169.0), (910.0, 714.0, 157.0),
+    ]) {
+      canvas.drawCircle(Offset(x, y), r, paint);
     }
+    // The bubble's body under the shoulders, and its tail.
+    const corner = Radius.elliptical(219, 157);
+    canvas.drawRRect(
+      RRect.fromLTRBAndCorners(180, 714, 1073, 902, bottomLeft: corner, bottomRight: corner),
+      paint,
+    );
+    canvas.drawPath(
+      Path()..addPolygon(const [Offset(346, 890), Offset(500, 902), Offset(293, 1016)], true),
+      paint,
+    );
   }
 
   @override
