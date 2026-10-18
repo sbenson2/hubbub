@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
 use iroh::EndpointAddr;
 use serde::Serialize;
@@ -35,6 +35,7 @@ use hosting::media_actor;
 use crate::community::{CommunityState, NewMember};
 use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
+use crate::invite::Invite;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::{LkPorts, MediaHost};
 use crate::media_shared::SharedMedia;
@@ -251,6 +252,35 @@ impl Node {
     /// The current community state, secret included (the door hands it to a new member).
     pub(crate) fn state(&self) -> Arc<CommunityState> {
         self.inner.community()
+    }
+
+    /// The server's name.
+    pub fn community_name(&self) -> String {
+        self.inner.community().name.clone()
+    }
+
+    /// Whether this node's member created the server.
+    pub fn is_owner(&self) -> bool {
+        self.inner.community().owner == self.inner.me
+    }
+
+    /// Signs an invite link to this server. `expires_in_min` and `max_uses` of 0 mean never
+    /// and unlimited. Our own door goes first, then up to two other members' doors.
+    pub fn invite_create(&self, expires_in_min: u32, max_uses: u8) -> String {
+        let state = self.inner.community();
+        let others: Vec<MemberId> =
+            state.members.values().filter(|m| m.id != self.inner.me).map(|m| m.door).collect();
+        Invite::create(&self.inner.identity, &state, expires_in_min, max_uses, &others).to_link()
+    }
+
+    /// Revokes the invite `link` for the whole server; every member learns of it.
+    pub fn invite_revoke(&self, link: &str) -> Result<()> {
+        let invite = Invite::parse(link)?;
+        ensure!(invite.cid == self.community_id(), "that invite is for another server");
+        let mut next = (*self.inner.community()).clone();
+        next.revoke(invite.invite_id);
+        self.inner.apply_state(&next)?;
+        Ok(())
     }
 
     /// Every member of the community with its name, this node included.

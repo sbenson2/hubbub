@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/hub_controller.dart';
+import 'package:hubbub/links.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
 import 'package:hubbub/ui/dialogs/invite_dialog.dart';
 import 'package:hubbub/ui/home_page.dart';
@@ -52,7 +53,7 @@ void main() {
         tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
   }
 
-  Future<void> pump(WidgetTester tester) async {
+  Future<void> pump(WidgetTester tester, {LinkSource? links}) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -62,10 +63,37 @@ void main() {
         hub: controller,
         room: room,
         loadConfig: () => throw StateError('a hub needs no config'),
+        linkSource: links,
       ),
     ));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('a_launch_link_opens_the_join_dialog_for_it', (tester) async {
+    arrange(tester);
+    hub.scriptedPreview = const AppInvitePreview(cid: 'x', name: 'Quiet Club', expiresMin: 0);
+    final links = FakeLinks(initialLink: 'hubbub://join/x');
+    await pump(tester, links: links);
+
+    expect(find.textContaining('Quiet Club'), findsWidgets);
+    expect(dialogField, findsOneWidget);
+  });
+
+  testWidgets('a_link_before_a_name_waits_for_the_name', (tester) async {
+    arrange(tester, name: '');
+    hub.scriptedPreview = const AppInvitePreview(cid: 'x', name: 'Quiet Club', expiresMin: 0);
+    final links = FakeLinks(initialLink: 'hubbub://join/x');
+    await pump(tester, links: links);
+
+    expect(find.text('What should everyone call you?'), findsOneWidget);
+    expect(find.textContaining('Quiet Club'), findsNothing);
+    await tester.enterText(dialogField, 'Ada');
+    await tester.pump();
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Quiet Club'), findsWidgets);
+  });
 
   testWidgets('first_run_asks_for_a_name_and_saves_it', (tester) async {
     arrange(tester, name: '');

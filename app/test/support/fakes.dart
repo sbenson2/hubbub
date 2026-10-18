@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:hubbub/hub_api.dart';
+import 'package:hubbub/links.dart';
 import 'package:hubbub/node_controller.dart';
 import 'package:hubbub/room_adapter.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
@@ -266,4 +267,20 @@ class FakeHub implements HubApi {
 
   @override
   Future<void> shutdown() async => calls.add('shutdown');
+}
+
+/// A link source the test feeds: [initial] is the launch link, [send] a link to the running app.
+class FakeLinks implements LinkSource {
+  FakeLinks({this.initialLink});
+
+  final String? initialLink;
+  final _stream = StreamController<String>.broadcast();
+
+  void send(String link) => _stream.add(link);
+
+  @override
+  Future<String?> initial() async => initialLink;
+
+  @override
+  Stream<String> get stream => _stream.stream;
 }

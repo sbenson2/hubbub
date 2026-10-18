@@ -2,42 +2,10 @@ import 'dart:async';
 
 import 'node_controller.dart';
 
-/// One server this app is a member of.
-class AppCommunity {
-  const AppCommunity({required this.cid, required this.name, required this.isOwner});
-
-  final String cid;
-  final String name;
-  final bool isOwner;
-
-  @override
-  int get hashCode => Object.hash(cid, name, isOwner);
-
-  @override
-  bool operator ==(Object other) =>
-      other is AppCommunity && cid == other.cid && name == other.name && isOwner == other.isOwner;
-}
-
-/// What a pasted invite says before it is accepted.
-class AppInvitePreview {
-  const AppInvitePreview({required this.cid, required this.name, required this.expiresMin});
-
-  final String cid;
-  final String name;
-
-  /// Minutes until the invite expires; 0 = never.
-  final int expiresMin;
-
-  @override
-  int get hashCode => Object.hash(cid, name, expiresMin);
-
-  @override
-  bool operator ==(Object other) =>
-      other is AppInvitePreview &&
-      cid == other.cid &&
-      name == other.name &&
-      expiresMin == other.expiresMin;
-}
+// The generated types are the app's own: one server, and what an invite says before it is
+// accepted (`expiresMin` is the minutes until it expires; 0 = never).
+export 'src/rust/api/hubbub.dart' show AppCommunity, AppInvitePreview;
+import 'src/rust/api/hubbub.dart' show AppCommunity, AppInvitePreview;
 
 /// Progress of joining a server from an invite link.
 sealed class JoinEvent {

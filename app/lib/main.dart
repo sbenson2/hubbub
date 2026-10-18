@@ -4,6 +4,9 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'frb_hub.dart';
+import 'hub_controller.dart';
+import 'links.dart';
 import 'node_controller.dart';
 import 'room_adapter.dart';
 import 'src/rust/api/hubbub.dart';
@@ -27,6 +30,7 @@ String? bundledLiveKit() {
 }
 
 /// Desktops can host when a LiveKit server is bundled; everything else cannot.
+/// The single-server config of the pre-hub path; the hub does not use it.
 Future<AppNodeConfig> nodeConfig() async {
   final dir = await getApplicationSupportDirectory();
   final bin = bundledLiveKit();
@@ -38,26 +42,40 @@ Future<AppNodeConfig> nodeConfig() async {
   );
 }
 
+/// Where the hub keeps its data: `HUBBUB_ROOT` when set (a second instance on one machine),
+/// else the app support folder.
+Future<String> hubRoot() async {
+  final env = Platform.environment['HUBBUB_ROOT'];
+  if (env != null && env.isNotEmpty) return env;
+  return (await getApplicationSupportDirectory()).path;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initCore();
-  final controller = NodeController();
+  final hub = HubController(FrbHub());
   final room = LiveKitRoomAdapter();
-  _installExitHooks(controller);
-  runApp(HubbubApp(controller: controller, room: room));
+  try {
+    await hub.open(await hubRoot(), canHost: bundledLiveKit() != null, livekitBin: bundledLiveKit());
+  } catch (e) {
+    runApp(StartFailed(error: '$e'));
+    return;
+  }
+  _installExitHooks(hub);
+  runApp(HubbubApp(hub: hub, room: room, links: AppLinkSource()));
 }
 
-/// Stops the node (and its livekit-server child) before the process ends: destructors
+/// Stops every server (and the livekit-server child) before the process ends: destructors
 /// do not run on exit, so without this the media server is orphaned.
-void _installExitHooks(NodeController controller) {
+void _installExitHooks(HubController hub) {
   AppLifecycleListener(onExitRequested: () async {
-    await controller.shutdown();
+    await hub.shutdown();
     return AppExitResponse.exit;
   });
   for (final signal in [ProcessSignal.sigint, if (!Platform.isWindows) ProcessSignal.sigterm]) {
     try {
       signal.watch().listen((_) async {
-        await controller.shutdown();
+        await hub.shutdown();
         exit(0);
       });
     } on SignalException {
@@ -67,10 +85,11 @@ void _installExitHooks(NodeController controller) {
 }
 
 class HubbubApp extends StatelessWidget {
-  const HubbubApp({super.key, required this.controller, required this.room});
+  const HubbubApp({super.key, required this.hub, required this.room, this.links});
 
-  final NodeController controller;
+  final HubController hub;
   final RoomAdapter room;
+  final LinkSource? links;
 
   @override
   Widget build(BuildContext context) {
@@ -78,7 +97,29 @@ class HubbubApp extends StatelessWidget {
       title: 'Hubbub',
       debugShowCheckedModeBanner: false,
       theme: hubbubTheme(),
-      home: HomePage(controller: controller, room: room, loadConfig: nodeConfig),
+      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links),
     );
   }
+}
+
+/// Shown when the hub cannot open, e.g. another Hubbub already has the data folder.
+class StartFailed extends StatelessWidget {
+  const StartFailed({super.key, required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'Hubbub',
+        debugShowCheckedModeBanner: false,
+        theme: hubbubTheme(),
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Hubbub could not start.\n\n$error', textAlign: TextAlign.center),
+            ),
+          ),
+        ),
+      );
 }

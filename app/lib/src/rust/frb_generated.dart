@@ -67,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -968601182;
+  int get rustContentHash => 22959219;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -79,9 +79,48 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<String> crateApiHubbubCommunityCreate({required String name});
+
+  List<AppCommunity> crateApiHubbubHubCommunities();
+
+  Stream<AppJoinEvent> crateApiHubbubHubJoin({required String link});
+
+  void crateApiHubbubHubJoinCancel();
+
+  Future<void> crateApiHubbubHubLeave({required String cid});
+
+  String crateApiHubbubHubMemberId();
+
+  String crateApiHubbubHubMemberTag();
+
+  AppNode crateApiHubbubHubNode({required String cid});
+
+  Future<void> crateApiHubbubHubOpen({
+    required String root,
+    required bool canHost,
+    String? livekitBin,
+  });
+
+  Future<void> crateApiHubbubHubShutdown();
+
+  AppInvitePreview? crateApiHubbubInviteParse({required String text});
+
   AppChannels crateApiHubbubNodeChannels({required AppNode n});
 
+  String crateApiHubbubNodeCommunityName({required AppNode n});
+
   Stream<AppNodeEvent> crateApiHubbubNodeEvents({required AppNode n});
+
+  String crateApiHubbubNodeInviteCreate({
+    required AppNode n,
+    required int expiresMin,
+    required int maxUses,
+  });
+
+  void crateApiHubbubNodeInviteRevoke({
+    required AppNode n,
+    required String link,
+  });
 
   String crateApiHubbubNodeMemberId({required AppNode n});
 
@@ -110,6 +149,10 @@ abstract class RustLibApi extends BaseApi {
 
   double crateApiHubbubProcessCpuPercent();
 
+  String crateApiHubbubProfileName();
+
+  void crateApiHubbubSetProfileName({required String name});
+
   Future<AppNode> crateApiHubbubStartNode({required AppNodeConfig cfg});
 
   RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_AppNode;
@@ -128,6 +171,286 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
+  Future<String> crateApiHubbubCommunityCreate({required String name}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(name, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubCommunityCreateConstMeta,
+        argValues: [name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubCommunityCreateConstMeta =>
+      const TaskConstMeta(debugName: "community_create", argNames: ["name"]);
+
+  @override
+  List<AppCommunity> crateApiHubbubHubCommunities() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_app_community,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubCommunitiesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubCommunitiesConstMeta =>
+      const TaskConstMeta(debugName: "hub_communities", argNames: []);
+
+  @override
+  Stream<AppJoinEvent> crateApiHubbubHubJoin({required String link}) {
+    final sink = RustStreamSink<AppJoinEvent>();
+    handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(link, serializer);
+          sse_encode_StreamSink_app_join_event_Sse(sink, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubJoinConstMeta,
+        argValues: [link, sink],
+        apiImpl: this,
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubJoinConstMeta =>
+      const TaskConstMeta(debugName: "hub_join", argNames: ["link", "sink"]);
+
+  @override
+  void crateApiHubbubHubJoinCancel() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHubbubHubJoinCancelConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubJoinCancelConstMeta =>
+      const TaskConstMeta(debugName: "hub_join_cancel", argNames: []);
+
+  @override
+  Future<void> crateApiHubbubHubLeave({required String cid}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(cid, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubLeaveConstMeta,
+        argValues: [cid],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubLeaveConstMeta =>
+      const TaskConstMeta(debugName: "hub_leave", argNames: ["cid"]);
+
+  @override
+  String crateApiHubbubHubMemberId() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubMemberIdConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubMemberIdConstMeta =>
+      const TaskConstMeta(debugName: "hub_member_id", argNames: []);
+
+  @override
+  String crateApiHubbubHubMemberTag() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubMemberTagConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubMemberTagConstMeta =>
+      const TaskConstMeta(debugName: "hub_member_tag", argNames: []);
+
+  @override
+  AppNode crateApiHubbubHubNode({required String cid}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(cid, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAppNode,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubNodeConstMeta,
+        argValues: [cid],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubNodeConstMeta =>
+      const TaskConstMeta(debugName: "hub_node", argNames: ["cid"]);
+
+  @override
+  Future<void> crateApiHubbubHubOpen({
+    required String root,
+    required bool canHost,
+    String? livekitBin,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(root, serializer);
+          sse_encode_bool(canHost, serializer);
+          sse_encode_opt_String(livekitBin, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubHubOpenConstMeta,
+        argValues: [root, canHost, livekitBin],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubOpenConstMeta => const TaskConstMeta(
+    debugName: "hub_open",
+    argNames: ["root", "canHost", "livekitBin"],
+  );
+
+  @override
+  Future<void> crateApiHubbubHubShutdown() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHubbubHubShutdownConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubHubShutdownConstMeta =>
+      const TaskConstMeta(debugName: "hub_shutdown", argNames: []);
+
+  @override
+  AppInvitePreview? crateApiHubbubInviteParse({required String text}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(text, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_app_invite_preview,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHubbubInviteParseConstMeta,
+        argValues: [text],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubInviteParseConstMeta =>
+      const TaskConstMeta(debugName: "invite_parse", argNames: ["text"]);
+
+  @override
   AppChannels crateApiHubbubNodeChannels({required AppNode n}) {
     return handler.executeSync(
       SyncTask(
@@ -137,7 +460,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             n,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 1)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_app_channels,
@@ -154,6 +477,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "node_channels", argNames: ["n"]);
 
   @override
+  String crateApiHubbubNodeCommunityName({required AppNode n}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAppNode(
+            n,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHubbubNodeCommunityNameConstMeta,
+        argValues: [n],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubNodeCommunityNameConstMeta =>
+      const TaskConstMeta(debugName: "node_community_name", argNames: ["n"]);
+
+  @override
   Stream<AppNodeEvent> crateApiHubbubNodeEvents({required AppNode n}) {
     final sink = RustStreamSink<AppNodeEvent>();
     handler.executeSync(
@@ -165,7 +514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_StreamSink_app_node_event_Sse(sink, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -183,6 +532,74 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "node_events", argNames: ["n", "sink"]);
 
   @override
+  String crateApiHubbubNodeInviteCreate({
+    required AppNode n,
+    required int expiresMin,
+    required int maxUses,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAppNode(
+            n,
+            serializer,
+          );
+          sse_encode_u_32(expiresMin, serializer);
+          sse_encode_u_32(maxUses, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHubbubNodeInviteCreateConstMeta,
+        argValues: [n, expiresMin, maxUses],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubNodeInviteCreateConstMeta =>
+      const TaskConstMeta(
+        debugName: "node_invite_create",
+        argNames: ["n", "expiresMin", "maxUses"],
+      );
+
+  @override
+  void crateApiHubbubNodeInviteRevoke({
+    required AppNode n,
+    required String link,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAppNode(
+            n,
+            serializer,
+          );
+          sse_encode_String(link, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubNodeInviteRevokeConstMeta,
+        argValues: [n, link],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubNodeInviteRevokeConstMeta =>
+      const TaskConstMeta(
+        debugName: "node_invite_revoke",
+        argNames: ["n", "link"],
+      );
+
+  @override
   String crateApiHubbubNodeMemberId({required AppNode n}) {
     return handler.executeSync(
       SyncTask(
@@ -192,7 +609,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             n,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -218,7 +635,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             n,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -244,7 +661,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             n,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_app_member,
@@ -279,7 +696,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 20,
             port: port_,
           );
         },
@@ -312,7 +729,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 21,
             port: port_,
           );
         },
@@ -349,7 +766,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 22,
             port: port_,
           );
         },
@@ -387,7 +804,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 23,
             port: port_,
           );
         },
@@ -414,7 +831,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_f_32,
@@ -431,6 +848,51 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "process_cpu_percent", argNames: []);
 
   @override
+  String crateApiHubbubProfileName() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubProfileNameConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubProfileNameConstMeta =>
+      const TaskConstMeta(debugName: "profile_name", argNames: []);
+
+  @override
+  void crateApiHubbubSetProfileName({required String name}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(name, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiHubbubSetProfileNameConstMeta,
+        argValues: [name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHubbubSetProfileNameConstMeta =>
+      const TaskConstMeta(debugName: "set_profile_name", argNames: ["name"]);
+
+  @override
   Future<AppNode> crateApiHubbubStartNode({required AppNodeConfig cfg}) {
     return handler.executeNormal(
       NormalTask(
@@ -440,7 +902,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 27,
             port: port_,
           );
         },
@@ -501,6 +963,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<AppJoinEvent> dco_decode_StreamSink_app_join_event_Sse(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
   RustStreamSink<AppNodeEvent> dco_decode_StreamSink_app_node_event_Sse(
     dynamic raw,
   ) {
@@ -524,6 +994,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       text: dco_decode_list_String(arr[0]),
       voice: dco_decode_list_String(arr[1]),
     );
+  }
+
+  @protected
+  AppCommunity dco_decode_app_community(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return AppCommunity(
+      cid: dco_decode_String(arr[0]),
+      name: dco_decode_String(arr[1]),
+      isOwner: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
+  AppInvitePreview dco_decode_app_invite_preview(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return AppInvitePreview(
+      cid: dco_decode_String(arr[0]),
+      name: dco_decode_String(arr[1]),
+      expiresMin: dco_decode_u_32(arr[2]),
+    );
+  }
+
+  @protected
+  AppJoinEvent dco_decode_app_join_event(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return AppJoinEvent_Trying();
+      case 1:
+        return AppJoinEvent_Offline();
+      case 2:
+        return AppJoinEvent_Denied(reason: dco_decode_String(raw[1]));
+      case 3:
+        return AppJoinEvent_Joined(cid: dco_decode_String(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -574,6 +1087,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return AppNodeEvent_Text(
           message: dco_decode_box_autoadd_app_text_message(raw[1]),
         );
+      case 4:
+        return AppNodeEvent_MembersChanged();
       default:
         throw Exception("unreachable");
     }
@@ -618,6 +1133,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AppInvitePreview dco_decode_box_autoadd_app_invite_preview(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_app_invite_preview(raw);
+  }
+
+  @protected
   AppNodeConfig dco_decode_box_autoadd_app_node_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_app_node_config(raw);
@@ -642,6 +1163,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<AppCommunity> dco_decode_list_app_community(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_app_community).toList();
+  }
+
+  @protected
   List<AppMember> dco_decode_list_app_member(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_app_member).toList();
@@ -663,6 +1190,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  AppInvitePreview? dco_decode_opt_box_autoadd_app_invite_preview(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_app_invite_preview(raw);
   }
 
   @protected
@@ -739,6 +1272,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RustStreamSink<AppJoinEvent> sse_decode_StreamSink_app_join_event_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
   RustStreamSink<AppNodeEvent> sse_decode_StreamSink_app_node_event_Sse(
     SseDeserializer deserializer,
   ) {
@@ -759,6 +1300,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_text = sse_decode_list_String(deserializer);
     var var_voice = sse_decode_list_String(deserializer);
     return AppChannels(text: var_text, voice: var_voice);
+  }
+
+  @protected
+  AppCommunity sse_decode_app_community(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_cid = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_isOwner = sse_decode_bool(deserializer);
+    return AppCommunity(cid: var_cid, name: var_name, isOwner: var_isOwner);
+  }
+
+  @protected
+  AppInvitePreview sse_decode_app_invite_preview(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_cid = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_expiresMin = sse_decode_u_32(deserializer);
+    return AppInvitePreview(
+      cid: var_cid,
+      name: var_name,
+      expiresMin: var_expiresMin,
+    );
+  }
+
+  @protected
+  AppJoinEvent sse_decode_app_join_event(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return AppJoinEvent_Trying();
+      case 1:
+        return AppJoinEvent_Offline();
+      case 2:
+        var var_reason = sse_decode_String(deserializer);
+        return AppJoinEvent_Denied(reason: var_reason);
+      case 3:
+        var var_cid = sse_decode_String(deserializer);
+        return AppJoinEvent_Joined(cid: var_cid);
+      default:
+        throw UnimplementedError('');
+    }
   }
 
   @protected
@@ -810,6 +1394,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 3:
         var var_message = sse_decode_box_autoadd_app_text_message(deserializer);
         return AppNodeEvent_Text(message: var_message);
+      case 4:
+        return AppNodeEvent_MembersChanged();
       default:
         throw UnimplementedError('');
     }
@@ -862,6 +1448,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AppInvitePreview sse_decode_box_autoadd_app_invite_preview(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_app_invite_preview(deserializer));
+  }
+
+  @protected
   AppNodeConfig sse_decode_box_autoadd_app_node_config(
     SseDeserializer deserializer,
   ) {
@@ -891,6 +1485,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<AppCommunity> sse_decode_list_app_community(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <AppCommunity>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_app_community(deserializer));
     }
     return ans_;
   }
@@ -934,6 +1542,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  AppInvitePreview? sse_decode_opt_box_autoadd_app_invite_preview(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_app_invite_preview(deserializer));
     } else {
       return null;
     }
@@ -1023,6 +1644,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_StreamSink_app_join_event_Sse(
+    RustStreamSink<AppJoinEvent> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_app_join_event,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_StreamSink_app_node_event_Sse(
     RustStreamSink<AppNodeEvent> self,
     SseSerializer serializer,
@@ -1050,6 +1688,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_String(self.text, serializer);
     sse_encode_list_String(self.voice, serializer);
+  }
+
+  @protected
+  void sse_encode_app_community(AppCommunity self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.cid, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_bool(self.isOwner, serializer);
+  }
+
+  @protected
+  void sse_encode_app_invite_preview(
+    AppInvitePreview self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.cid, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_u_32(self.expiresMin, serializer);
+  }
+
+  @protected
+  void sse_encode_app_join_event(AppJoinEvent self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case AppJoinEvent_Trying():
+        sse_encode_i_32(0, serializer);
+      case AppJoinEvent_Offline():
+        sse_encode_i_32(1, serializer);
+      case AppJoinEvent_Denied(reason: final reason):
+        sse_encode_i_32(2, serializer);
+        sse_encode_String(reason, serializer);
+      case AppJoinEvent_Joined(cid: final cid):
+        sse_encode_i_32(3, serializer);
+        sse_encode_String(cid, serializer);
+    }
   }
 
   @protected
@@ -1095,6 +1769,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case AppNodeEvent_Text(message: final message):
         sse_encode_i_32(3, serializer);
         sse_encode_box_autoadd_app_text_message(message, serializer);
+      case AppNodeEvent_MembersChanged():
+        sse_encode_i_32(4, serializer);
     }
   }
 
@@ -1133,6 +1809,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_app_invite_preview(
+    AppInvitePreview self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_app_invite_preview(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_app_node_config(
     AppNodeConfig self,
     SseSerializer serializer,
@@ -1162,6 +1847,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_app_community(
+    List<AppCommunity> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_app_community(item, serializer);
     }
   }
 
@@ -1206,6 +1903,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_app_invite_preview(
+    AppInvitePreview? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_app_invite_preview(self, serializer);
     }
   }
 

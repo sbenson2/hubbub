@@ -9,8 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'hubbub.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `history_messages`, `on_runtime`, `runtime`, `seed_event`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+// These functions are ignored because they are not marked as `pub`: `app_event`, `app_join_event`, `ensure_closed`, `history_messages`, `hub_slot`, `hub`, `join_slot`, `minutes_left`, `now_min`, `on_runtime`, `parse_cid`, `runtime`, `seed_event`
 
 Future<AppNode> startNode({required AppNodeConfig cfg}) =>
     RustLib.instance.api.crateApiHubbubStartNode(cfg: cfg);
@@ -63,6 +62,80 @@ Future<List<AppTextMessage>> nodeTextHistory({
 Future<void> nodeShutdown({required AppNode n}) =>
     RustLib.instance.api.crateApiHubbubNodeShutdown(n: n);
 
+/// The server's name.
+String nodeCommunityName({required AppNode n}) =>
+    RustLib.instance.api.crateApiHubbubNodeCommunityName(n: n);
+
+/// A signed invite link to this server. 0 for `expires_min` or `max_uses` means never and
+/// unlimited; `max_uses` above 255 counts as 255.
+String nodeInviteCreate({
+  required AppNode n,
+  required int expiresMin,
+  required int maxUses,
+}) => RustLib.instance.api.crateApiHubbubNodeInviteCreate(
+  n: n,
+  expiresMin: expiresMin,
+  maxUses: maxUses,
+);
+
+/// Revokes `link` for the whole server.
+void nodeInviteRevoke({required AppNode n, required String link}) =>
+    RustLib.instance.api.crateApiHubbubNodeInviteRevoke(n: n, link: link);
+
+/// Opens the hub in `root` and starts every server in it. Call once.
+Future<void> hubOpen({
+  required String root,
+  required bool canHost,
+  String? livekitBin,
+}) => RustLib.instance.api.crateApiHubbubHubOpen(
+  root: root,
+  canHost: canHost,
+  livekitBin: livekitBin,
+);
+
+String hubMemberId() => RustLib.instance.api.crateApiHubbubHubMemberId();
+
+String hubMemberTag() => RustLib.instance.api.crateApiHubbubHubMemberTag();
+
+/// The name this device gives itself in servers it creates or joins.
+String profileName() => RustLib.instance.api.crateApiHubbubProfileName();
+
+void setProfileName({required String name}) =>
+    RustLib.instance.api.crateApiHubbubSetProfileName(name: name);
+
+/// Every server this device is in.
+List<AppCommunity> hubCommunities() =>
+    RustLib.instance.api.crateApiHubbubHubCommunities();
+
+/// A handle on the running server `cid`, with its own event stream (take it once with
+/// `node_events`). The hub keeps running the node; do not `node_shutdown` it.
+AppNode hubNode({required String cid}) =>
+    RustLib.instance.api.crateApiHubbubHubNode(cid: cid);
+
+/// Makes a server owned by this device and returns its id.
+Future<String> communityCreate({required String name}) =>
+    RustLib.instance.api.crateApiHubbubCommunityCreate(name: name);
+
+/// Reads an invite from pasted text without joining; None when it holds no invite.
+AppInvitePreview? inviteParse({required String text}) =>
+    RustLib.instance.api.crateApiHubbubInviteParse(text: text);
+
+/// Joins the server `link` invites to, reporting progress on `sink`. Starting another join
+/// cancels the one running. The stream ends after Denied or Joined; any other failure is its
+/// error. `hub_join_cancel` stops it with nothing saved.
+Stream<AppJoinEvent> hubJoin({required String link}) =>
+    RustLib.instance.api.crateApiHubbubHubJoin(link: link);
+
+/// Stops the running join, if any.
+void hubJoinCancel() => RustLib.instance.api.crateApiHubbubHubJoinCancel();
+
+/// Leaves a server on this device only.
+Future<void> hubLeave({required String cid}) =>
+    RustLib.instance.api.crateApiHubbubHubLeave(cid: cid);
+
+/// Stops every server and the endpoint. Safe to call twice.
+Future<void> hubShutdown() => RustLib.instance.api.crateApiHubbubHubShutdown();
+
 double processCpuPercent() =>
     RustLib.instance.api.crateApiHubbubProcessCpuPercent();
 
@@ -85,6 +158,70 @@ class AppChannels {
           runtimeType == other.runtimeType &&
           text == other.text &&
           voice == other.voice;
+}
+
+/// One server this device is in.
+class AppCommunity {
+  final String cid;
+  final String name;
+  final bool isOwner;
+
+  const AppCommunity({
+    required this.cid,
+    required this.name,
+    required this.isOwner,
+  });
+
+  @override
+  int get hashCode => cid.hashCode ^ name.hashCode ^ isOwner.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppCommunity &&
+          runtimeType == other.runtimeType &&
+          cid == other.cid &&
+          name == other.name &&
+          isOwner == other.isOwner;
+}
+
+/// What an invite says, read without joining.
+class AppInvitePreview {
+  final String cid;
+  final String name;
+
+  /// Minutes until it expires; 0 = never. An expired invite shows 1.
+  final int expiresMin;
+
+  const AppInvitePreview({
+    required this.cid,
+    required this.name,
+    required this.expiresMin,
+  });
+
+  @override
+  int get hashCode => cid.hashCode ^ name.hashCode ^ expiresMin.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppInvitePreview &&
+          runtimeType == other.runtimeType &&
+          cid == other.cid &&
+          name == other.name &&
+          expiresMin == other.expiresMin;
+}
+
+@freezed
+sealed class AppJoinEvent with _$AppJoinEvent {
+  const AppJoinEvent._();
+
+  const factory AppJoinEvent.trying() = AppJoinEvent_Trying;
+  const factory AppJoinEvent.offline() = AppJoinEvent_Offline;
+  const factory AppJoinEvent.denied({required String reason}) =
+      AppJoinEvent_Denied;
+  const factory AppJoinEvent.joined({required String cid}) =
+      AppJoinEvent_Joined;
 }
 
 class AppMember {
@@ -158,6 +295,9 @@ sealed class AppNodeEvent with _$AppNodeEvent {
       AppNodeEvent_PeerDown;
   const factory AppNodeEvent.text({required AppTextMessage message}) =
       AppNodeEvent_Text;
+
+  /// Someone joined, or a member's name or hosting ability changed; re-read `node_members`.
+  const factory AppNodeEvent.membersChanged() = AppNodeEvent_MembersChanged;
 }
 
 /// A text message. `(from, client_id)` names it, in history and in Text events alike: each

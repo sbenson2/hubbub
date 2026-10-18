@@ -1,10 +1,14 @@
 //! Flutter-facing API over `hubbub-core`. Node work runs on a dedicated
 //! multi-thread tokio runtime because iroh needs one.
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use flutter_rust_bridge::frb;
 use hubbub_core::media_host::{LiveKitHost, LkPorts, MediaHost, NoMediaHost};
+use hubbub_core::hub::{Hub, HubConfig};
+use hubbub_core::ids::CommunityId;
+use hubbub_core::invite::{Deny, Invite};
+use hubbub_core::join::JoinEvent;
 use hubbub_core::net::{ConnKind, RelayChoice};
 use hubbub_core::node::{Node, NodeConfig, NodeEvent};
 use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -12,6 +16,8 @@ use hubbub_core::election::HostState;
 use hubbub_core::ids::MemberId;
 use hubbub_core::text::TextMessage;
 use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
 use crate::frb_generated::StreamSink;
 
@@ -83,10 +89,11 @@ pub enum AppNodeEvent {
     PeerUp { member: String, direct: bool },
     PeerDown { member: String },
     Text { message: AppTextMessage },
+    /// Someone joined, or a member's name or hosting ability changed; re-read `node_members`.
+    MembersChanged,
 }
 
-/// The app's view of a node event; None for events the app does not carry yet
-/// (`MembersChanged` until the hub API adds it).
+/// The app's view of a node event.
 fn app_event(ev: NodeEvent) -> Option<AppNodeEvent> {
     Some(match ev {
             NodeEvent::HostChanged { host, term, is_me } => {
@@ -100,13 +107,13 @@ fn app_event(ev: NodeEvent) -> Option<AppNodeEvent> {
             NodeEvent::Text { channel, term, seq, from, sent_ms, body, client_id } => AppNodeEvent::Text {
                 message: AppTextMessage { channel, term, seq, from: from.to_string(), sent_ms, body, client_id },
             },
-            NodeEvent::MembersChanged => return None,
+            NodeEvent::MembersChanged => AppNodeEvent::MembersChanged,
     })
 }
 
 #[frb(opaque)]
 pub struct AppNode {
-    node: Node,
+    node: Arc<Node>,
     /// Subscribed inside `start_node`, so no event emitted after `Node::start` is lost
     /// before Dart attaches its stream.
     events: Mutex<Option<broadcast::Receiver<NodeEvent>>>,
@@ -141,7 +148,7 @@ pub async fn start_node(cfg: AppNodeConfig) -> anyhow::Result<AppNode> {
         };
         let node = Node::start(node_cfg, media).await?;
         let events = Mutex::new(Some(node.subscribe()));
-        Ok(AppNode { node, events })
+        Ok(AppNode { node: Arc::new(node), events })
     })
     .await
 }
@@ -246,7 +253,226 @@ fn history_messages(channel: &str, stored: Vec<TextMessage>) -> Vec<AppTextMessa
 }
 
 pub async fn node_shutdown(n: AppNode) {
-    let _ = runtime().spawn(async move { n.node.shutdown().await }).await;
+    // A node of the hub is stopped by `hub_shutdown`/`hub_leave`; this stops a standalone one.
+    let _ = runtime().spawn(async move { n.node.shutdown_ref().await }).await;
+}
+
+/// The server's name.
+#[frb(sync)]
+pub fn node_community_name(n: &AppNode) -> String {
+    n.node.community_name()
+}
+
+/// A signed invite link to this server. 0 for `expires_min` or `max_uses` means never and
+/// unlimited; `max_uses` above 255 counts as 255.
+#[frb(sync)]
+pub fn node_invite_create(n: &AppNode, expires_min: u32, max_uses: u32) -> String {
+    n.node.invite_create(expires_min, max_uses.min(255) as u8)
+}
+
+/// Revokes `link` for the whole server.
+#[frb(sync)]
+pub fn node_invite_revoke(n: &AppNode, link: String) -> anyhow::Result<()> {
+    n.node.invite_revoke(&link)
+}
+
+// ---- the hub: the profile and every server ----
+
+/// One server this device is in.
+pub struct AppCommunity {
+    pub cid: String,
+    pub name: String,
+    pub is_owner: bool,
+}
+
+/// What an invite says, read without joining.
+pub struct AppInvitePreview {
+    pub cid: String,
+    pub name: String,
+    /// Minutes until it expires; 0 = never. An expired invite shows 1.
+    pub expires_min: u32,
+}
+
+/// Progress of `hub_join`. The stream ends after `Denied` or `Joined`; any other failure
+/// is the stream's error.
+pub enum AppJoinEvent {
+    Trying,
+    Offline,
+    Denied { reason: String },
+    Joined { cid: String },
+}
+
+fn hub_slot() -> &'static Mutex<Option<Arc<Hub>>> {
+    static HUB: Mutex<Option<Arc<Hub>>> = Mutex::new(None);
+    &HUB
+}
+
+fn join_slot() -> &'static Mutex<Option<AbortHandle>> {
+    static JOIN: Mutex<Option<AbortHandle>> = Mutex::new(None);
+    &JOIN
+}
+
+fn hub() -> anyhow::Result<Arc<Hub>> {
+    hub_slot().lock().unwrap().clone().ok_or_else(|| anyhow::anyhow!("the hub is not open"))
+}
+
+fn parse_cid(cid: &str) -> anyhow::Result<CommunityId> {
+    cid.parse::<CommunityId>().map_err(|e| anyhow::anyhow!("bad server id: {e}"))
+}
+
+/// Opens the hub in `root` and starts every server in it. Call once.
+pub async fn hub_open(root: String, can_host: bool, livekit_bin: Option<String>) -> anyhow::Result<()> {
+    on_runtime(async move {
+        ensure_closed()?;
+        let cfg = HubConfig {
+            can_host,
+            relay: RelayChoice::N0Default,
+            livekit_bin: livekit_bin.map(PathBuf::from),
+        };
+        let hub = Hub::open(std::path::Path::new(&root), cfg).await?;
+        *hub_slot().lock().unwrap() = Some(Arc::new(hub));
+        Ok(())
+    })
+    .await
+}
+
+fn ensure_closed() -> anyhow::Result<()> {
+    anyhow::ensure!(hub_slot().lock().unwrap().is_none(), "the hub is already open");
+    Ok(())
+}
+
+#[frb(sync)]
+pub fn hub_member_id() -> anyhow::Result<String> {
+    Ok(hub()?.member_id().to_string())
+}
+
+#[frb(sync)]
+pub fn hub_member_tag() -> anyhow::Result<String> {
+    Ok(hub()?.member_id().tag())
+}
+
+/// The name this device gives itself in servers it creates or joins.
+#[frb(sync)]
+pub fn profile_name() -> anyhow::Result<String> {
+    Ok(hub()?.profile_name())
+}
+
+#[frb(sync)]
+pub fn set_profile_name(name: String) -> anyhow::Result<()> {
+    hub()?.set_profile_name(&name)
+}
+
+/// Every server this device is in.
+#[frb(sync)]
+pub fn hub_communities() -> anyhow::Result<Vec<AppCommunity>> {
+    let hub = hub()?;
+    Ok(hub
+        .communities()
+        .into_iter()
+        .map(|(cid, name)| AppCommunity {
+            is_owner: hub.node(&cid).is_some_and(|n| n.is_owner()),
+            cid: cid.to_string(),
+            name,
+        })
+        .collect())
+}
+
+/// A handle on the running server `cid`, with its own event stream (take it once with
+/// `node_events`). The hub keeps running the node; do not `node_shutdown` it.
+#[frb(sync)]
+pub fn hub_node(cid: String) -> anyhow::Result<AppNode> {
+    let node = hub()?.node(&parse_cid(&cid)?).ok_or_else(|| anyhow::anyhow!("not in server {cid}"))?;
+    let events = Mutex::new(Some(node.subscribe()));
+    Ok(AppNode { node, events })
+}
+
+/// Makes a server owned by this device and returns its id.
+pub async fn community_create(name: String) -> anyhow::Result<String> {
+    let hub = hub()?;
+    on_runtime(async move { Ok(hub.create_community(&name).await?.to_string()) }).await
+}
+
+/// Reads an invite from pasted text without joining; None when it holds no invite.
+#[frb(sync)]
+pub fn invite_parse(text: String) -> Option<AppInvitePreview> {
+    let invite = Invite::parse(&text).ok()?;
+    Some(AppInvitePreview {
+        cid: invite.cid.to_string(),
+        name: invite.name.clone(),
+        expires_min: minutes_left(invite.expires_min, now_min()),
+    })
+}
+
+fn now_min() -> u32 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    (secs / 60) as u32
+}
+
+/// Minutes from `now` to the absolute expiry `expires_min`; 0 stays "never".
+fn minutes_left(expires_min: u32, now: u32) -> u32 {
+    if expires_min == 0 { 0 } else { expires_min.saturating_sub(now).max(1) }
+}
+
+fn app_join_event(ev: JoinEvent) -> AppJoinEvent {
+    match ev {
+        JoinEvent::Trying => AppJoinEvent::Trying,
+        JoinEvent::Offline => AppJoinEvent::Offline,
+        JoinEvent::Denied(d) => AppJoinEvent::Denied { reason: d.to_string() },
+        JoinEvent::Joined(cid) => AppJoinEvent::Joined { cid: cid.to_string() },
+    }
+}
+
+/// Joins the server `link` invites to, reporting progress on `sink`. Starting another join
+/// cancels the one running. The stream ends after Denied or Joined; any other failure is its
+/// error. `hub_join_cancel` stops it with nothing saved.
+#[frb(sync)]
+pub fn hub_join(link: String, sink: StreamSink<AppJoinEvent>) -> anyhow::Result<()> {
+    let hub = hub()?;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let join = runtime().spawn(async move { hub.join(&link, tx).await });
+    if let Some(old) = join_slot().lock().unwrap().replace(join.abort_handle()) {
+        old.abort();
+    }
+    runtime().spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if sink.add(app_join_event(ev)).is_err() {
+                join.abort();
+                return;
+            }
+        }
+        // The events are over: the join ended, failed, or was cancelled.
+        if let Ok(Err(e)) = join.await {
+            if e.downcast_ref::<Deny>().is_none() {
+                let _ = sink.add_error(e);
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Stops the running join, if any.
+#[frb(sync)]
+pub fn hub_join_cancel() {
+    if let Some(join) = join_slot().lock().unwrap().take() {
+        join.abort();
+    }
+}
+
+/// Leaves a server on this device only.
+pub async fn hub_leave(cid: String) -> anyhow::Result<()> {
+    let hub = hub()?;
+    let cid = parse_cid(&cid)?;
+    on_runtime(async move { hub.leave(&cid).await }).await
+}
+
+/// Stops every server and the endpoint. Safe to call twice.
+pub async fn hub_shutdown() {
+    hub_join_cancel();
+    let Some(hub) = hub_slot().lock().unwrap().take() else { return };
+    let _ = runtime().spawn(async move { hub.shutdown().await }).await;
 }
 
 #[frb(sync)]
@@ -280,6 +506,34 @@ mod tests {
             panic!("expected HostChanged");
         };
         assert!(is_me);
+    }
+
+    #[test]
+    fn members_changed_reaches_the_app() {
+        assert!(matches!(app_event(NodeEvent::MembersChanged), Some(AppNodeEvent::MembersChanged)));
+    }
+
+    #[test]
+    fn invite_expiry_is_minutes_left() {
+        assert_eq!(minutes_left(0, 500), 0);
+        assert_eq!(minutes_left(560, 500), 60);
+        assert_eq!(minutes_left(400, 500), 1);
+    }
+
+    #[test]
+    fn join_events_carry_ids_and_reasons() {
+        let cid = CommunityId::random();
+        let AppJoinEvent::Joined { cid: got } = app_join_event(JoinEvent::Joined(cid)) else { panic!() };
+        assert_eq!(got, cid.to_string());
+        let AppJoinEvent::Denied { reason } = app_join_event(JoinEvent::Denied(Deny::Revoked)) else { panic!() };
+        assert_eq!(reason, Deny::Revoked.to_string());
+        assert!(matches!(app_join_event(JoinEvent::Offline), AppJoinEvent::Offline));
+    }
+
+    #[test]
+    fn invite_parse_ignores_text_without_an_invite() {
+        assert!(invite_parse("hello there".into()).is_none());
+        assert!(matches!(hub(), Err(_)));
     }
 
     #[test]

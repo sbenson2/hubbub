@@ -13,6 +13,378 @@ part of 'hubbub.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$AppJoinEvent {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppJoinEvent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AppJoinEvent()';
+}
+
+
+}
+
+/// @nodoc
+class $AppJoinEventCopyWith<$Res>  {
+$AppJoinEventCopyWith(AppJoinEvent _, $Res Function(AppJoinEvent) __);
+}
+
+
+/// Adds pattern-matching-related methods to [AppJoinEvent].
+extension AppJoinEventPatterns on AppJoinEvent {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AppJoinEvent_Trying value)?  trying,TResult Function( AppJoinEvent_Offline value)?  offline,TResult Function( AppJoinEvent_Denied value)?  denied,TResult Function( AppJoinEvent_Joined value)?  joined,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying() when trying != null:
+return trying(_that);case AppJoinEvent_Offline() when offline != null:
+return offline(_that);case AppJoinEvent_Denied() when denied != null:
+return denied(_that);case AppJoinEvent_Joined() when joined != null:
+return joined(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AppJoinEvent_Trying value)  trying,required TResult Function( AppJoinEvent_Offline value)  offline,required TResult Function( AppJoinEvent_Denied value)  denied,required TResult Function( AppJoinEvent_Joined value)  joined,}){
+final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying():
+return trying(_that);case AppJoinEvent_Offline():
+return offline(_that);case AppJoinEvent_Denied():
+return denied(_that);case AppJoinEvent_Joined():
+return joined(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AppJoinEvent_Trying value)?  trying,TResult? Function( AppJoinEvent_Offline value)?  offline,TResult? Function( AppJoinEvent_Denied value)?  denied,TResult? Function( AppJoinEvent_Joined value)?  joined,}){
+final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying() when trying != null:
+return trying(_that);case AppJoinEvent_Offline() when offline != null:
+return offline(_that);case AppJoinEvent_Denied() when denied != null:
+return denied(_that);case AppJoinEvent_Joined() when joined != null:
+return joined(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  trying,TResult Function()?  offline,TResult Function( String reason)?  denied,TResult Function( String cid)?  joined,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying() when trying != null:
+return trying();case AppJoinEvent_Offline() when offline != null:
+return offline();case AppJoinEvent_Denied() when denied != null:
+return denied(_that.reason);case AppJoinEvent_Joined() when joined != null:
+return joined(_that.cid);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  trying,required TResult Function()  offline,required TResult Function( String reason)  denied,required TResult Function( String cid)  joined,}) {final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying():
+return trying();case AppJoinEvent_Offline():
+return offline();case AppJoinEvent_Denied():
+return denied(_that.reason);case AppJoinEvent_Joined():
+return joined(_that.cid);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  trying,TResult? Function()?  offline,TResult? Function( String reason)?  denied,TResult? Function( String cid)?  joined,}) {final _that = this;
+switch (_that) {
+case AppJoinEvent_Trying() when trying != null:
+return trying();case AppJoinEvent_Offline() when offline != null:
+return offline();case AppJoinEvent_Denied() when denied != null:
+return denied(_that.reason);case AppJoinEvent_Joined() when joined != null:
+return joined(_that.cid);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class AppJoinEvent_Trying extends AppJoinEvent {
+  const AppJoinEvent_Trying(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppJoinEvent_Trying);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AppJoinEvent.trying()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class AppJoinEvent_Offline extends AppJoinEvent {
+  const AppJoinEvent_Offline(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppJoinEvent_Offline);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AppJoinEvent.offline()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class AppJoinEvent_Denied extends AppJoinEvent {
+  const AppJoinEvent_Denied({required this.reason}): super._();
+  
+
+ final  String reason;
+
+/// Create a copy of AppJoinEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AppJoinEvent_DeniedCopyWith<AppJoinEvent_Denied> get copyWith => _$AppJoinEvent_DeniedCopyWithImpl<AppJoinEvent_Denied>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppJoinEvent_Denied&&(identical(other.reason, reason) || other.reason == reason));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,reason);
+}
+
+@override
+String toString() {
+    return 'AppJoinEvent.denied(reason: $reason)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AppJoinEvent_DeniedCopyWith<$Res> implements $AppJoinEventCopyWith<$Res> {
+  factory $AppJoinEvent_DeniedCopyWith(AppJoinEvent_Denied value, $Res Function(AppJoinEvent_Denied) _then) = _$AppJoinEvent_DeniedCopyWithImpl;
+@useResult
+$Res call({
+ String reason
+});
+
+
+
+
+}
+/// @nodoc
+class _$AppJoinEvent_DeniedCopyWithImpl<$Res>
+    implements $AppJoinEvent_DeniedCopyWith<$Res> {
+  _$AppJoinEvent_DeniedCopyWithImpl(this._self, this._then);
+
+  final AppJoinEvent_Denied _self;
+  final $Res Function(AppJoinEvent_Denied) _then;
+
+/// Create a copy of AppJoinEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? reason = null,}) {
+  return _then(AppJoinEvent_Denied(
+reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class AppJoinEvent_Joined extends AppJoinEvent {
+  const AppJoinEvent_Joined({required this.cid}): super._();
+  
+
+ final  String cid;
+
+/// Create a copy of AppJoinEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AppJoinEvent_JoinedCopyWith<AppJoinEvent_Joined> get copyWith => _$AppJoinEvent_JoinedCopyWithImpl<AppJoinEvent_Joined>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppJoinEvent_Joined&&(identical(other.cid, cid) || other.cid == cid));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,cid);
+}
+
+@override
+String toString() {
+    return 'AppJoinEvent.joined(cid: $cid)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AppJoinEvent_JoinedCopyWith<$Res> implements $AppJoinEventCopyWith<$Res> {
+  factory $AppJoinEvent_JoinedCopyWith(AppJoinEvent_Joined value, $Res Function(AppJoinEvent_Joined) _then) = _$AppJoinEvent_JoinedCopyWithImpl;
+@useResult
+$Res call({
+ String cid
+});
+
+
+
+
+}
+/// @nodoc
+class _$AppJoinEvent_JoinedCopyWithImpl<$Res>
+    implements $AppJoinEvent_JoinedCopyWith<$Res> {
+  _$AppJoinEvent_JoinedCopyWithImpl(this._self, this._then);
+
+  final AppJoinEvent_Joined _self;
+  final $Res Function(AppJoinEvent_Joined) _then;
+
+/// Create a copy of AppJoinEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? cid = null,}) {
+  return _then(AppJoinEvent_Joined(
+cid: null == cid ? _self.cid : cid // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AppNodeEvent {
 
 
@@ -56,14 +428,15 @@ extension AppNodeEventPatterns on AppNodeEvent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult Function( AppNodeEvent_PeerUp value)?  peerUp,TResult Function( AppNodeEvent_PeerDown value)?  peerDown,TResult Function( AppNodeEvent_Text value)?  text,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult Function( AppNodeEvent_PeerUp value)?  peerUp,TResult Function( AppNodeEvent_PeerDown value)?  peerDown,TResult Function( AppNodeEvent_Text value)?  text,TResult Function( AppNodeEvent_MembersChanged value)?  membersChanged,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that);case AppNodeEvent_Text() when text != null:
-return text(_that);case _:
+return text(_that);case AppNodeEvent_MembersChanged() when membersChanged != null:
+return membersChanged(_that);case _:
   return orElse();
 
 }
@@ -81,14 +454,15 @@ return text(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AppNodeEvent_HostChanged value)  hostChanged,required TResult Function( AppNodeEvent_PeerUp value)  peerUp,required TResult Function( AppNodeEvent_PeerDown value)  peerDown,required TResult Function( AppNodeEvent_Text value)  text,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AppNodeEvent_HostChanged value)  hostChanged,required TResult Function( AppNodeEvent_PeerUp value)  peerUp,required TResult Function( AppNodeEvent_PeerDown value)  peerDown,required TResult Function( AppNodeEvent_Text value)  text,required TResult Function( AppNodeEvent_MembersChanged value)  membersChanged,}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged():
 return hostChanged(_that);case AppNodeEvent_PeerUp():
 return peerUp(_that);case AppNodeEvent_PeerDown():
 return peerDown(_that);case AppNodeEvent_Text():
-return text(_that);}
+return text(_that);case AppNodeEvent_MembersChanged():
+return membersChanged(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -102,14 +476,15 @@ return text(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult? Function( AppNodeEvent_PeerUp value)?  peerUp,TResult? Function( AppNodeEvent_PeerDown value)?  peerDown,TResult? Function( AppNodeEvent_Text value)?  text,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult? Function( AppNodeEvent_PeerUp value)?  peerUp,TResult? Function( AppNodeEvent_PeerDown value)?  peerDown,TResult? Function( AppNodeEvent_Text value)?  text,TResult? Function( AppNodeEvent_MembersChanged value)?  membersChanged,}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that);case AppNodeEvent_Text() when text != null:
-return text(_that);case _:
+return text(_that);case AppNodeEvent_MembersChanged() when membersChanged != null:
+return membersChanged(_that);case _:
   return null;
 
 }
@@ -126,13 +501,14 @@ return text(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult Function( String member,  bool direct)?  peerUp,TResult Function( String member)?  peerDown,TResult Function( AppTextMessage message)?  text,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult Function( String member,  bool direct)?  peerUp,TResult Function( String member)?  peerDown,TResult Function( AppTextMessage message)?  text,TResult Function()?  membersChanged,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that.member);case AppNodeEvent_Text() when text != null:
-return text(_that.message);case _:
+return text(_that.message);case AppNodeEvent_MembersChanged() when membersChanged != null:
+return membersChanged();case _:
   return orElse();
 
 }
@@ -150,13 +526,14 @@ return text(_that.message);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String? host,  BigInt term,  bool isMe)  hostChanged,required TResult Function( String member,  bool direct)  peerUp,required TResult Function( String member)  peerDown,required TResult Function( AppTextMessage message)  text,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String? host,  BigInt term,  bool isMe)  hostChanged,required TResult Function( String member,  bool direct)  peerUp,required TResult Function( String member)  peerDown,required TResult Function( AppTextMessage message)  text,required TResult Function()  membersChanged,}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged():
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp():
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown():
 return peerDown(_that.member);case AppNodeEvent_Text():
-return text(_that.message);}
+return text(_that.message);case AppNodeEvent_MembersChanged():
+return membersChanged();}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -170,13 +547,14 @@ return text(_that.message);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult? Function( String member,  bool direct)?  peerUp,TResult? Function( String member)?  peerDown,TResult? Function( AppTextMessage message)?  text,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult? Function( String member,  bool direct)?  peerUp,TResult? Function( String member)?  peerDown,TResult? Function( AppTextMessage message)?  text,TResult? Function()?  membersChanged,}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that.member);case AppNodeEvent_Text() when text != null:
-return text(_that.message);case _:
+return text(_that.message);case AppNodeEvent_MembersChanged() when membersChanged != null:
+return membersChanged();case _:
   return null;
 
 }
@@ -461,5 +839,37 @@ as AppTextMessage,
 
 
 }
+
+/// @nodoc
+
+
+class AppNodeEvent_MembersChanged extends AppNodeEvent {
+  const AppNodeEvent_MembersChanged(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppNodeEvent_MembersChanged);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AppNodeEvent.membersChanged()';
+}
+
+
+}
+
+
+
 
 // dart format on

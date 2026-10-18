@@ -19,7 +19,20 @@ class NodeController extends ChangeNotifier implements TextService {
     _membersSub = membersChanged?.listen((_) => refreshMembers());
   }
 
+  /// A controller on a server the hub runs. The hub owns the node: this never stops it.
+  NodeController.fromNode(AppNode node) {
+    _node = node;
+    _hubOwned = true;
+    _memberId = nodeMemberId(n: node);
+    _memberTag = nodeMemberTag(n: node);
+    _channels = nodeChannels(n: node);
+    _members = nodeMembers(n: node);
+    _communityName = nodeCommunityName(n: node);
+    _listen(nodeEvents(n: node));
+  }
+
   AppNode? _node;
+  bool _hubOwned = false;
   String? _memberId;
   String? _memberTag;
   String? _host;
@@ -39,6 +52,9 @@ class NodeController extends ChangeNotifier implements TextService {
   int get term => _term;
   bool get isHost => _isHost;
   bool get started => _node != null;
+
+  /// The core handle, for the hub adapter.
+  AppNode? get rawNode => _node;
   Stream<AppNodeEvent> get events => _events.stream;
 
   /// The community file's name.
@@ -71,7 +87,10 @@ class NodeController extends ChangeNotifier implements TextService {
   }
 
   @protected
-  List<AppMember> loadMembers() => nodeMembers(n: _started());
+  List<AppMember> loadMembers() {
+    final node = _node;
+    return node == null ? _members : nodeMembers(n: node);
+  }
 
   Future<AppVoiceCredentials> credentials(String room) =>
       nodeVoiceCredentials(n: _started(), room: room);
@@ -120,6 +139,8 @@ class NodeController extends ChangeNotifier implements TextService {
         _online.remove(member);
       case AppNodeEvent_Text():
         break;
+      case AppNodeEvent_MembersChanged():
+        _members = loadMembers();
     }
     _events.add(ev);
     notifyListeners();
@@ -131,6 +152,7 @@ class NodeController extends ChangeNotifier implements TextService {
         AppNodeEvent_PeerUp(:final member, :final direct) =>
           'PeerUp member=$member direct=$direct',
         AppNodeEvent_PeerDown(:final member) => 'PeerDown member=$member',
+        AppNodeEvent_MembersChanged() => 'MembersChanged',
         AppNodeEvent_Text(:final message) =>
           'Text #${message.channel} from=${_tag(message.from)} '
               'seq=${message.term}.${message.seq}',
@@ -145,7 +167,7 @@ class NodeController extends ChangeNotifier implements TextService {
   Future<void> shutdown({Duration timeout = const Duration(seconds: 3)}) async {
     final node = _node;
     _node = null;
-    if (node == null) return;
+    if (node == null || _hubOwned) return;
     await nodeShutdown(n: node).timeout(timeout, onTimeout: () {});
   }
 

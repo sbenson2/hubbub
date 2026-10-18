@@ -4,8 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../hub_api.dart';
 import '../hub_controller.dart';
+import '../links.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
 import '../src/rust/api/hubbub.dart';
@@ -39,6 +39,7 @@ class HomePage extends StatefulWidget {
     required this.loadConfig,
     this.onAddServer,
     this.clock,
+    this.linkSource,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
   /// A single server (the pre-hub path); [hub] holds every server.
@@ -49,6 +50,9 @@ class HomePage extends StatefulWidget {
   final VoidCallback? onAddServer;
   final RoomAdapter room;
   final Future<AppNodeConfig> Function() loadConfig;
+
+  /// Where `hubbub://` links come from; each opens the Join dialog once a name is set.
+  final LinkSource? linkSource;
 
   /// Replaces the wall clock for message times (tests).
   final DateTime Function()? clock;
@@ -78,6 +82,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _memberList = true;
   bool _starting = false;
   String? _error;
+  LinkRouter? _links;
 
   /// An unseen invite found on the clipboard, offered in a banner.
   AppInvitePreview? _offered;
@@ -121,8 +126,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       unawaited(_startIfConfigured());
     }
     if (_multi) {
+      final source = widget.linkSource;
+      if (source != null) {
+        _links = LinkRouter(source, _openLink);
+        unawaited(_links!.start());
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         await _askName();
+        // Links that arrived before a name was set wait for it.
+        if (_hub.profileName.isNotEmpty) _links?.markReady();
         await _checkClipboard();
       });
     }
@@ -165,6 +177,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  void _openLink(String link) {
+    if (!mounted) return;
+    showJoinDialog(context, _hub, link: link);
+  }
+
   void _joinOffered() {
     final link = _offeredLink;
     setState(() => _offered = null);
@@ -191,6 +208,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _links?.dispose();
     _hub.removeListener(_refresh);
     for (final n in _attached.values) {
       n.removeListener(_refresh);

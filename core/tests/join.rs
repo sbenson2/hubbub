@@ -342,3 +342,25 @@ async fn the_same_link_joined_twice_at_once_starts_one_node_and_shutdown_stops_i
     drop(node);
     a.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_makes_and_revokes_its_own_invites() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, b) = (open(da.path()).await, open(db.path()).await);
+    introduce(&[&a, &b]);
+    let cid = a.create_community("Friends").await.unwrap();
+    let node = a.node(&cid).unwrap();
+    assert!(node.is_owner());
+    assert_eq!(node.community_name(), "Friends");
+
+    let link = node.invite_create(60, 0);
+    assert_eq!(Invite::parse(&link).unwrap().cid, cid);
+    node.invite_revoke(&link).unwrap();
+    denied(join(&b, &link).await, Deny::Revoked);
+
+    let fresh = node.invite_create(0, 0);
+    assert_eq!(join(&b, &fresh).await.0.unwrap(), cid);
+    assert!(!b.node(&cid).unwrap().is_owner());
+    a.shutdown().await;
+    b.shutdown().await;
+}

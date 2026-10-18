@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/links.dart';
 
+import 'support/fakes.dart';
+
 void main() {
   test('links wait for ready, then flush in order', () {
     final got = <String>[];
@@ -38,5 +40,38 @@ void main() {
     expect(got, isEmpty);
     q.markReady();
     expect(got, ['hubbub://join/d']);
+  });
+
+  group('LinkRouter', () {
+    test('the launch link replayed on the stream is delivered once', () async {
+      final got = <String>[];
+      final src = FakeLinks(initialLink: 'hubbub://join/a');
+      final router = LinkRouter(src, got.add);
+      await router.start();
+      src.send('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      router.markReady();
+      expect(got, ['hubbub://join/a']);
+      src.send('hubbub://join/a');
+      await Future<void>.delayed(Duration.zero);
+      expect(got, ['hubbub://join/a']);
+      src.send('hubbub://join/b');
+      await Future<void>.delayed(Duration.zero);
+      expect(got, ['hubbub://join/a', 'hubbub://join/b']);
+      router.dispose();
+    });
+
+    test('links wait for markReady', () async {
+      final got = <String>[];
+      final src = FakeLinks();
+      final router = LinkRouter(src, got.add);
+      await router.start();
+      src.send('hubbub://join/c');
+      await Future<void>.delayed(Duration.zero);
+      expect(got, isEmpty);
+      router.markReady();
+      expect(got, ['hubbub://join/c']);
+      router.dispose();
+    });
   });
 }

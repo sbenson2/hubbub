@@ -49,6 +49,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<AppJoinEvent> dco_decode_StreamSink_app_join_event_Sse(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<AppNodeEvent> dco_decode_StreamSink_app_node_event_Sse(
     dynamic raw,
   );
@@ -58,6 +63,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AppChannels dco_decode_app_channels(dynamic raw);
+
+  @protected
+  AppCommunity dco_decode_app_community(dynamic raw);
+
+  @protected
+  AppInvitePreview dco_decode_app_invite_preview(dynamic raw);
+
+  @protected
+  AppJoinEvent dco_decode_app_join_event(dynamic raw);
 
   @protected
   AppMember dco_decode_app_member(dynamic raw);
@@ -78,6 +92,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  AppInvitePreview dco_decode_box_autoadd_app_invite_preview(dynamic raw);
+
+  @protected
   AppNodeConfig dco_decode_box_autoadd_app_node_config(dynamic raw);
 
   @protected
@@ -90,6 +107,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<AppCommunity> dco_decode_list_app_community(dynamic raw);
+
+  @protected
   List<AppMember> dco_decode_list_app_member(dynamic raw);
 
   @protected
@@ -100,6 +120,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  AppInvitePreview? dco_decode_opt_box_autoadd_app_invite_preview(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -138,6 +161,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<AppJoinEvent> sse_decode_StreamSink_app_join_event_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<AppNodeEvent> sse_decode_StreamSink_app_node_event_Sse(
     SseDeserializer deserializer,
   );
@@ -147,6 +175,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AppChannels sse_decode_app_channels(SseDeserializer deserializer);
+
+  @protected
+  AppCommunity sse_decode_app_community(SseDeserializer deserializer);
+
+  @protected
+  AppInvitePreview sse_decode_app_invite_preview(SseDeserializer deserializer);
+
+  @protected
+  AppJoinEvent sse_decode_app_join_event(SseDeserializer deserializer);
 
   @protected
   AppMember sse_decode_app_member(SseDeserializer deserializer);
@@ -169,6 +206,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  AppInvitePreview sse_decode_box_autoadd_app_invite_preview(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AppNodeConfig sse_decode_box_autoadd_app_node_config(
     SseDeserializer deserializer,
   );
@@ -185,6 +227,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<AppCommunity> sse_decode_list_app_community(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<AppMember> sse_decode_list_app_member(SseDeserializer deserializer);
 
   @protected
@@ -197,6 +244,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  AppInvitePreview? sse_decode_opt_box_autoadd_app_invite_preview(
+    SseDeserializer deserializer,
+  );
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -244,6 +296,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_app_join_event_Sse(
+    RustStreamSink<AppJoinEvent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_app_node_event_Sse(
     RustStreamSink<AppNodeEvent> self,
     SseSerializer serializer,
@@ -254,6 +312,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_app_channels(AppChannels self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_app_community(AppCommunity self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_app_invite_preview(
+    AppInvitePreview self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_app_join_event(AppJoinEvent self, SseSerializer serializer);
 
   @protected
   void sse_encode_app_member(AppMember self, SseSerializer serializer);
@@ -280,6 +350,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_app_invite_preview(
+    AppInvitePreview self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_app_node_config(
     AppNodeConfig self,
     SseSerializer serializer,
@@ -296,6 +372,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_app_community(
+    List<AppCommunity> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_app_member(
@@ -317,6 +399,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_app_invite_preview(
+    AppInvitePreview? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
