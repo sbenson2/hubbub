@@ -30,7 +30,7 @@ pub const FLOW_HEADER: usize = 2;
 /// Largest frame accepted on a uni stream (a UDP datagram is at most 64 KiB).
 const MAX_STREAM_FRAME: usize = 65_600;
 /// Oversize frames in flight at once; more are dropped, as a full datagram queue would.
-const MAX_STREAM_SENDS: usize = 8;
+const MAX_STREAM_SENDS: usize = 64;
 /// Largest UDP payload read from LiveKit.
 const UDP_BUF: usize = 65_536;
 
@@ -67,6 +67,12 @@ pub struct TunnelStats {
     pub dropped: AtomicU64,
     /// Frames that went on a uni stream because they exceeded the datagram limit.
     pub via_stream: AtomicU64,
+    /// Frames and payload bytes that crossed the iroh connection, sent and received, whichever
+    /// role this node plays (member to host, or host to member).
+    pub wire_tx_pkts: AtomicU64,
+    pub wire_tx_bytes: AtomicU64,
+    pub wire_rx_pkts: AtomicU64,
+    pub wire_rx_bytes: AtomicU64,
     pub flows_opened: AtomicU64,
     pub flows_expired: AtomicU64,
     /// New flows refused because the member already holds the maximum.
@@ -79,6 +85,12 @@ impl TunnelStats {
     }
     pub fn down(&self) -> (u64, u64) {
         (self.down_pkts.load(Relaxed), self.down_bytes.load(Relaxed))
+    }
+    pub fn wire_tx(&self) -> (u64, u64) {
+        (self.wire_tx_pkts.load(Relaxed), self.wire_tx_bytes.load(Relaxed))
+    }
+    pub fn wire_rx(&self) -> (u64, u64) {
+        (self.wire_rx_pkts.load(Relaxed), self.wire_rx_bytes.load(Relaxed))
     }
 }
 
@@ -314,6 +326,8 @@ impl IrohSender {
 impl FrameSink for IrohSender {
     fn send_frame(&self, flow: u16, payload: &[u8]) {
         let frame = encode_frame(flow, payload);
+        self.stats.wire_tx_pkts.fetch_add(1, Relaxed);
+        self.stats.wire_tx_bytes.fetch_add(payload.len() as u64, Relaxed);
         let fits = self.conn.max_datagram_size().is_some_and(|max| frame.len() <= max);
         if fits {
             if self.conn.send_datagram(frame).is_err() {
@@ -344,7 +358,7 @@ impl FrameSink for IrohSender {
 }
 
 /// Reads frames from `conn` (datagrams and uni streams) into `on_frame` until it closes.
-pub async fn pump<F>(conn: Connection, on_frame: F)
+pub async fn pump<F>(conn: Connection, stats: Arc<TunnelStats>, on_frame: F)
 where
     F: Fn(u16, Bytes) + Send + Sync + 'static,
 {
@@ -352,6 +366,8 @@ where
     let deliver = |frame: Bytes, on_frame: &F| {
         if let Some((flow, payload)) = decode_frame(&frame) {
             if !payload.is_empty() {
+                stats.wire_rx_pkts.fetch_add(1, Relaxed);
+                stats.wire_rx_bytes.fetch_add(payload.len() as u64, Relaxed);
                 on_frame(flow, frame.slice(FLOW_HEADER..));
             }
         }
@@ -364,11 +380,13 @@ where
             },
             u = conn.accept_uni() => match u {
                 Ok(mut recv) => {
-                    let on_frame = on_frame.clone();
+                    let (on_frame, stats) = (on_frame.clone(), stats.clone());
                     tokio::spawn(async move {
                         if let Ok(buf) = recv.read_to_end(MAX_STREAM_FRAME).await {
                             if let Some((flow, payload)) = decode_frame(&buf) {
                                 if !payload.is_empty() {
+                                    stats.wire_rx_pkts.fetch_add(1, Relaxed);
+                                    stats.wire_rx_bytes.fetch_add(payload.len() as u64, Relaxed);
                                     on_frame(flow, Bytes::copy_from_slice(payload));
                                 }
                             }
@@ -385,8 +403,8 @@ where
 /// LiveKit UDP port) and the answers come back, until the connection closes.
 pub async fn serve_media_host(conn: Connection, target: SocketAddr, limits: FlowLimits, stats: Arc<TunnelStats>) {
     let reply = Arc::new(IrohSender::new(conn.clone(), stats.clone()));
-    let table = FlowTable::new(target, reply, limits, stats);
-    pump(conn, move |flow, payload| table.send_frame(flow, &payload)).await;
+    let table = FlowTable::new(target, reply, limits, stats.clone());
+    pump(conn, stats, move |flow, payload| table.send_frame(flow, &payload)).await;
 }
 
 #[cfg(test)]
@@ -498,7 +516,7 @@ mod tests {
         let host_stats = Arc::new(TunnelStats::default());
         tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), host_stats.clone()));
         let (sink, mut rx) = collector();
-        tokio::spawn(pump(conn_a.clone(), move |flow, p| sink.send_frame(flow, &p)));
+        tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
         let sender = IrohSender::new(conn_a, Arc::new(TunnelStats::default()));
         sender.send_frame(3, b"hello livekit");
         assert_eq!(timeout(T, rx.recv()).await.unwrap().unwrap(), (3, b"hello livekit".to_vec()));
@@ -515,7 +533,7 @@ mod tests {
         let host_stats = Arc::new(TunnelStats::default());
         tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), host_stats.clone()));
         let (sink, mut rx) = collector();
-        tokio::spawn(pump(conn_a.clone(), move |flow, p| sink.send_frame(flow, &p)));
+        tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
         let stats = Arc::new(TunnelStats::default());
         let sender = IrohSender::new(conn_a, stats.clone());
         // Far above any datagram limit (about 1.2 KB at first, 1.4 KB after MTU discovery).

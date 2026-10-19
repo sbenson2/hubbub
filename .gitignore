@@ -19,3 +19,5 @@ HANDOFF*.md
 *.p12
 *.keystore
 *.jks
+
+tools/relay-check/web/node_modules/

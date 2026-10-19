@@ -109,6 +109,28 @@ pub struct VoiceCredentials {
     pub ice: Option<IceConfig>,
 }
 
+/// A snapshot of the media tunnel's counters on one node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MediaStats {
+    /// Frames and payload bytes this node, as host or hosting its own client, sent to LiveKit.
+    pub to_livekit_pkts: u64,
+    pub to_livekit_bytes: u64,
+    /// Frames and payload bytes LiveKit sent back.
+    pub from_livekit_pkts: u64,
+    pub from_livekit_bytes: u64,
+    /// Frames and payload bytes that crossed the iroh connection.
+    pub wire_tx_pkts: u64,
+    pub wire_tx_bytes: u64,
+    pub wire_rx_pkts: u64,
+    pub wire_rx_bytes: u64,
+    /// Frames dropped (queue full), sent on a uni stream (oversize), flow churn.
+    pub dropped: u64,
+    pub via_stream: u64,
+    pub flows_opened: u64,
+    pub flows_expired: u64,
+    pub flows_refused: u64,
+}
+
 pub struct Node {
     inner: Arc<Inner>,
     /// Dropping this stops every task: the hard-kill path, with no Resign.
@@ -206,6 +228,7 @@ impl Node {
             dialing,
             tunnel_port,
             shim: Mutex::new(None),
+            media_stats: Arc::default(),
             shim_gate: tokio::sync::Mutex::new(()),
             state: Mutex::new(State {
                 host: HostState { host: None, term: 0 },
@@ -335,6 +358,28 @@ impl Node {
     /// The last `limit` messages stored for `channel`, in arrival order.
     pub fn text_history(&self, channel: &str, limit: usize) -> Result<Vec<TextMessage>> {
         self.inner.chat.history(channel, limit)
+    }
+
+    /// Counters of the media tunnel on this node: what it forwarded to LiveKit and got back
+    /// (as host), and what crossed the iroh connection either way.
+    pub fn media_stats(&self) -> MediaStats {
+        let s = &self.inner.media_stats;
+        let (to_livekit, from_livekit, wire_tx, wire_rx) = (s.up(), s.down(), s.wire_tx(), s.wire_rx());
+        MediaStats {
+            to_livekit_pkts: to_livekit.0,
+            to_livekit_bytes: to_livekit.1,
+            from_livekit_pkts: from_livekit.0,
+            from_livekit_bytes: from_livekit.1,
+            wire_tx_pkts: wire_tx.0,
+            wire_tx_bytes: wire_tx.1,
+            wire_rx_pkts: wire_rx.0,
+            wire_rx_bytes: wire_rx.1,
+            dropped: s.dropped.load(Ordering::Relaxed),
+            via_stream: s.via_stream.load(Ordering::Relaxed),
+            flows_opened: s.flows_opened.load(Ordering::Relaxed),
+            flows_expired: s.flows_expired.load(Ordering::Relaxed),
+            flows_refused: s.flows_refused.load(Ordering::Relaxed),
+        }
     }
 
     /// Credentials for joining `room` on the current host. Retries for a few seconds while
@@ -504,6 +549,8 @@ struct Inner {
     tunnel_port: u16,
     /// The TURN shim for call media, started with the first credentials.
     shim: Mutex<Option<media_link::ShimSlot>>,
+    /// Counters of the media tunnel on this node (as host and as member).
+    media_stats: Arc<TunnelStats>,
     /// Serialises starting the shim.
     shim_gate: tokio::sync::Mutex<()>,
     state: Mutex<State>,
@@ -1093,7 +1140,7 @@ impl Inner {
         };
         let inner = self.clone();
         self.spawn(async move {
-            serve_media_host(conn.clone(), target, FlowLimits::default(), Arc::new(TunnelStats::default())).await;
+            serve_media_host(conn.clone(), target, FlowLimits::default(), inner.media_stats.clone()).await;
             inner.state.lock().unwrap().lk_served.retain(|c| c.stable_id() != conn.stable_id());
         });
     }

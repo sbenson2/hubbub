@@ -223,6 +223,55 @@ async fn a_members_media_reaches_the_hosts_port_and_back_through_the_tunnel() {
         }
     }
     assert_eq!(got, 200, "all 200 request/reply pairs crossed the tunnel");
+    // The counters are the evidence: 201 packets up the wire from the member, all forwarded to
+    // the host's port, and as many back.
+    let (m, h) = (ns[1].media_stats(), ns[0].media_stats());
+    assert_eq!((m.wire_tx_pkts, m.wire_rx_pkts), (201, 201));
+    assert_eq!((h.wire_rx_pkts, h.to_livekit_pkts, h.from_livekit_pkts, h.wire_tx_pkts), (201, 201, 201, 201));
+    assert_eq!((m.dropped, h.dropped, m.via_stream), (0, 0, 0));
+}
+
+/// A screen share's worth of media: at least 6 Mbps in 1200-byte packets, one way (the pacing
+/// below is bursty, so the measured rate is printed and checked).
+#[tokio::test]
+async fn a_screen_share_rate_crosses_the_tunnel() {
+    let (ns, seen) = echo_cluster(&[true, false]).await;
+    wait_agree(&ns, Duration::from_secs(5)).await;
+    let Some(ice) = ns[1].voice_credentials("lobby").await.unwrap().ice else { return };
+    let c = turn_client(&ice, &ice.credential).await;
+    let relay = Arc::new(c.allocate().await.unwrap());
+    let received = Arc::new(AtomicU64::new(0));
+    let rx = {
+        let (relay, received) = (relay.clone(), received.clone());
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            while let Ok((_, _)) = relay.recv_from(&mut buf).await {
+                received.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    };
+    // Nominally 5 packets every 4 ms = 12 Mbps; the interval catches up after a late tick.
+    let (packets, payload) = (1875u64, vec![7u8; 1200]);
+    let t0 = Instant::now();
+    let mut tick = tokio::time::interval(Duration::from_millis(4));
+    for _ in 0..packets / 5 {
+        tick.tick().await;
+        for _ in 0..5 {
+            relay.send_to(&payload, PEER.parse().unwrap()).await.unwrap();
+        }
+    }
+    let sent_for = t0.elapsed();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    rx.abort();
+    let at_host = seen[0].load(Ordering::SeqCst);
+    let back = received.load(Ordering::SeqCst);
+    let mbps = packets as f64 * 1200.0 * 8.0 / sent_for.as_secs_f64() / 1e6;
+    println!("tunnel: sent {packets} x 1200 B in {sent_for:?} ({mbps:.1} Mbps), host port saw {at_host}, {back} came back; member counters {:?}", ns[1].media_stats());
+    assert!(mbps >= 6.0, "the test must offer at least 6 Mbps, offered {mbps:.1}");
+    // A cold connection is still in QUIC slow start, which drops datagrams rather than queueing
+    // them (right for real-time media); a 10 s run in the spike lost 0.05% at 6 and 20 Mbps.
+    assert!(at_host >= packets * 95 / 100, "host port saw only {at_host} of {packets}");
+    assert!(back >= packets * 95 / 100, "only {back} of {packets} came back");
 }
 
 #[tokio::test]

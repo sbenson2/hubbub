@@ -84,7 +84,7 @@ impl UplinkSource for NodeUplink {
         let conn = inner.dial(host, inner.net.media_alpn()).await?;
         let sender = Arc::new(IrohSender::new(conn.clone(), self.stats.clone()));
         let down = routes.clone();
-        let reader = tokio::spawn(pump(conn.clone(), move |flow, payload| down.send_frame(flow, &payload)));
+        let reader = tokio::spawn(pump(conn.clone(), self.stats.clone(), move |flow, payload| down.send_frame(flow, &payload)));
         let mut cached = self.cached.lock().unwrap();
         cached.close();
         *cached = Cached::Remote { host, conn, sender: sender.clone(), pump: reader };
@@ -107,7 +107,7 @@ impl Inner {
         let source = Arc::new(NodeUplink {
             inner: Arc::downgrade(self),
             cached: Mutex::new(Cached::Nothing),
-            stats: Arc::new(TunnelStats::default()),
+            stats: self.media_stats.clone(),
         });
         match TurnShim::start(ip, source).await {
             Ok(shim) => {
