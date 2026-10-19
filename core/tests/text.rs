@@ -6,7 +6,8 @@ use hubbub_core::community::CommunityState;
 use hubbub_core::identity::Identity;
 use hubbub_core::ids::MemberId;
 use hubbub_core::media_host::FakeHost;
-use hubbub_core::net::RelayChoice;
+use hubbub_core::net::{Net, RelayChoice};
+use hubbub_core::proto::{read_msg, write_json, write_msg, CtlMsg};
 use hubbub_core::node::{Node, NodeConfig, NodeEvent};
 use iroh::EndpointAddr;
 use tokio::sync::broadcast;
@@ -541,4 +542,98 @@ async fn a_member_that_comes_back_gets_what_it_missed_once_and_in_order() {
     assert_eq!(queued_texts(&mut phone_rx), 0);
     let stored: Vec<u64> = phone.text_history("general", 50).unwrap().iter().map(|m| m.seq).collect();
     assert_eq!(stored, (1..=22).collect::<Vec<u64>>());
+}
+
+/// A hand-driven member: a bare `Net` that dials `node`'s control ALPN, says Hello, and returns
+/// the streams, with `node`'s own Hello already read.
+async fn raw_member(
+    node: &Node,
+    dir: &tempfile::TempDir,
+    community_file: &Path,
+) -> (Net, iroh::endpoint::SendStream, iroh::endpoint::RecvStream) {
+    let me = Identity::load_or_create(dir.path()).unwrap();
+    let community = std::sync::Arc::new(CommunityState::load(community_file).unwrap());
+    let net = Net::bind(&me, tokio::sync::watch::channel(community).1, RelayChoice::Disabled).await.unwrap();
+    let conn = net.connect_addr(node.endpoint_addr().await.unwrap(), net.ctl_alpn()).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_msg(&mut send, &CtlMsg::Hello { member: me.member_id(), can_host: false, online_since_ms: 0, proto: 2 }).await.unwrap();
+    let hello = read_msg(&mut recv).await.unwrap();
+    assert!(matches!(hello, Some(CtlMsg::Hello { .. })), "{hello:?}");
+    // Keep the connection alive for the caller.
+    std::mem::forget(conn);
+    (net, send, recv)
+}
+
+#[tokio::test]
+async fn an_unknown_message_does_not_end_the_session() {
+    let (dirs, _, file) = community(&[true, false]);
+    let (host, _rx) = start(&dirs[0], &file, true, vec![]).await;
+    let (_net, mut send, mut recv) = raw_member(&host, &dirs[1], &file).await;
+    // A message from a future build, then a Ping: the session must still answer.
+    write_json(&mut send, &serde_json::json!({"t": "FromTheFuture", "x": [1, 2, 3]})).await.unwrap();
+    write_msg(&mut send, &CtlMsg::Ping { nonce: 77 }).await.unwrap();
+    let pong = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Ok(Some(msg)) = read_msg(&mut recv).await {
+            if msg == (CtlMsg::Pong { nonce: 77 }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(pong, Ok(true), "the node dropped the session or never answered");
+}
+
+#[tokio::test]
+async fn a_peer_that_never_sends_text_have_still_gets_live_text() {
+    let (dirs, _, file) = community(&[true, false]);
+    let (host, _rx) = start(&dirs[0], &file, true, vec![]).await;
+    wait_agree(std::slice::from_ref(&host), Duration::from_secs(5)).await;
+    let (_net, mut send, mut recv) = raw_member(&host, &dirs[1], &file).await;
+    // Past the wait for a TextHave that never comes.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    write_msg(&mut send, &CtlMsg::TextSubmit { channel: "general".into(), client_id: 5, ciphertext: vec![1, 2, 3] })
+        .await
+        .unwrap();
+    let delivered = tokio::time::timeout(Duration::from_secs(8), async {
+        while let Ok(Some(msg)) = read_msg(&mut recv).await {
+            match msg {
+                CtlMsg::Ping { nonce } => write_msg(&mut send, &CtlMsg::Pong { nonce }).await.unwrap(),
+                CtlMsg::TextDeliver { client_id: 5, .. } => return true,
+                _ => {}
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(delivered, Ok(true), "live text never reached a peer that sent no TextHave");
+}
+
+#[tokio::test]
+async fn a_device_invited_again_does_not_get_the_messages_sent_while_it_was_out() {
+    let (dirs, _, file) = community(&[true, false]);
+    let (host, _host_rx) = start(&dirs[0], &file, true, vec![]).await;
+    let addr = host.endpoint_addr().await.unwrap();
+    let (phone, mut phone_rx) = start(&dirs[1], &file, false, vec![addr.clone()]).await;
+    let mut nodes = vec![host, phone];
+    wait_agree(&nodes, Duration::from_secs(5)).await;
+    let phone = nodes.pop().unwrap();
+    let host = nodes.pop().unwrap();
+    host.send_text("general", "before").await.unwrap();
+    texts(&mut phone_rx, 1, Duration::from_secs(5), "the phone").await;
+    // Removed: the device is gone while the gap is sent.
+    phone.shutdown().await;
+    host.send_text("general", "gap 1").await.unwrap();
+    host.send_text("general", "gap 2").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Invited again on the same data dir: the hub marks the join, as `Hub::join` does.
+    hubbub_core::text::mark_joined(dirs[1].path());
+    let (phone, mut phone_rx) = start(&dirs[1], &file, false, vec![addr]).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(queued_texts(&mut phone_rx), 0, "nothing from the gap");
+    host.send_text("general", "after").await.unwrap();
+    let got = texts(&mut phone_rx, 1, Duration::from_secs(5), "the phone").await;
+    assert_eq!(got[0].body, "after");
+    let bodies: Vec<_> = phone.text_history("general", 10).unwrap().into_iter().map(|m| m.body).collect();
+    assert_eq!(bodies, ["before", "after"]);
 }

@@ -17,6 +17,10 @@
 //! Catching up: a node tells each peer what it holds (`CtlMsg::TextHave`), and a host
 //! sends back only what that node lacks and that was ordered since the node first ran this
 //! community. Nothing from before a member was added is ever sent (no history, as in Signal).
+//! The "since" bound is best-effort until MLS (spec §4.2): the device claims it, and every
+//! member holds the text key, so a modified client can ask for more; it is the device clock
+//! against the host's clock, so skew moves it either way; and a copied data dir carries it.
+//! The hub resets it on every join (`mark_joined`).
 //! A node resubmits what it sent lately, delivered or not, whenever the host or term changes,
 //! so a message ordered by a host that lost a split still reaches the host that won.
 //!
@@ -97,6 +101,8 @@ pub struct TextMessage {
 const HAVE_PER_CHANNEL: usize = 64;
 /// All channels together list at most this many ids, so the frame stays small.
 const HAVE_TOTAL: usize = 256;
+/// `TextHave` lists at most this many channels, so a community with many cannot overflow a frame.
+const HAVE_CHANNELS: usize = 128;
 /// A node resubmits delivered messages younger than this when the host changes: a split
 /// hand-over, not an old one. At most `RESEND_KEEP` of them.
 const RESEND_WINDOW: Duration = Duration::from_secs(30);
@@ -387,10 +393,10 @@ pub(crate) struct Received {
 struct Pending {
     submission: Submission,
     sent_on: Option<Route>,
-    sent_at: Instant,
-    /// The `(host, term)` that last delivered it to this node. Delivered messages stay for
-    /// `RESEND_WINDOW`, to go again if another host takes over the same term.
+    /// The `(host, term)` that last delivered it to this node, and when. Delivered messages
+    /// stay for `RESEND_WINDOW` after that, to go again if another host takes over the same term.
     delivered_by: Option<(MemberId, u64)>,
+    delivered_at: Option<Instant>,
 }
 
 /// A member's side of text: sealing, the pending queue, opening deliveries, and the store.
@@ -470,8 +476,8 @@ impl Chat {
         self.pending.lock().unwrap().push(Pending {
             submission,
             sent_on: None,
-            sent_at: Instant::now(),
             delivered_by: None,
+            delivered_at: None,
         });
         Ok(client_id)
     }
@@ -509,6 +515,7 @@ impl Chat {
             let mut pending = self.pending.lock().unwrap();
             if let Some(p) = pending.iter_mut().find(|p| p.submission.client_id == d.client_id) {
                 p.delivered_by = Some((host, d.term));
+                p.delivered_at = Some(Instant::now());
             }
             Self::forget_old(&mut pending);
         }
@@ -526,7 +533,7 @@ impl Chat {
 
     /// Drops delivered messages too old to resubmit, and all but the newest `RESEND_KEEP`.
     fn forget_old(pending: &mut Vec<Pending>) {
-        pending.retain(|p| p.delivered_by.is_none() || p.sent_at.elapsed() < RESEND_WINDOW);
+        pending.retain(|p| p.delivered_at.is_none_or(|at| at.elapsed() < RESEND_WINDOW));
         let delivered = pending.iter().filter(|p| p.delivered_by.is_some()).count();
         let mut excess = delivered.saturating_sub(RESEND_KEEP);
         pending.retain(|p| {
@@ -539,14 +546,14 @@ impl Chat {
     /// What this node tells a peer it holds, and since when it has been a member here.
     pub fn have(&self) -> (u64, Vec<HaveChannel>) {
         let received = self.received.lock().unwrap();
-        let each = (HAVE_TOTAL / self.channels.text.len().max(1)).clamp(1, HAVE_PER_CHANNEL);
-        let have = self
-            .channels
-            .text
+        let listed = &self.channels.text[..self.channels.text.len().min(HAVE_CHANNELS)];
+        let each = (HAVE_TOTAL / listed.len().max(1)).clamp(1, HAVE_PER_CHANNEL);
+        let have = listed
             .iter()
             .map(|c| {
                 let tail = received.tail(c, each);
-                let floor_ms = if tail.len() == each { tail.first().map_or(0, |(_, ms)| **ms) } else { 0 };
+                // By the host's clock, not arrival: an older message may arrive late.
+                let floor_ms = if tail.len() == each { tail.iter().map(|(_, ms)| **ms).min().unwrap_or(0) } else { 0 };
                 HaveChannel { channel: c.clone(), floor_ms, ids: tail.into_iter().map(|(k, _)| k).collect() }
             })
             .collect();
@@ -562,12 +569,19 @@ impl Chat {
 /// now if absent. The community state keeps no admission time, and a node starts its
 /// community right after it joins. A node that cannot write the file counts from now.
 fn first_run_ms(data_dir: &Path) -> u64 {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     let file = data_dir.join("first_run_ms");
     if let Some(ms) = fs::read_to_string(&file).ok().and_then(|s| s.trim().parse().ok()) {
         return ms;
     }
-    let _ = fs::write(&file, now.to_string());
+    mark_joined(data_dir)
+}
+
+/// Starts this device's membership of a community now: nothing ordered before this moment is
+/// caught up on. The hub calls it on every join, so a device that was removed and invited
+/// again does not get the messages sent while it was out. Returns the time.
+pub fn mark_joined(data_dir: &Path) -> u64 {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let _ = fs::write(data_dir.join("first_run_ms"), now.to_string());
     now
 }
 
@@ -904,6 +918,39 @@ mod tests {
         assert_eq!(general.ids.last().unwrap().1, (each + 5) as u64, "the newest last");
         assert_eq!(general.floor_ms, general.ids[0].1 * 10, "a full list has a floor");
         assert_eq!(Chat::new(id(1), &community, d.path()).have().0, since, "the first run time is kept");
+    }
+
+    #[test]
+    fn text_have_fits_a_frame_however_many_channels_there_are() {
+        let d = tempfile::tempdir().unwrap();
+        let mut community = test_state();
+        community.channels.text = (0..1000).map(|i| format!("{i:0>width$}", width = MAX_CHANNEL_NAME)).collect();
+        let chat = Chat::new(id(1), &community, d.path());
+        let key = community.text_key();
+        for (k, c) in community.channels.text.iter().take(HAVE_CHANNELS).enumerate() {
+            for n in (1..=3u64).map(|n| n + 10 * k as u64) {
+                let mut dl = delivery(&key, id(2), n, "x");
+                dl.channel = c.clone();
+                dl.ciphertext = seal(&key, c, &id(2), n, "x");
+                dl.sent_ms = n;
+                receive(&chat, &dl).unwrap();
+            }
+        }
+        let (since_ms, have) = chat.have();
+        assert_eq!(have.len(), HAVE_CHANNELS);
+        let body = serde_json::to_vec(&CtlMsg::TextHave { since_ms, have }).unwrap();
+        assert!(body.len() < crate::proto::MAX_FRAME / 2, "{} bytes", body.len());
+    }
+
+    #[test]
+    fn mark_joined_restarts_the_since_bound() {
+        let d = tempfile::tempdir().unwrap();
+        let first = Chat::new(id(1), &test_state(), d.path()).have().0;
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(Chat::new(id(1), &test_state(), d.path()).have().0, first, "kept across restarts");
+        let again = mark_joined(d.path());
+        assert!(again > first);
+        assert_eq!(Chat::new(id(1), &test_state(), d.path()).have().0, again, "reset by a join");
     }
 
     #[test]

@@ -484,7 +484,7 @@ async fn phone_closes_a_control_connection_from_another_phone() {
     let other = Identity::load_or_create(dirs[1].path()).unwrap();
     let community = Arc::new(CommunityState::load(&community_file).unwrap());
     let net = Net::bind(&other, tokio::sync::watch::channel(community).1, RelayChoice::Disabled).await.unwrap();
-    let hello = CtlMsg::Hello { member: other.member_id(), can_host: false, online_since_ms: 0 };
+    let hello = CtlMsg::Hello { member: other.member_id(), can_host: false, online_since_ms: 0, proto: 2 };
     let answer = tokio::time::timeout(Duration::from_secs(5), async {
         let conn = net.connect_addr(addr, net.ctl_alpn()).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
@@ -516,7 +516,7 @@ async fn probe_never_starves_heartbeats_and_stops_at_its_time_limit() {
     let net = Net::bind(&member, tokio::sync::watch::channel(community).1, RelayChoice::Disabled).await.unwrap();
     let conn = net.connect_addr(node.endpoint_addr().await.unwrap(), net.ctl_alpn()).await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    let hello = CtlMsg::Hello { member: member.member_id(), can_host: false, online_since_ms: 0 };
+    let hello = CtlMsg::Hello { member: member.member_id(), can_host: false, online_since_ms: 0, proto: 2 };
     write_msg(&mut send, &hello).await.unwrap();
     let back = conn.clone();
     tokio::spawn(async move {

@@ -209,6 +209,8 @@ impl Hub {
         let dir = self.communities_dir().join(state.id.to_string());
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         state.save_atomic(&dir.join("community.json"))?;
+        // A device invited again after it was removed starts its text history now.
+        crate::text::mark_joined(&dir);
         self.start_server(&dir).await?;
         let _ = events.send(JoinEvent::Joined(state.id));
         Ok(state.id)

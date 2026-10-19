@@ -7,12 +7,16 @@ use crate::election::RankKey;
 use crate::ids::{CommunityId, MemberId};
 
 /// Prefix of a community's control ALPN; the full ALPN ends in the community id in hex.
-pub const CTL_PREFIX: &[u8] = b"hubbub/ctl/1/";
+pub const CTL_PREFIX: &[u8] = b"hubbub/ctl/2/";
 
-/// The control ALPN of one community: `hubbub/ctl/1/<cid-hex>`. One iroh endpoint serves
+/// The control protocol version a node says in its Hello. 2 added `TextHave`. Receivers skip
+/// messages they do not know, so a later version can add more without a new ALPN.
+pub const PROTO_VERSION: u32 = 2;
+
+/// The control ALPN of one community: `hubbub/ctl/2/<cid-hex>`. One iroh endpoint serves
 /// many communities and routes each connection by this name.
 pub fn ctl_alpn(cid: &CommunityId) -> Vec<u8> {
-    format!("hubbub/ctl/1/{cid}").into_bytes()
+    format!("hubbub/ctl/2/{cid}").into_bytes()
 }
 
 /// The LiveKit signal-tunnel ALPN of one community: `hubbub/sig/1/<cid-hex>`.
@@ -57,7 +61,14 @@ pub struct HaveChannel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum CtlMsg {
-    Hello { member: MemberId, can_host: bool, online_since_ms: u64 },
+    Hello {
+        member: MemberId,
+        can_host: bool,
+        online_since_ms: u64,
+        /// `PROTO_VERSION` of the sender; 0 when absent.
+        #[serde(default)]
+        proto: u32,
+    },
     /// The sender's community state without the secret, sent after `Hello` and on every
     /// change. The receiver merges it; see `Node::apply_state`.
     StateSync { state: CommunityState },
@@ -93,6 +104,10 @@ pub enum CtlMsg {
         #[serde(with = "hex_bytes")]
         ciphertext: Vec<u8>,
     },
+    /// Never sent: what `read_msg` returns for a frame it cannot decode (a message from a newer
+    /// build). The session skips it.
+    #[serde(skip)]
+    Unknown,
 }
 
 /// Bytes as a hex string. As a JSON array of numbers, a 16 KiB ciphertext could take up to
@@ -114,10 +129,15 @@ pub async fn write_msg(s: &mut iroh::endpoint::SendStream, m: &CtlMsg) -> Result
     write_json(s, m).await
 }
 
-/// Read one frame. `Ok(None)` means the peer finished the stream cleanly
+/// Read one frame. A frame that is valid JSON but no message this build knows comes back as
+/// `CtlMsg::Unknown`, so the session goes on. `Ok(None)` means the peer finished the stream cleanly
 /// between frames. An oversized length is an error and the stream is closed.
 pub async fn read_msg(r: &mut iroh::endpoint::RecvStream) -> Result<Option<CtlMsg>> {
-    read_json(r).await
+    let Some(value) = read_json::<serde_json::Value>(r).await? else { return Ok(None) };
+    Ok(Some(serde_json::from_value(value).unwrap_or_else(|e| {
+        eprintln!("hubbub: skipping a control message it cannot read: {e}");
+        CtlMsg::Unknown
+    })))
 }
 
 /// `write_msg` for any message type (the join protocol has its own).
@@ -158,7 +178,7 @@ mod tests {
     #[test]
     fn alpns_name_the_community() {
         let cid: CommunityId = "000102030405060708090a0b0c0d0e0f".parse().unwrap();
-        assert_eq!(ctl_alpn(&cid), b"hubbub/ctl/1/000102030405060708090a0b0c0d0e0f");
+        assert_eq!(ctl_alpn(&cid), b"hubbub/ctl/2/000102030405060708090a0b0c0d0e0f");
         assert_eq!(sig_alpn(&cid), b"hubbub/sig/1/000102030405060708090a0b0c0d0e0f");
         assert!(ctl_alpn(&cid).starts_with(CTL_PREFIX));
     }

@@ -42,7 +42,7 @@ use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
 use crate::join::JoinMsg;
-use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, HaveChannel, PeerReport};
+use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, HaveChannel, PeerReport, PROTO_VERSION};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
 use crate::view::build_view;
@@ -60,6 +60,8 @@ const DIAL_BACKOFF_MIN: Duration = Duration::from_secs(1);
 const DIAL_BACKOFF_MAX: Duration = Duration::from_secs(10);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long live text waits for a peer's `TextHave` before it flows anyway.
+const TEXT_HAVE_WAIT: Duration = Duration::from_secs(2);
 /// A node whose media host failed to start stays out of the running this long.
 const HOST_RETRY_AFTER: Duration = Duration::from_secs(60);
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -560,7 +562,7 @@ impl Inner {
     }
 
     fn hello(&self, can_host: bool) -> CtlMsg {
-        CtlMsg::Hello { member: self.me, can_host, online_since_ms: self.online_since_ms }
+        CtlMsg::Hello { member: self.me, can_host, online_since_ms: self.online_since_ms, proto: PROTO_VERSION }
     }
 
     /// Records whether this node may host now and tells the peers with a fresh Hello.
@@ -790,7 +792,7 @@ impl Inner {
         let can_host = self.state.lock().unwrap().can_host;
         write_msg(&mut send, &self.hello(can_host)).await?;
         match timeout(HELLO_TIMEOUT, read_msg(&mut recv)).await.context("waiting for Hello")?? {
-            Some(CtlMsg::Hello { member, can_host, online_since_ms }) if member == peer => {
+            Some(CtlMsg::Hello { member, can_host, online_since_ms, .. }) if member == peer => {
                 Ok((send, recv, can_host && self.listed_can_host(&peer), online_since_ms))
             }
             other => bail!("expected Hello from {}, got {other:?}", peer.tag()),
@@ -833,6 +835,14 @@ impl Inner {
             }),
             self.spawn(self.clone().probe_loop(peer, conn.clone(), out.clone())),
             self.spawn(self.clone().silence_watch(conn.clone(), heard_ms.clone())),
+            // A peer that sends no TextHave (a build that drops it) still gets live text.
+            self.spawn({
+                let (node, out) = (self.clone(), out.clone());
+                async move {
+                    sleep(TEXT_HAVE_WAIT).await;
+                    node.catch_up_text(peer, id, &out, u64::MAX, &[]);
+                }
+            }),
         ];
         let _ = self.read_loop(peer, id, &mut recv, &out, &pings, &heard_ms).await;
         for h in helpers {
@@ -934,6 +944,7 @@ impl Inner {
                 CtlMsg::TokenDenied { reason } => self.answer_token(peer, id, Err(reason)),
                 // The peer's measurement of this node; the view uses other members' reports.
                 CtlMsg::ProbeResult { .. } => {}
+                CtlMsg::Unknown => {}
                 CtlMsg::TextHave { since_ms, have } => self.catch_up_text(peer, id, &out, since_ms, &have),
                 CtlMsg::TextSubmit { channel, client_id, ciphertext } => {
                     self.relay_text(peer, Submission { channel, client_id, ciphertext }, Some(out))
