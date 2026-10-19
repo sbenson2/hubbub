@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'hubbub.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `app_event`, `app_join_event`, `ensure_closed`, `history_messages`, `hub_slot`, `hub`, `join_slot`, `minutes_left`, `now_min`, `on_runtime`, `parse_cid`, `runtime`, `seed_event`
+// These functions are ignored because they are not marked as `pub`: `app_event`, `app_join_event`, `app_presence`, `ensure_closed`, `history_messages`, `hub_slot`, `hub`, `join_slot`, `minutes_left`, `now_min`, `on_runtime`, `parse_cid`, `runtime`, `seed_event`
 
 Future<AppNode> startNode({required AppNodeConfig cfg}) =>
     RustLib.instance.api.crateApiHubbubStartNode(cfg: cfg);
@@ -31,6 +31,23 @@ Future<AppVoiceCredentials> nodeVoiceCredentials({
 
 AppChannels nodeChannels({required AppNode n}) =>
     RustLib.instance.api.crateApiHubbubNodeChannels(n: n);
+
+/// Tells every member where this node is in voice. `channel` null means in none.
+void nodeSetVoice({
+  required AppNode n,
+  String? channel,
+  required bool muted,
+  required bool deafened,
+}) => RustLib.instance.api.crateApiHubbubNodeSetVoice(
+  n: n,
+  channel: channel,
+  muted: muted,
+  deafened: deafened,
+);
+
+/// Who is in which voice channel now, as this node shows it.
+List<AppVoicePresence> nodeVoiceRoster({required AppNode n}) =>
+    RustLib.instance.api.crateApiHubbubNodeVoiceRoster(n: n);
 
 /// Every member of the community, this node included.
 List<AppMember> nodeMembers({required AppNode n}) =>
@@ -323,6 +340,11 @@ sealed class AppNodeEvent with _$AppNodeEvent {
 
   /// Someone joined, or a member's name or hosting ability changed; re-read `node_members`.
   const factory AppNodeEvent.membersChanged() = AppNodeEvent_MembersChanged;
+
+  /// Everyone in a voice channel, as a full list: replace what was shown.
+  const factory AppNodeEvent.voiceRoster({
+    required List<AppVoicePresence> entries,
+  }) = AppNodeEvent_VoiceRoster;
 }
 
 /// A text message. `(from, client_id)` names it, in history and in Text events alike: each
@@ -419,4 +441,34 @@ class AppVoiceCredentials {
           host == other.host &&
           term == other.term &&
           ice == other.ice;
+}
+
+/// One member in a voice channel, with their mute and deafen state.
+class AppVoicePresence {
+  /// The member's full id.
+  final String member;
+  final String channel;
+  final bool muted;
+  final bool deafened;
+
+  const AppVoicePresence({
+    required this.member,
+    required this.channel,
+    required this.muted,
+    required this.deafened,
+  });
+
+  @override
+  int get hashCode =>
+      member.hashCode ^ channel.hashCode ^ muted.hashCode ^ deafened.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppVoicePresence &&
+          runtimeType == other.runtimeType &&
+          member == other.member &&
+          channel == other.channel &&
+          muted == other.muted &&
+          deafened == other.deafened;
 }

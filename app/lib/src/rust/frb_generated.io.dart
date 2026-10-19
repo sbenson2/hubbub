@@ -91,6 +91,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppVoiceCredentials dco_decode_app_voice_credentials(dynamic raw);
 
   @protected
+  AppVoicePresence dco_decode_app_voice_presence(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -119,6 +122,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppTextMessage> dco_decode_list_app_text_message(dynamic raw);
+
+  @protected
+  List<AppVoicePresence> dco_decode_list_app_voice_presence(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -214,6 +220,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  AppVoicePresence sse_decode_app_voice_presence(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -252,6 +261,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppTextMessage> sse_decode_list_app_text_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<AppVoicePresence> sse_decode_list_app_voice_presence(
     SseDeserializer deserializer,
   );
 
@@ -371,6 +385,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_app_voice_presence(
+    AppVoicePresence self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -418,6 +438,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_app_text_message(
     List<AppTextMessage> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_app_voice_presence(
+    List<AppVoicePresence> self,
     SseSerializer serializer,
   );
 

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -357570208;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -684463550;
 
 // Section: executor
 
@@ -892,6 +892,62 @@ fn wire__crate__api__hubbub__node_send_text_impl(
         },
     )
 }
+fn wire__crate__api__hubbub__node_set_voice_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "node_set_voice",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_n = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AppNode>,
+            >>::sse_decode(&mut deserializer);
+            let api_channel = <Option<String>>::sse_decode(&mut deserializer);
+            let api_muted = <bool>::sse_decode(&mut deserializer);
+            let api_deafened = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_n_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_n, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_n_guard = Some(api_n.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_n_guard = api_n_guard.unwrap();
+                let output_ok = Ok::<_, ()>({
+                    crate::api::hubbub::node_set_voice(
+                        &*api_n_guard,
+                        api_channel,
+                        api_muted,
+                        api_deafened,
+                    );
+                })?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__hubbub__node_shutdown_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1041,6 +1097,52 @@ fn wire__crate__api__hubbub__node_voice_credentials_impl(
                     .await,
                 )
             }
+        },
+    )
+}
+fn wire__crate__api__hubbub__node_voice_roster_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "node_voice_roster",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_n = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AppNode>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_n_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_n, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_n_guard = Some(api_n.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_n_guard = api_n_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::hubbub::node_voice_roster(&*api_n_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -1576,6 +1678,13 @@ impl SseDecode for crate::api::hubbub::AppNodeEvent {
             4 => {
                 return crate::api::hubbub::AppNodeEvent::MembersChanged;
             }
+            5 => {
+                let mut var_entries =
+                    <Vec<crate::api::hubbub::AppVoicePresence>>::sse_decode(deserializer);
+                return crate::api::hubbub::AppNodeEvent::VoiceRoster {
+                    entries: var_entries,
+                };
+            }
             _ => {
                 unimplemented!("");
             }
@@ -1621,6 +1730,22 @@ impl SseDecode for crate::api::hubbub::AppVoiceCredentials {
             host: var_host,
             term: var_term,
             ice: var_ice,
+        };
+    }
+}
+
+impl SseDecode for crate::api::hubbub::AppVoicePresence {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_member = <String>::sse_decode(deserializer);
+        let mut var_channel = <String>::sse_decode(deserializer);
+        let mut var_muted = <bool>::sse_decode(deserializer);
+        let mut var_deafened = <bool>::sse_decode(deserializer);
+        return crate::api::hubbub::AppVoicePresence {
+            member: var_member,
+            channel: var_channel,
+            muted: var_muted,
+            deafened: var_deafened,
         };
     }
 }
@@ -1682,6 +1807,20 @@ impl SseDecode for Vec<crate::api::hubbub::AppTextMessage> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::hubbub::AppTextMessage>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::hubbub::AppVoicePresence> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::hubbub::AppVoicePresence>::sse_decode(
                 deserializer,
             ));
         }
@@ -1790,14 +1929,14 @@ fn pde_ffi_dispatcher_primary_impl(
         9 => wire__crate__api__hubbub__hub_open_impl(port, ptr, rust_vec_len, data_len),
         10 => wire__crate__api__hubbub__hub_shutdown_impl(port, ptr, rust_vec_len, data_len),
         21 => wire__crate__api__hubbub__node_send_text_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__hubbub__node_shutdown_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__hubbub__node_text_history_impl(port, ptr, rust_vec_len, data_len),
-        24 => {
+        23 => wire__crate__api__hubbub__node_shutdown_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__hubbub__node_text_history_impl(port, ptr, rust_vec_len, data_len),
+        25 => {
             wire__crate__api__hubbub__node_voice_credentials_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => wire__crate__api__hubbub__start_node_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__install__update_check_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__install__update_download_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__hubbub__start_node_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__install__update_check_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__install__update_download_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1826,13 +1965,15 @@ fn pde_ffi_dispatcher_sync_impl(
         18 => wire__crate__api__hubbub__node_member_id_impl(ptr, rust_vec_len, data_len),
         19 => wire__crate__api__hubbub__node_member_tag_impl(ptr, rust_vec_len, data_len),
         20 => wire__crate__api__hubbub__node_members_impl(ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__hubbub__process_cpu_percent_impl(ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__hubbub__profile_name_impl(ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__hubbub__set_profile_name_impl(ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__install__set_start_at_login_impl(ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__install__start_at_login_impl(ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__install__update_apply_on_exit_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__install__update_pending_impl(ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__hubbub__node_set_voice_impl(ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__hubbub__node_voice_roster_impl(ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__hubbub__process_cpu_percent_impl(ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__hubbub__profile_name_impl(ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__hubbub__set_profile_name_impl(ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__install__set_start_at_login_impl(ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__install__start_at_login_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__install__update_apply_on_exit_impl(ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__install__update_pending_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2036,6 +2177,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::hubbub::AppNodeEvent {
                 [3.into_dart(), message.into_into_dart().into_dart()].into_dart()
             }
             crate::api::hubbub::AppNodeEvent::MembersChanged => [4.into_dart()].into_dart(),
+            crate::api::hubbub::AppNodeEvent::VoiceRoster { entries } => {
+                [5.into_dart(), entries.into_into_dart().into_dart()].into_dart()
+            }
             _ => {
                 unimplemented!("");
             }
@@ -2101,6 +2245,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::hubbub::AppVoiceCredentials>
     for crate::api::hubbub::AppVoiceCredentials
 {
     fn into_into_dart(self) -> crate::api::hubbub::AppVoiceCredentials {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::hubbub::AppVoicePresence {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.member.into_into_dart().into_dart(),
+            self.channel.into_into_dart().into_dart(),
+            self.muted.into_into_dart().into_dart(),
+            self.deafened.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::hubbub::AppVoicePresence
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::hubbub::AppVoicePresence>
+    for crate::api::hubbub::AppVoicePresence
+{
+    fn into_into_dart(self) -> crate::api::hubbub::AppVoicePresence {
         self
     }
 }
@@ -2258,6 +2425,10 @@ impl SseEncode for crate::api::hubbub::AppNodeEvent {
             crate::api::hubbub::AppNodeEvent::MembersChanged => {
                 <i32>::sse_encode(4, serializer);
             }
+            crate::api::hubbub::AppNodeEvent::VoiceRoster { entries } => {
+                <i32>::sse_encode(5, serializer);
+                <Vec<crate::api::hubbub::AppVoicePresence>>::sse_encode(entries, serializer);
+            }
             _ => {
                 unimplemented!("");
             }
@@ -2287,6 +2458,16 @@ impl SseEncode for crate::api::hubbub::AppVoiceCredentials {
         <String>::sse_encode(self.host, serializer);
         <u64>::sse_encode(self.term, serializer);
         <Option<crate::api::hubbub::AppIceServer>>::sse_encode(self.ice, serializer);
+    }
+}
+
+impl SseEncode for crate::api::hubbub::AppVoicePresence {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.member, serializer);
+        <String>::sse_encode(self.channel, serializer);
+        <bool>::sse_encode(self.muted, serializer);
+        <bool>::sse_encode(self.deafened, serializer);
     }
 }
 
@@ -2340,6 +2521,16 @@ impl SseEncode for Vec<crate::api::hubbub::AppTextMessage> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::hubbub::AppTextMessage>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::hubbub::AppVoicePresence> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::hubbub::AppVoicePresence>::sse_encode(item, serializer);
         }
     }
 }

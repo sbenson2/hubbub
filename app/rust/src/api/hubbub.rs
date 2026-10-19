@@ -9,6 +9,7 @@ use hubbub_core::hub::{Hub, HubConfig};
 use hubbub_core::ids::CommunityId;
 use hubbub_core::invite::{Deny, Invite};
 use hubbub_core::join::JoinEvent;
+use hubbub_core::proto::VoicePresence;
 use hubbub_core::net::{ConnKind, RelayChoice};
 use hubbub_core::node::{Node, NodeConfig, NodeEvent};
 use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -95,6 +96,19 @@ pub struct AppTextMessage {
     pub client_id: u64,
 }
 
+/// One member in a voice channel, with their mute and deafen state.
+pub struct AppVoicePresence {
+    /// The member's full id.
+    pub member: String,
+    pub channel: String,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
+fn app_presence(p: VoicePresence) -> AppVoicePresence {
+    AppVoicePresence { member: p.member.to_string(), channel: p.channel, muted: p.muted, deafened: p.deafened }
+}
+
 pub enum AppNodeEvent {
     HostChanged { host: Option<String>, term: u64, is_me: bool },
     PeerUp { member: String, direct: bool },
@@ -102,6 +116,8 @@ pub enum AppNodeEvent {
     Text { message: AppTextMessage },
     /// Someone joined, or a member's name or hosting ability changed; re-read `node_members`.
     MembersChanged,
+    /// Everyone in a voice channel, as a full list: replace what was shown.
+    VoiceRoster { entries: Vec<AppVoicePresence> },
 }
 
 /// The app's view of a node event.
@@ -119,6 +135,9 @@ fn app_event(ev: NodeEvent) -> Option<AppNodeEvent> {
                 message: AppTextMessage { channel, term, seq, from: from.to_string(), sent_ms, body, client_id },
             },
             NodeEvent::MembersChanged => AppNodeEvent::MembersChanged,
+            NodeEvent::VoiceRoster { entries } => {
+                AppNodeEvent::VoiceRoster { entries: entries.into_iter().map(app_presence).collect() }
+            }
     })
 }
 
@@ -187,6 +206,10 @@ pub fn node_events(n: &AppNode, sink: StreamSink<AppNodeEvent>) -> anyhow::Resul
     if let Some(ev) = seed_event(n.node.host_state(), n.node.member_id()) {
         let _ = sink.add(ev);
     }
+    let roster = n.node.voice_roster();
+    if !roster.is_empty() {
+        let _ = sink.add(AppNodeEvent::VoiceRoster { entries: roster.into_iter().map(app_presence).collect() });
+    }
     runtime().spawn(async move {
         loop {
             match rx.recv().await {
@@ -224,6 +247,18 @@ pub async fn node_voice_credentials(n: &AppNode, room: String) -> anyhow::Result
 pub fn node_channels(n: &AppNode) -> AppChannels {
     let c = n.node.channels();
     AppChannels { text: c.text, voice: c.voice }
+}
+
+/// Tells every member where this node is in voice. `channel` null means in none.
+#[frb(sync)]
+pub fn node_set_voice(n: &AppNode, channel: Option<String>, muted: bool, deafened: bool) {
+    n.node.set_voice(channel, muted, deafened);
+}
+
+/// Who is in which voice channel now, as this node shows it.
+#[frb(sync)]
+pub fn node_voice_roster(n: &AppNode) -> Vec<AppVoicePresence> {
+    n.node.voice_roster().into_iter().map(app_presence).collect()
 }
 
 /// Every member of the community, this node included.
@@ -518,6 +553,18 @@ mod tests {
             panic!("expected HostChanged");
         };
         assert!(is_me);
+    }
+
+    #[test]
+    fn voice_roster_reaches_the_app() {
+        let m = MemberId([9; 32]);
+        let ev = NodeEvent::VoiceRoster {
+            entries: vec![VoicePresence { member: m, channel: "lobby".into(), muted: true, deafened: false }],
+        };
+        let Some(AppNodeEvent::VoiceRoster { entries }) = app_event(ev) else { panic!("expected VoiceRoster") };
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].member.clone(), entries[0].channel.as_str()), (m.to_string(), "lobby"));
+        assert!(entries[0].muted && !entries[0].deafened);
     }
 
     #[test]

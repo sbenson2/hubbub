@@ -428,7 +428,7 @@ extension AppNodeEventPatterns on AppNodeEvent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult Function( AppNodeEvent_PeerUp value)?  peerUp,TResult Function( AppNodeEvent_PeerDown value)?  peerDown,TResult Function( AppNodeEvent_Text value)?  text,TResult Function( AppNodeEvent_MembersChanged value)?  membersChanged,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult Function( AppNodeEvent_PeerUp value)?  peerUp,TResult Function( AppNodeEvent_PeerDown value)?  peerDown,TResult Function( AppNodeEvent_Text value)?  text,TResult Function( AppNodeEvent_MembersChanged value)?  membersChanged,TResult Function( AppNodeEvent_VoiceRoster value)?  voiceRoster,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
@@ -436,7 +436,8 @@ return hostChanged(_that);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that);case AppNodeEvent_Text() when text != null:
 return text(_that);case AppNodeEvent_MembersChanged() when membersChanged != null:
-return membersChanged(_that);case _:
+return membersChanged(_that);case AppNodeEvent_VoiceRoster() when voiceRoster != null:
+return voiceRoster(_that);case _:
   return orElse();
 
 }
@@ -454,7 +455,7 @@ return membersChanged(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AppNodeEvent_HostChanged value)  hostChanged,required TResult Function( AppNodeEvent_PeerUp value)  peerUp,required TResult Function( AppNodeEvent_PeerDown value)  peerDown,required TResult Function( AppNodeEvent_Text value)  text,required TResult Function( AppNodeEvent_MembersChanged value)  membersChanged,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AppNodeEvent_HostChanged value)  hostChanged,required TResult Function( AppNodeEvent_PeerUp value)  peerUp,required TResult Function( AppNodeEvent_PeerDown value)  peerDown,required TResult Function( AppNodeEvent_Text value)  text,required TResult Function( AppNodeEvent_MembersChanged value)  membersChanged,required TResult Function( AppNodeEvent_VoiceRoster value)  voiceRoster,}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged():
@@ -462,7 +463,8 @@ return hostChanged(_that);case AppNodeEvent_PeerUp():
 return peerUp(_that);case AppNodeEvent_PeerDown():
 return peerDown(_that);case AppNodeEvent_Text():
 return text(_that);case AppNodeEvent_MembersChanged():
-return membersChanged(_that);}
+return membersChanged(_that);case AppNodeEvent_VoiceRoster():
+return voiceRoster(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -476,7 +478,7 @@ return membersChanged(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult? Function( AppNodeEvent_PeerUp value)?  peerUp,TResult? Function( AppNodeEvent_PeerDown value)?  peerDown,TResult? Function( AppNodeEvent_Text value)?  text,TResult? Function( AppNodeEvent_MembersChanged value)?  membersChanged,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AppNodeEvent_HostChanged value)?  hostChanged,TResult? Function( AppNodeEvent_PeerUp value)?  peerUp,TResult? Function( AppNodeEvent_PeerDown value)?  peerDown,TResult? Function( AppNodeEvent_Text value)?  text,TResult? Function( AppNodeEvent_MembersChanged value)?  membersChanged,TResult? Function( AppNodeEvent_VoiceRoster value)?  voiceRoster,}){
 final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
@@ -484,7 +486,8 @@ return hostChanged(_that);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that);case AppNodeEvent_Text() when text != null:
 return text(_that);case AppNodeEvent_MembersChanged() when membersChanged != null:
-return membersChanged(_that);case _:
+return membersChanged(_that);case AppNodeEvent_VoiceRoster() when voiceRoster != null:
+return voiceRoster(_that);case _:
   return null;
 
 }
@@ -501,14 +504,15 @@ return membersChanged(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult Function( String member,  bool direct)?  peerUp,TResult Function( String member)?  peerDown,TResult Function( AppTextMessage message)?  text,TResult Function()?  membersChanged,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult Function( String member,  bool direct)?  peerUp,TResult Function( String member)?  peerDown,TResult Function( AppTextMessage message)?  text,TResult Function()?  membersChanged,TResult Function( List<AppVoicePresence> entries)?  voiceRoster,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that.member);case AppNodeEvent_Text() when text != null:
 return text(_that.message);case AppNodeEvent_MembersChanged() when membersChanged != null:
-return membersChanged();case _:
+return membersChanged();case AppNodeEvent_VoiceRoster() when voiceRoster != null:
+return voiceRoster(_that.entries);case _:
   return orElse();
 
 }
@@ -526,14 +530,15 @@ return membersChanged();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String? host,  BigInt term,  bool isMe)  hostChanged,required TResult Function( String member,  bool direct)  peerUp,required TResult Function( String member)  peerDown,required TResult Function( AppTextMessage message)  text,required TResult Function()  membersChanged,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String? host,  BigInt term,  bool isMe)  hostChanged,required TResult Function( String member,  bool direct)  peerUp,required TResult Function( String member)  peerDown,required TResult Function( AppTextMessage message)  text,required TResult Function()  membersChanged,required TResult Function( List<AppVoicePresence> entries)  voiceRoster,}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged():
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp():
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown():
 return peerDown(_that.member);case AppNodeEvent_Text():
 return text(_that.message);case AppNodeEvent_MembersChanged():
-return membersChanged();}
+return membersChanged();case AppNodeEvent_VoiceRoster():
+return voiceRoster(_that.entries);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -547,14 +552,15 @@ return membersChanged();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult? Function( String member,  bool direct)?  peerUp,TResult? Function( String member)?  peerDown,TResult? Function( AppTextMessage message)?  text,TResult? Function()?  membersChanged,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String? host,  BigInt term,  bool isMe)?  hostChanged,TResult? Function( String member,  bool direct)?  peerUp,TResult? Function( String member)?  peerDown,TResult? Function( AppTextMessage message)?  text,TResult? Function()?  membersChanged,TResult? Function( List<AppVoicePresence> entries)?  voiceRoster,}) {final _that = this;
 switch (_that) {
 case AppNodeEvent_HostChanged() when hostChanged != null:
 return hostChanged(_that.host,_that.term,_that.isMe);case AppNodeEvent_PeerUp() when peerUp != null:
 return peerUp(_that.member,_that.direct);case AppNodeEvent_PeerDown() when peerDown != null:
 return peerDown(_that.member);case AppNodeEvent_Text() when text != null:
 return text(_that.message);case AppNodeEvent_MembersChanged() when membersChanged != null:
-return membersChanged();case _:
+return membersChanged();case AppNodeEvent_VoiceRoster() when voiceRoster != null:
+return voiceRoster(_that.entries);case _:
   return null;
 
 }
@@ -871,5 +877,79 @@ String toString() {
 
 
 
+
+/// @nodoc
+
+
+class AppNodeEvent_VoiceRoster extends AppNodeEvent {
+  const AppNodeEvent_VoiceRoster({required  List<AppVoicePresence> entries}): _entries = entries,super._();
+  
+
+ final  List<AppVoicePresence> _entries;
+ List<AppVoicePresence> get entries {
+  if (_entries is EqualUnmodifiableListView) return _entries;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_entries);
+}
+
+
+/// Create a copy of AppNodeEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AppNodeEvent_VoiceRosterCopyWith<AppNodeEvent_VoiceRoster> get copyWith => _$AppNodeEvent_VoiceRosterCopyWithImpl<AppNodeEvent_VoiceRoster>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AppNodeEvent_VoiceRoster&&const DeepCollectionEquality().equals(other.entries, _entries));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_entries));
+}
+
+@override
+String toString() {
+    return 'AppNodeEvent.voiceRoster(entries: $entries)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AppNodeEvent_VoiceRosterCopyWith<$Res> implements $AppNodeEventCopyWith<$Res> {
+  factory $AppNodeEvent_VoiceRosterCopyWith(AppNodeEvent_VoiceRoster value, $Res Function(AppNodeEvent_VoiceRoster) _then) = _$AppNodeEvent_VoiceRosterCopyWithImpl;
+@useResult
+$Res call({
+ List<AppVoicePresence> entries
+});
+
+
+
+
+}
+/// @nodoc
+class _$AppNodeEvent_VoiceRosterCopyWithImpl<$Res>
+    implements $AppNodeEvent_VoiceRosterCopyWith<$Res> {
+  _$AppNodeEvent_VoiceRosterCopyWithImpl(this._self, this._then);
+
+  final AppNodeEvent_VoiceRoster _self;
+  final $Res Function(AppNodeEvent_VoiceRoster) _then;
+
+/// Create a copy of AppNodeEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? entries = null,}) {
+  return _then(AppNodeEvent_VoiceRoster(
+entries: null == entries ? _self._entries : entries // ignore: cast_nullable_to_non_nullable
+as List<AppVoicePresence>,
+  ));
+}
+
+
+}
 
 // dart format on
