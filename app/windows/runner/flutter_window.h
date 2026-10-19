@@ -21,6 +21,9 @@ class FlutterWindow : public Win32Window {
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
 
+  // Keep the window hidden when the first frame is ready (a start at login). Call before Create.
+  void SetStartHidden(bool hidden) { start_hidden_ = hidden; }
+
  protected:
   // Win32Window:
   bool OnCreate() override;

@@ -168,8 +168,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     return EXIT_SUCCESS;
   }
 
-  RegisterUrlScheme();
-
   // A window for this root is already up: pass the link on and stop.
   if (SendToInstance(key)) return EXIT_SUCCESS;
 
@@ -208,6 +206,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
+  // A start at login (the Run entry passes --background) sits in the tray; Dart shows the
+  // window if there turns out to be no tray.
+  window.SetStartHidden(HasArg(L"--background"));
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(title, origin, size)) {
