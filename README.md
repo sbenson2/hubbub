@@ -1,6 +1,6 @@
 # Hubbub
 
-**Discord-style voice, text and screen-share chat that runs on your friends' computers instead of a company's servers.**
+**Open-source voice, text and screen-share chat that runs on your friends' computers instead of a company's servers.**
 
 <p align="center">
   <img src="docs/brand/hubbub-icon.png" alt="Hubbub logo" width="160">
@@ -16,7 +16,7 @@
 
 Chat servers are usually someone else's machine, behind someone else's account system. Hubbub removes both. A server is a group of friends who each run the app; one of them acts as the host at any moment, and the role moves when that person leaves. You join with a link. There are no accounts, no central service, no port forwarding and no router settings.
 
-The interface is deliberately familiar: servers, text and voice channels, a member list, screen sharing. If you have used Discord-style chat, you already know how to use it. Hubbub is not affiliated with Discord and does not use its branding.
+The interface is deliberately familiar: servers, text and voice channels, a member list, screen sharing. If you have used a community chat app before, you already know how to use this one.
 
 > **Status: pre-release.** Version 0.1.0, unsigned, being tested with a small group of friends. Expect rough edges. See [Status](#status-and-roadmap).
 
@@ -66,14 +66,14 @@ The design documents are in [docs/superpowers/specs](docs/superpowers/specs) (th
 
 ## Philosophy
 
-Hubbub is built by one person who wanted to talk to friends without renting a server or trusting a platform, and who wanted it to be easy enough that nobody has to learn anything.
+Community chat shouldn't depend on one company's servers, business model or terms of service. Hubbub is the open alternative: the same familiar experience, owned by the people who use it.
 
-- **It has to just work.** "Everything has to just work automatically", and the app has to be easier than the alternatives for new users. No router settings, no accounts, no setup steps.
-- **It looks familiar.** It is meant to look and feel like the chat apps people already use: no learning curve.
-- **Windows first.** Windows is the primary platform, "since that is where the market is". Linux follows; macOS is in progress.
-- **Your friends' machines are the server.** No accounts, no central servers to run, pay for or shut down.
-- **Private by default.** Calls are end-to-end encrypted, and the app contains no telemetry or analytics code.
-- **Open source.** MIT licensed, so you can read it, run it and change it.
+- **Open source.** All of Hubbub is MIT licensed and developed in the open. Anyone can read the code, audit it, run it, fork it or improve it.
+- **Free forever.** Everything you need to talk with your friends (servers, text, voice, video, screen sharing, invites) is free, with no limits and no expiry. Optional premium features may come later to fund development. They will be extras on top, and nothing that is free today will move behind a paywall.
+- **Community driven.** The roadmap is shaped by the people who use it. Issues, ideas and pull requests are welcome, and the project is meant to outlive any one maintainer.
+- **Your data stays yours.** There is no Hubbub cloud. Messages and server data live on the members' own computers and travel between them over encrypted peer-to-peer links. When no direct path exists, a relay passes along traffic it cannot read. There are no accounts, no ads, no tracking, no analytics, and nothing to sell.
+- **Secure by design.** Every connection between members is encrypted, and voice and video calls are end-to-end encrypted. A server's keys are held by its members and shared only through its invite links. Because the code is open, none of this has to be taken on trust.
+- **It just works.** No router settings, no sign-up, no setup steps. Install it, share an invite link, and talk.
 
 ## Status and roadmap
 
