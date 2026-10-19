@@ -75,7 +75,8 @@ Future<void> main(List<String> args) async {
   final navigator = GlobalKey<NavigatorState>();
   final shell = PluginAppShell();
   // Self-update only exists for an installed copy; a dev run never polls a feed.
-  final installed = (Platform.isWindows || Platform.isLinux) && install.installVersion() != null;
+  final installedVersion = Platform.isWindows ? install.installVersion() : null;
+  final installed = updaterSupported(isWindows: Platform.isWindows, installedVersion: installedVersion);
   final updates = installed ? UpdateController(service: RustUpdateService(), feed: resolveUpdateFeed()) : null;
   final lifecycle = TrayLifecycle(
     shell: shell,
@@ -93,7 +94,7 @@ Future<void> main(List<String> args) async {
   updates?.start();
   runApp(HubbubApp(
       updates: updates,
-      windowsSettings: Platform.isWindows ? RustWindowsSettings() : null,
+      windowsSettings: installedVersion != null ? RustWindowsSettings() : null,
       hub: hub,
       room: room,
       links: WindowRevealingLinks(AppLinkSource(), shell),

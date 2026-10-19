@@ -21,37 +21,11 @@ String? resolveUpdateFeed({String compiled = kUpdateFeed, Map<String, String>? e
   return feed.isEmpty || feed.contains('<OWNER>') ? null : feed;
 }
 
-/// `major.minor.patch`, optionally with a `+build` or `-pre` tail, as in `pubspec.yaml`
-/// (`0.1.0+1`) and the installer's package version.
-class AppVersion implements Comparable<AppVersion> {
-  const AppVersion(this.major, this.minor, this.patch);
-
-  final int major, minor, patch;
-
-  /// Null when [text] is not a version.
-  static AppVersion? tryParse(String text) {
-    final m = RegExp(r'^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$').firstMatch(text.trim());
-    if (m == null) return null;
-    return AppVersion(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!));
-  }
-
-  @override
-  int compareTo(AppVersion other) {
-    for (final d in [major - other.major, minor - other.minor, patch - other.patch]) {
-      if (d != 0) return d;
-    }
-    return 0;
-  }
-
-  @override
-  bool operator ==(Object other) => other is AppVersion && compareTo(other) == 0;
-
-  @override
-  int get hashCode => Object.hash(major, minor, patch);
-
-  @override
-  String toString() => '$major.$minor.$patch';
-}
+/// Whether this run polls for updates. Only an installed Windows copy does. Linux ships the
+/// AppImage as a manual download for now: an unproven updater that can exit the process at
+/// startup is a worse risk than updating by hand.
+bool updaterSupported({required bool isWindows, required String? installedVersion}) =>
+    isWindows && installedVersion != null;
 
 /// Downloading and installing a newer Hubbub. The real one is [RustUpdateService]; tests fake it.
 abstract class UpdateService {

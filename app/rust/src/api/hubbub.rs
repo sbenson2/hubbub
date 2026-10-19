@@ -21,7 +21,7 @@ use tokio::task::AbortHandle;
 
 use crate::frb_generated::StreamSink;
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()

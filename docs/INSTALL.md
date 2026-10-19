@@ -14,8 +14,9 @@ User Settings, Windows Settings. It updates itself: when a new version is ready 
 To remove it, use Settings, Apps, Hubbub, Uninstall. Your servers and name stay in
 `%APPDATA%\dev.hubbub` until you delete that folder.
 
-If Windows Firewall asks whether to let Hubbub talk on your network, Allow is best (it lets devices on
-your network connect to you directly); Cancel still works, connections then go through Hubbub's relay.
+Hubbub listens for connections from other devices, so Windows Firewall may ask whether to let it
+talk on your network. Choose Allow: it lets devices on your network reach you directly. (We have not
+tested what happens if you decline.)
 
 If you cannot see "Run anyway" (Windows 11 with Smart App Control on, or a managed PC), the installer
 is blocked by the system and cannot be run until Hubbub is signed.
@@ -23,4 +24,5 @@ is blocked by the system and cannot be run until Hubbub is signed.
 ## Linux
 
 Download **HubbubLinux.AppImage**, make it executable (`chmod +x HubbubLinux.AppImage`) and run it.
-It updates itself like the Windows version.
+Linux does not update itself yet: to update, download the new AppImage from the latest release and
+replace the old one.

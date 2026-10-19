@@ -81,7 +81,40 @@ pub fn register_protocol(reg: &dyn Registry, exe: &Path) -> Result<()> {
 /// True when the value sits inside `root` (an install being removed must not take a dev run's
 /// registration with it).
 fn points_into(value: &str, root: &Path) -> bool {
-    value.to_ascii_lowercase().contains(&root.display().to_string().to_ascii_lowercase())
+    // With a trailing separator, so `...\Hubbub` does not match `...\HubbubOther\...`.
+    let root = format!("{}{}", root.display().to_string().trim_end_matches(['\\', '/']), std::path::MAIN_SEPARATOR);
+    value.to_ascii_lowercase().contains(&root.to_ascii_lowercase())
+}
+
+/// True when `command` (a registry command line, exe path first and quoted) starts an installed
+/// copy of Hubbub that still exists.
+fn runs_installed_copy(command: &str) -> bool {
+    let Some(exe) = command.trim_start().strip_prefix('"').and_then(|c| c.split('"').next()) else {
+        return false;
+    };
+    matches!(layout(Path::new(exe)), Layout::Installed { .. })
+}
+
+/// The rule for a dev run: the installed copy wins. A dev run (build folder, extracted zip)
+/// registers itself only when the current registration is absent or points at something else;
+/// it never takes `hubbub://` or the login entry away from a live install.
+fn dev_yields(reg: &dyn Registry, exe: &Path, key: &str, name: Option<&str>) -> bool {
+    layout(exe) == Layout::Dev && reg.get(key, name).is_some_and(|c| runs_installed_copy(&c))
+}
+
+/// What every ordinary launch does: keep `hubbub://` pointing at a copy that exists, unless this
+/// is a dev run and an installed copy already owns it.
+pub fn register_on_launch(reg: &dyn Registry, exe: &Path) -> Result<()> {
+    if dev_yields(reg, exe, &format!(r"{PROTOCOL_KEY}\shell\open\command"), None) {
+        return Ok(());
+    }
+    register_protocol(reg, exe)
+}
+
+/// Launches that must not touch the registry or pay for it: `--quit` and a link being forwarded
+/// to the running instance.
+pub fn registers_on_launch(args: &[String]) -> bool {
+    !args.iter().any(|a| a.eq_ignore_ascii_case("--quit") || a.to_ascii_lowercase().starts_with("hubbub:"))
 }
 
 pub fn start_at_login(reg: &dyn Registry) -> bool {
@@ -91,6 +124,9 @@ pub fn start_at_login(reg: &dyn Registry) -> bool {
 /// Adds or removes the login entry (HKCU `Run`, the same place Discord uses).
 pub fn set_start_at_login(reg: &dyn Registry, exe: &Path, on: bool) -> Result<()> {
     if on {
+        if dev_yields(reg, exe, RUN_KEY, Some(RUN_NAME)) {
+            return Ok(()); // a dev run never repoints an install's login entry at a build folder
+        }
         reg.set(RUN_KEY, Some(RUN_NAME), &run_command(&launch_target(exe)))
     } else {
         reg.delete_value(RUN_KEY, RUN_NAME)
@@ -237,7 +273,10 @@ pub extern "C" fn hubbub_startup() {
                 })
                 .on_restarted(|_| RESTARTED.store(true, Ordering::SeqCst))
                 .run();
-            let _ = register_protocol(&reg, &exe);
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if registers_on_launch(&args) {
+                let _ = register_on_launch(&reg, &exe);
+            }
         }
     });
 }
@@ -364,6 +403,41 @@ mod tests {
         assert!(!start_at_login(&reg), "an update must not turn it back on");
         // ...and still repoints the link handler.
         assert!(reg.get(&format!(r"{PROTOCOL_KEY}\shell\open\command"), None).is_some());
+    }
+
+    #[test]
+    fn points_into_needs_the_whole_folder_name() {
+        let root = PathBuf::from(r"C:\Users\a\AppData\Local\Hubbub");
+        assert!(points_into(r#""C:\Users\a\AppData\Local\Hubbub\current\hubbub.exe" "%1""#, &root));
+        assert!(points_into(r#""c:\users\a\appdata\local\HUBBUB\current\hubbub.exe""#, &root));
+        assert!(!points_into(r#""C:\Users\a\AppData\Local\HubbubOther\current\hubbub.exe""#, &root));
+    }
+
+    #[test]
+    fn a_dev_run_leaves_an_installed_copys_registrations_alone() {
+        let (_tmp, exe) = installed();
+        let reg = FakeRegistry::default();
+        on_install(&reg, &exe).unwrap();
+        let before = reg.values.borrow().clone();
+        register_on_launch(&reg, &dev_exe()).unwrap();
+        set_start_at_login(&reg, &dev_exe(), true).unwrap();
+        assert_eq!(*reg.values.borrow(), before);
+        // The installed copy itself still refreshes them, and a dev run takes over once the
+        // install is gone (its files no longer exist).
+        register_on_launch(&reg, &exe).unwrap();
+        std::fs::remove_file(exe.parent().unwrap().parent().unwrap().join("Update.exe")).unwrap();
+        register_on_launch(&reg, &dev_exe()).unwrap();
+        let command = reg.get(&format!(r"{PROTOCOL_KEY}\shell\open\command"), None).unwrap();
+        assert_eq!(command, format!("\"{}\" \"%1\"", dev_exe().display()));
+    }
+
+    #[test]
+    fn quit_and_link_forward_launches_skip_the_registry() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(registers_on_launch(&args(&[])));
+        assert!(registers_on_launch(&args(&["--background"])));
+        assert!(!registers_on_launch(&args(&["--quit"])));
+        assert!(!registers_on_launch(&args(&["hubbub://join/abc"])));
     }
 
     #[test]

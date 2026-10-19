@@ -60,7 +60,15 @@ unsigned long long RootKey(std::wstring root) {
 // hook by launching this exe with --veloapp-* and expects it to act and exit within seconds.
 // Missing library or symbol (a stripped dev bundle) means no installer glue, never a failed start.
 void CallInstallerGlue(const char* symbol) {
-  HMODULE lib = ::LoadLibraryW(L"hubbub_app.dll");
+  // By full path from this exe's folder, never the search path, so a planted DLL elsewhere is not
+  // picked up.
+  wchar_t path[MAX_PATH];
+  DWORD n = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return;
+  wchar_t* slash = wcsrchr(path, L'\\');
+  if (!slash || (slash + 1 - path) + wcslen(L"hubbub_app.dll") >= MAX_PATH) return;
+  wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"hubbub_app.dll");
+  HMODULE lib = ::LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
   if (!lib) return;
   auto fn = reinterpret_cast<void (*)()>(::GetProcAddress(lib, symbol));
   if (fn) fn();

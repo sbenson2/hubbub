@@ -20,6 +20,12 @@ fn manager_for(feed: &str) -> Result<UpdateManager> {
     })
 }
 
+/// Velopack's HTTP and file calls block (a download is tens of MB); run them on the blocking pool
+/// so they never hold an async worker.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    crate::api::hubbub::runtime().spawn_blocking(f).await?
+}
+
 fn installed_manager() -> Result<UpdateManager> {
     Ok(UpdateManager::new(sources::NoneSource {}, None, None)?)
 }
@@ -57,25 +63,31 @@ pub fn set_start_at_login(on: bool) -> Result<()> {
 /// Looks for a newer release in `feed`. `Some(version)` when there is one. Errors (no network,
 /// no feed yet, not installed) are for the caller to swallow.
 pub async fn update_check(feed: String) -> Result<Option<String>> {
-    let manager = manager_for(&feed)?;
-    let found = manager.check_for_updates()?;
-    let version = match found {
-        velopack::UpdateCheck::UpdateAvailable(info) => {
-            let v = info.TargetFullRelease.Version.clone();
-            *CHECKED.lock().unwrap() = Some(*info);
-            Some(v)
-        }
-        _ => None,
-    };
-    Ok(version)
+    blocking(move || {
+        let manager = manager_for(&feed)?;
+        let found = manager.check_for_updates()?;
+        let version = match found {
+            velopack::UpdateCheck::UpdateAvailable(info) => {
+                let v = info.TargetFullRelease.Version.clone();
+                *CHECKED.lock().unwrap() = Some(*info);
+                Some(v)
+            }
+            _ => None,
+        };
+        Ok(version)
+    })
+    .await
 }
 
 /// Downloads what `update_check` found; returns its version. The files wait in the install
 /// folder until `update_apply_on_exit` or the next start applies them.
 pub async fn update_download(feed: String) -> Result<String> {
-    let info = CHECKED.lock().unwrap().clone().ok_or_else(|| anyhow!("no update was checked for"))?;
-    manager_for(&feed)?.download_updates(&info, None)?;
-    Ok(info.TargetFullRelease.Version)
+    blocking(move || {
+        let info = CHECKED.lock().unwrap().clone().ok_or_else(|| anyhow!("no update was checked for"))?;
+        manager_for(&feed)?.download_updates(&info, None)?;
+        Ok(info.TargetFullRelease.Version)
+    })
+    .await
 }
 
 /// The version downloaded and waiting for a restart, if any.

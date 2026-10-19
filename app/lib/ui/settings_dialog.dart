@@ -237,7 +237,14 @@ class _WindowsSectionState extends State<_WindowsSection> {
             style: TextStyle(fontFamily: hubFont, fontSize: 14, height: 1.3, color: HubColors.muted)),
         value: _login,
         onChanged: (on) {
-          widget.settings.setStartAtLogin(on);
+          try {
+            widget.settings.setStartAtLogin(on);
+          } catch (e) {
+            debugPrint('hubbub: could not change start at login: $e');
+            ScaffoldMessenger.maybeOf(context)
+                ?.showSnackBar(const SnackBar(content: Text('Could not change that setting.')));
+          }
+          // Read the real state back, which also puts the switch back after a failure.
           setState(() => _login = widget.settings.startAtLogin);
         },
       ),

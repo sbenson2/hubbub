@@ -41,16 +41,18 @@ class FakeUpdateService implements UpdateService {
 
 /// Records the toggle; stands in for the HKCU Run value.
 class FakeWindowsSettings implements WindowsSettings {
-  FakeWindowsSettings({this.startAtLogin = true, this.version = '0.1.0'});
+  FakeWindowsSettings({this.startAtLogin = true, this.version = '0.1.0', this.failWrites = false});
 
   @override
   bool startAtLogin;
   @override
   final String? version;
   final writes = <bool>[];
+  final bool failWrites;
 
   @override
   void setStartAtLogin(bool on) {
+    if (failWrites) throw Exception('registry says no');
     writes.add(on);
     startAtLogin = on;
   }
@@ -59,18 +61,12 @@ class FakeWindowsSettings implements WindowsSettings {
 const feed = 'https://example.test/releases';
 
 void main() {
-  group('AppVersion', () {
-    test('parses pubspec and installer versions', () {
-      expect(AppVersion.tryParse('0.1.0'), const AppVersion(0, 1, 0));
-      expect(AppVersion.tryParse('0.1.0+1'), const AppVersion(0, 1, 0));
-      expect(AppVersion.tryParse('v1.2.3-beta.1'), const AppVersion(1, 2, 3));
-      expect(AppVersion.tryParse('1.2'), isNull);
-      expect(AppVersion.tryParse('latest'), isNull);
-    });
-
-    test('orders numerically, not as text', () {
-      expect(AppVersion.tryParse('0.10.0')!.compareTo(AppVersion.tryParse('0.9.9')!), greaterThan(0));
-      expect(AppVersion.tryParse('1.0.0')!.compareTo(AppVersion.tryParse('1.0.0+7')!), 0);
+  group('updaterSupported', () {
+    test('only an installed Windows copy updates itself', () {
+      expect(updaterSupported(isWindows: true, installedVersion: '0.1.0'), isTrue);
+      expect(updaterSupported(isWindows: true, installedVersion: null), isFalse);
+      // Linux updates are manual for now, even from an AppImage that reports a version.
+      expect(updaterSupported(isWindows: false, installedVersion: '0.1.0'), isFalse);
     });
   });
 
@@ -242,12 +238,12 @@ void main() {
   });
 
   group('Windows Settings', () {
-    Future<FakeWindowsSettings> open(WidgetTester tester, {bool startAtLogin = true}) async {
-      final windows = FakeWindowsSettings(startAtLogin: startAtLogin);
+    Future<FakeWindowsSettings> open(WidgetTester tester, {bool startAtLogin = true, bool failWrites = false}) async {
+      final windows = FakeWindowsSettings(startAtLogin: startAtLogin, failWrites: failWrites);
       final room = FakeRoom();
       await tester.pumpWidget(MaterialApp(
         theme: hubbubTheme(),
-        home: Builder(
+        home: Scaffold(body: Builder(
           builder: (context) => TextButton(
             onPressed: () => showSettingsDialog(context,
                 memberId: 'a' * 64,
@@ -258,7 +254,7 @@ void main() {
                 windows: windows),
             child: const Text('open'),
           ),
-        ),
+        )),
       ));
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
@@ -281,6 +277,17 @@ void main() {
       await tester.pumpAndSettle();
       expect(windows.writes, [false, true]);
       expect(find.text('Hubbub 0.1.0'), findsOneWidget);
+    });
+
+    testWidgets('a failed write puts the switch back and says so', (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await open(tester, failWrites: true);
+      await tester.tap(find.byKey(const Key('start-at-login')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(find.byKey(const Key('start-at-login'))).value, isTrue);
+      expect(find.text('Could not change that setting.'), findsOneWidget);
     });
   });
 }
