@@ -22,6 +22,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(rnnoise PRIVATE -Wno-cpp -O2)
 endif()
 if(MSVC)
-  target_compile_definitions(rnnoise PRIVATE _CRT_SECURE_NO_WARNINGS)
+  # MSVC does not define __SSE2__; x64 always has SSE2, so select the SSE code path
+  # (otherwise vec.h falls back to an Opus-only header that is not part of RNNoise).
+  target_compile_definitions(rnnoise PRIVATE _CRT_SECURE_NO_WARNINGS __SSE2__=1)
   target_compile_options(rnnoise PRIVATE /W1 /O2)
 endif()
