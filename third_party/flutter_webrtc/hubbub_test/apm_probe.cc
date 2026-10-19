@@ -6,11 +6,13 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cmath>
 #include <thread>
 #include <vector>
 #include <string>
 
+#include "hubbub_capture_processor.h"
 #include "libwebrtc.h"
 #include "rtc_logging.h"
 #include "rtc_audio_device.h"
@@ -24,6 +26,22 @@ using namespace libwebrtc;
 namespace {
 
 std::atomic<long> g_calls{0};
+std::atomic<long> g_sink_calls{0};
+std::atomic<int> g_sink_peak{0};
+
+class Sink : public AudioTrackSink {
+ public:
+  void OnData(const void* data, int bits, int rate, size_t ch, size_t frames) override {
+    g_sink_calls++;
+    if (bits != 16) return;
+    const int16_t* p = (const int16_t*)data;
+    int peak = 0;
+    for (size_t i = 0; i < ch * frames; ++i) { int v = std::abs((int)p[i]); if (v > peak) peak = v; }
+    int cur = g_sink_peak.load();
+    while (peak > cur && !g_sink_peak.compare_exchange_weak(cur, peak)) {}
+  }
+};
+
 std::atomic<int> g_zero{0};
 
 class Probe : public RTCAudioProcessing::CustomProcessing {
@@ -101,12 +119,27 @@ int main(int argc, char** argv) {
               (int)adev->RecordingDevices(), (int)adev->PlayoutDevices());
   auto apm = factory->GetAudioProcessing();
   Probe probe;
-  apm->SetCapturePostProcessing(&probe);
+  hubbub::CaptureProcessor real;
+  bool use_real = argc > 1 && std::string(argv[1]) == "real";
+  if (use_real) {
+    real.SetRnnoiseEnabled(true);
+    real.SetGain(1.5f);
+    real.SetLevelsCallback([](const hubbub::Levels& l) {
+      static int n = 0;
+      if (++n % 20 == 1)
+        std::printf("hubbub: probe levels pre=%.3f post=%.3f speech=%.2f\n", l.pre, l.post, l.speech);
+    });
+    apm->SetCapturePostProcessing(&real);
+  } else {
+    apm->SetCapturePostProcessing(&probe);
+  }
   std::printf("hubbub: probe registered (zero=%d)\n", (int)zero);
 
   RTCAudioOptions opts;
   auto src = factory->CreateAudioSource("mic", RTCAudioSource::kMicrophone, opts);
   auto track = factory->CreateAudioTrack(src, "audio0");
+  Sink sink;
+  track->AddSink(&sink);
 
   RTCConfiguration cfg;
   if (argc > 2) { cfg.disable_ipv6 = true; cfg.disable_link_local_networks = true; cfg.candidate_network_policy = CandidateNetworkPolicy::kCandidateNetworkPolicyAll; cfg.ice_servers[0].uri = string("stun:stun.l.google.com:19302"); }
@@ -159,10 +192,25 @@ int main(int argc, char** argv) {
       std::printf("hubbub: probe t=%.1fs calls=%ld\n", (i + 1) / 10.0,
                   g_calls.load());
   }
-  std::printf("hubbub: probe RESULT calls=%ld\n", g_calls.load());
+  {
+    a->GetStats(
+        [](const vector<scoped_refptr<MediaRTCStats>> reports) {
+          for (size_t i = 0; i < reports.size(); ++i) {
+            auto r = reports[i];
+            if (r->type().std_string() == "media-source")
+              std::printf("hubbub: probe stats %s\n", r->ToJson().c_string());
+          }
+        },
+        [](const char* e) { std::printf("hubbub: probe stats fail %s\n", e); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  if (use_real)
+    std::printf("hubbub: probe real processor calls=%ld rate=%d channels=%d bands=%d frames=%d\n", real.calls(), real.rate(), real.channels(), real.last_bands(), real.last_frames());
+  std::printf("hubbub: probe local sink calls=%ld peak=%d\n", g_sink_calls.load(), g_sink_peak.load());
+  std::printf("hubbub: probe RESULT calls=%ld\n", use_real ? real.calls() : g_calls.load());
   apm->SetCapturePostProcessing(nullptr);
   a->Close();
   b->Close();
   std::fflush(stdout);
-  std::_Exit(g_calls.load() > 0 ? 0 : 2);
+  std::_Exit((use_real ? real.calls() : g_calls.load()) > 0 ? 0 : 2);
 }

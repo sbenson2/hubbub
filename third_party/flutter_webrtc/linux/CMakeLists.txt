@@ -15,6 +15,13 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_definitions(-DRTC_DESKTOP_DEVICE)
 
+# Hubbub patch: RNNoise (BSD-3, third_party/rnnoise at the repo root) for the
+# capture post-processor. Resolve the plugin's real path first: Flutter reaches
+# it through a .plugin_symlinks entry and ".." must not be applied to that link.
+get_filename_component(HUBBUB_PLUGIN_REAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+get_filename_component(HUBBUB_RNNOISE_DIR "${HUBBUB_PLUGIN_REAL_DIR}/../../rnnoise" ABSOLUTE)
+add_subdirectory("${HUBBUB_RNNOISE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rnnoise")
+
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_data_channel.cc"
   "../common/cpp/src/flutter_data_packet_cryptor.cc"
@@ -27,6 +34,7 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_screen_capture.cc"
   "../common/cpp/src/flutter_webrtc.cc"
   "../common/cpp/src/flutter_webrtc_base.cc"
+  "../common/cpp/src/hubbub_audio.cc"
   "../common/cpp/src/flutter_common.cc"
   "loopback_capturer_factory.cc"
   "pulse_loopback_capturer.cc"
@@ -54,7 +62,7 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
 )
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter rnnoise)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
 # GCC 14+ (and notably GCC 16) tightened transitive header inclusion, so the

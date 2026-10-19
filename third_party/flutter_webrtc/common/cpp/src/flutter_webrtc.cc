@@ -533,6 +533,53 @@ void FlutterWebRTC::HandleMethodCall(
         GetValue<EncodableMap>(*method_call.arguments());
     const std::string track_id = findString(params, "trackId");
     MediaStreamTrackSwitchCamera(track_id, std::move(result));
+  } else if (method_call.method_name().compare("hubbubSetNoiseSuppression") == 0) {
+    // Hubbub patch: mode is "off", "webrtc" or "rnnoise". Only "rnnoise" is
+    // done here; "webrtc" is the APM's own NS, chosen through the capture
+    // constraints.
+    auto args = method_call.arguments();
+    if (!args || !hubbub_processor_) {
+      result->Error("Bad Arguments", "hubbubSetNoiseSuppression() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::string mode = findString(params, "mode");
+    if (mode != "off" && mode != "webrtc" && mode != "rnnoise") {
+      result->Error("Bad Arguments", "hubbubSetNoiseSuppression() unknown mode");
+      return;
+    }
+    hubbub_processor_->SetRnnoiseEnabled(mode == "rnnoise");
+    result->Success();
+  } else if (method_call.method_name().compare("hubbubSetInputGain") == 0) {
+    // Hubbub patch: gain factor 0.0 to 2.0 (0 to 200 percent).
+    auto args = method_call.arguments();
+    if (!args || !hubbub_processor_) {
+      result->Error("Bad Arguments", "hubbubSetInputGain() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::optional<double> gain = maybeFindDouble(params, "gain");
+    if (!gain.has_value() || gain.value() < 0 || gain.value() > 2) {
+      result->Error("Bad Arguments", "hubbubSetInputGain() gain must be 0..2");
+      return;
+    }
+    hubbub_processor_->SetGain((float)gain.value());
+    result->Success();
+  } else if (method_call.method_name().compare("hubbubGetStatus") == 0) {
+    // Hubbub patch: what the processor has seen, for the app's log.
+    if (!hubbub_processor_) {
+      result->Error("hubbubGetStatus", "processor not installed");
+      return;
+    }
+    EncodableMap info;
+    info[EncodableValue("calls")] = (int64_t)hubbub_processor_->calls();
+    info[EncodableValue("rate")] = hubbub_processor_->rate();
+    info[EncodableValue("channels")] = hubbub_processor_->channels();
+    info[EncodableValue("bands")] = hubbub_processor_->last_bands();
+    info[EncodableValue("frames")] = hubbub_processor_->last_frames();
+    info[EncodableValue("rnnoise")] = hubbub_processor_->rnnoise();
+    info[EncodableValue("gain")] = (double)hubbub_processor_->gain();
+    result->Success(EncodableValue(info));
   } else if (method_call.method_name().compare("setVolume") == 0) {
     auto args = method_call.arguments();
     if (!args) {

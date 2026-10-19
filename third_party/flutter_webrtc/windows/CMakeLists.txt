@@ -16,6 +16,13 @@ set(PLUGIN_NAME "flutter_webrtc_plugin")
 add_definitions(-DLIB_WEBRTC_API_DLL)
 add_definitions(-DRTC_DESKTOP_DEVICE)
 
+# Hubbub patch: RNNoise (BSD-3, third_party/rnnoise at the repo root) for the
+# capture post-processor. Resolve the plugin's real path first: Flutter reaches
+# it through a .plugin_symlinks entry and ".." must not be applied to that link.
+get_filename_component(HUBBUB_PLUGIN_REAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+get_filename_component(HUBBUB_RNNOISE_DIR "${HUBBUB_PLUGIN_REAL_DIR}/../../rnnoise" ABSOLUTE)
+add_subdirectory("${HUBBUB_RNNOISE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rnnoise")
+
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_common.cc"
   "../common/cpp/src/flutter_data_channel.cc"
@@ -29,6 +36,7 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_screen_capture.cc"
   "../common/cpp/src/flutter_webrtc.cc"
   "../common/cpp/src/flutter_webrtc_base.cc"
+  "../common/cpp/src/hubbub_audio.cc"
   "application_loopback_capturer.cc"
   "loopback_capturer_factory.cc"
   "flutter_webrtc_plugin.cc"
@@ -52,6 +60,7 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
 )
 target_link_libraries(${PLUGIN_NAME} PRIVATE 
+  rnnoise
   flutter
   flutter_wrapper_plugin
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/libwebrtc.dll.lib"

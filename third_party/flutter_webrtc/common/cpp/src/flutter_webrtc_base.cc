@@ -41,6 +41,10 @@ FlutterWebRTCBase::FlutterWebRTCBase(BinaryMessenger* messenger,
 }
 
 FlutterWebRTCBase::~FlutterWebRTCBase() {
+  if (audio_processing_ && hubbub_processor_) {
+    // Hubbub patch: unregister before the processor goes away.
+    audio_processing_->SetCapturePostProcessing(nullptr);
+  }
   if (webrtc_initialized_) {
     LibWebRTC::Terminate();
   }
@@ -84,6 +88,22 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
   video_device_ = factory_->GetVideoDevice();
   desktop_device_ = factory_->GetDesktopDevice();
   audio_processing_ = factory_->GetAudioProcessing();
+
+  // Hubbub patch: capture post-processor. Runs after the APM's AEC/NS/AGC and
+  // does RNNoise, input gain with a soft limiter and the peak meter. It starts
+  // as a pass-through (no RNNoise, gain 1.0) until Dart configures it.
+  hubbub_processor_ = std::make_unique<hubbub::CaptureProcessor>();
+  hubbub_processor_->SetLevelsCallback([this](const hubbub::Levels& l) {
+    EventChannelProxy* channel = event_channel();
+    if (!channel) return;
+    EncodableMap info;
+    info[EncodableValue("event")] = "hubbubLevels";
+    info[EncodableValue("pre")] = (double)l.pre;
+    info[EncodableValue("post")] = (double)l.post;
+    info[EncodableValue("speech")] = (double)l.speech;
+    channel->Success(EncodableValue(info), false);
+  });
+  audio_processing_->SetCapturePostProcessing(hubbub_processor_.get());
 
   audio_device_->OnDeviceChange([&] {
     EncodableMap info;

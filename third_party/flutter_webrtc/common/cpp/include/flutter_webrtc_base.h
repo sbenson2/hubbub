@@ -13,6 +13,8 @@
 
 #include "rtc_audio_device.h"
 #include "rtc_audio_processing.h"
+// Hubbub patch: capture post-processor (RNNoise, input gain, peak meter).
+#include "hubbub_capture_processor.h"
 #include "rtc_desktop_device.h"
 #include "rtc_dtmf_sender.h"
 #include "rtc_frame_cryptor.h"
@@ -126,6 +128,8 @@ class FlutterWebRTCBase {
   scoped_refptr<RTCVideoDevice> video_device_;
   scoped_refptr<RTCDesktopDevice> desktop_device_;
   scoped_refptr<RTCAudioProcessing> audio_processing_;
+  // Hubbub patch: registered with audio_processing_ as capture post-processor.
+  std::unique_ptr<hubbub::CaptureProcessor> hubbub_processor_;
   RTCConfiguration configuration_;
 
   std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;
