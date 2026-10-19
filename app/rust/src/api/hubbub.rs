@@ -51,6 +51,17 @@ pub struct AppVoiceCredentials {
     pub e2ee_key: Vec<u8>,
     pub host: String,
     pub term: u64,
+    /// The ICE server the LiveKit client must use (relay-only): this node's TURN shim, which
+    /// carries call media through the iroh connection. `None` if the machine has no usable
+    /// network address; the client then connects directly.
+    pub ice: Option<AppIceServer>,
+}
+
+pub struct AppIceServer {
+    /// `turn:<ip>:<port>?transport=udp`
+    pub url: String,
+    pub username: String,
+    pub credential: String,
 }
 
 pub struct AppChannels {
@@ -205,6 +216,7 @@ pub async fn node_voice_credentials(n: &AppNode, room: String) -> anyhow::Result
         e2ee_key: c.e2ee_key.to_vec(),
         host: c.host.to_string(),
         term: c.term,
+        ice: c.ice.map(|i| AppIceServer { url: i.url, username: i.username, credential: i.credential }),
     })
 }
 

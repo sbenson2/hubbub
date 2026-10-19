@@ -84,6 +84,32 @@ void main() {
     expect(find.text('Voice Connected'), findsOneWidget);
   });
 
+  testWidgets('joining_connects_with_the_ice_server_from_the_credentials', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+    expect(room.iceAtConnect, node.ice);
+    expect(room.iceAtConnect, isNotNull);
+  });
+
+  testWidgets('a_host_change_rejoins_with_the_new_credentials_ice_server', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+    const next = AppIceServer(url: 'turn:10.0.0.7:51000?transport=udp', username: 'hb2', credential: 'other');
+    node.ice = next;
+
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pumpAndSettle();
+
+    expect(room.iceAtConnect, next, reason: 'the rejoin must use the ICE config of the new credentials');
+  });
+
+  testWidgets('a_node_without_a_usable_address_joins_with_no_ice_server', (tester) async {
+    await pumpShell(tester);
+    node.ice = null;
+    await joinLobby(tester);
+    expect(room.iceAtConnect, isNull);
+  });
+
   testWidgets('a_host_change_during_an_in_flight_rejoin_is_not_lost', (tester) async {
     await pumpShell(tester);
     await joinLobby(tester);

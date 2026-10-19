@@ -6,7 +6,27 @@ import 'package:livekit_client/livekit_client.dart';
 
 import 'capture_options.dart';
 import 'publish_guard.dart';
+import 'src/rust/api/hubbub.dart' show AppIceServer;
 import 'video_options.dart';
+
+/// The options for connecting to the tunnelled LiveKit signal URL.
+///
+/// LiveKit runs loopback-only, which libwebrtc will not use, so media goes through the node's
+/// TURN shim: [ice] is its only ICE server and the policy is relay-only. The engine uses
+/// `connectOptions.rtcConfiguration` for the first connection and for every reconnect, and
+/// server-provided ICE servers apply only when this has none (livekit_client 2.13.1,
+/// `lib/src/core/engine.dart:645-651`; the field is `ConnectOptions.rtcConfiguration`,
+/// `lib/src/options.dart:209-224`).
+ConnectOptions connectOptionsFor(AppIceServer? ice) {
+  if (ice == null) return const ConnectOptions(autoSubscribe: false);
+  return ConnectOptions(
+    autoSubscribe: false,
+    rtcConfiguration: RTCConfiguration(
+      iceServers: [RTCIceServer(urls: [ice.url], username: ice.username, credential: ice.credential)],
+      iceTransportPolicy: RTCIceTransportPolicy.relay,
+    ),
+  );
+}
 
 /// Connection quality sample taken from the WebRTC stats.
 class StatsSample {
@@ -122,7 +142,8 @@ class MediaDeviceInfo {
 
 /// What the UI and node logic need from a media room, so LiveKit can be faked.
 abstract class RoomAdapter {
-  Future<void> connect(String url, String token, Uint8List e2eeKey);
+  /// [ice] is the node's TURN shim, through which media reaches the host; see [connectOptionsFor].
+  Future<void> connect(String url, String token, Uint8List e2eeKey, {AppIceServer? ice});
   Future<void> disconnect();
   Future<void> setMicrophoneEnabled(bool on);
 
@@ -347,7 +368,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
   }
 
   @override
-  Future<void> connect(String url, String token, Uint8List e2eeKey) async {
+  Future<void> connect(String url, String token, Uint8List e2eeKey, {AppIceServer? ice}) async {
     await disconnect();
     // Every member derives the same key, so the shared-key provider is enough.
     final keyProvider = await BaseKeyProvider.create();
@@ -401,7 +422,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     await room.connect(
       url,
       token,
-      connectOptions: const ConnectOptions(autoSubscribe: false),
+      connectOptions: connectOptionsFor(ice),
     );
     // Tracks published before we joined do not raise TrackPublishedEvent.
     for (final p in room.remoteParticipants.values) {

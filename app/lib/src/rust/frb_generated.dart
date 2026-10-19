@@ -1010,6 +1010,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AppIceServer dco_decode_app_ice_server(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return AppIceServer(
+      url: dco_decode_String(arr[0]),
+      username: dco_decode_String(arr[1]),
+      credential: dco_decode_String(arr[2]),
+    );
+  }
+
+  @protected
   AppInvitePreview dco_decode_app_invite_preview(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -1115,14 +1128,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AppVoiceCredentials dco_decode_app_voice_credentials(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return AppVoiceCredentials(
       url: dco_decode_String(arr[0]),
       token: dco_decode_String(arr[1]),
       e2EeKey: dco_decode_list_prim_u_8_strict(arr[2]),
       host: dco_decode_String(arr[3]),
       term: dco_decode_u_64(arr[4]),
+      ice: dco_decode_opt_box_autoadd_app_ice_server(arr[5]),
     );
   }
 
@@ -1130,6 +1144,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
+  }
+
+  @protected
+  AppIceServer dco_decode_box_autoadd_app_ice_server(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_app_ice_server(raw);
   }
 
   @protected
@@ -1190,6 +1210,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  AppIceServer? dco_decode_opt_box_autoadd_app_ice_server(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_app_ice_server(raw);
   }
 
   @protected
@@ -1309,6 +1335,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_name = sse_decode_String(deserializer);
     var var_isOwner = sse_decode_bool(deserializer);
     return AppCommunity(cid: var_cid, name: var_name, isOwner: var_isOwner);
+  }
+
+  @protected
+  AppIceServer sse_decode_app_ice_server(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_url = sse_decode_String(deserializer);
+    var var_username = sse_decode_String(deserializer);
+    var var_credential = sse_decode_String(deserializer);
+    return AppIceServer(
+      url: var_url,
+      username: var_username,
+      credential: var_credential,
+    );
   }
 
   @protected
@@ -1432,12 +1471,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_e2EeKey = sse_decode_list_prim_u_8_strict(deserializer);
     var var_host = sse_decode_String(deserializer);
     var var_term = sse_decode_u_64(deserializer);
+    var var_ice = sse_decode_opt_box_autoadd_app_ice_server(deserializer);
     return AppVoiceCredentials(
       url: var_url,
       token: var_token,
       e2EeKey: var_e2EeKey,
       host: var_host,
       term: var_term,
+      ice: var_ice,
     );
   }
 
@@ -1445,6 +1486,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
+  AppIceServer sse_decode_box_autoadd_app_ice_server(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_app_ice_server(deserializer));
   }
 
   @protected
@@ -1542,6 +1591,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  AppIceServer? sse_decode_opt_box_autoadd_app_ice_server(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_app_ice_server(deserializer));
     } else {
       return null;
     }
@@ -1699,6 +1761,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_app_ice_server(AppIceServer self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.url, serializer);
+    sse_encode_String(self.username, serializer);
+    sse_encode_String(self.credential, serializer);
+  }
+
+  @protected
   void sse_encode_app_invite_preview(
     AppInvitePreview self,
     SseSerializer serializer,
@@ -1800,12 +1870,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_prim_u_8_strict(self.e2EeKey, serializer);
     sse_encode_String(self.host, serializer);
     sse_encode_u_64(self.term, serializer);
+    sse_encode_opt_box_autoadd_app_ice_server(self.ice, serializer);
   }
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_app_ice_server(
+    AppIceServer self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_app_ice_server(self, serializer);
   }
 
   @protected
@@ -1903,6 +1983,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_app_ice_server(
+    AppIceServer? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_app_ice_server(self, serializer);
     }
   }
 

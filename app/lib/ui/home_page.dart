@@ -368,7 +368,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted || _call != call) return;
-      await widget.room.connect(c.url, c.token, c.e2EeKey);
+      await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
       if (mounted && _call == call) await _republishVideo();
@@ -647,7 +647,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted) return;
-      await widget.room.connect(c.url, c.token, c.e2EeKey);
+      await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
       if (mounted) setState(() => _call = _Call(key, channel, node, c.host, c.term.toInt()));

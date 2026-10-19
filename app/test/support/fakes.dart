@@ -82,6 +82,10 @@ class FakeNode extends NodeController {
   final FakeTextService text;
   final credentialRequests = <String>[];
 
+  /// The ICE server the next credentials carry, as the core's TURN shim would hand out.
+  AppIceServer? ice = const AppIceServer(
+      url: 'turn:192.168.1.5:50000?transport=udp', username: 'hbuser', credential: 'secret');
+
   @override
   bool get started => true;
   @override
@@ -110,6 +114,7 @@ class FakeNode extends NodeController {
       e2EeKey: Uint8List(32),
       host: host ?? '',
       term: BigInt.from(term),
+      ice: ice,
     );
   }
 
@@ -147,6 +152,9 @@ class FakeRoom implements RoomAdapter {
 
   /// What the last connect had chosen as input and output.
   String? inputId, outputId, cameraId, inputAtConnect;
+
+  /// The ICE server the last `connect` was given.
+  AppIceServer? iceAtConnect;
 
   void plugDevices(List<MediaDeviceInfo> d) {
     devices = d;
@@ -220,8 +228,9 @@ class FakeRoom implements RoomAdapter {
   Stream<List<RoomParticipant>> get participants => _participants.stream;
 
   @override
-  Future<void> connect(String url, String token, Uint8List e2eeKey) async {
+  Future<void> connect(String url, String token, Uint8List e2eeKey, {AppIceServer? ice}) async {
     calls.add('connect');
+    iceAtConnect = ice;
     inputAtConnect = inputId;
     await connectGate?.future;
     if (connectError != null) throw connectError!;

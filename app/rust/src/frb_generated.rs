@@ -1232,6 +1232,20 @@ impl SseDecode for crate::api::hubbub::AppCommunity {
     }
 }
 
+impl SseDecode for crate::api::hubbub::AppIceServer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_url = <String>::sse_decode(deserializer);
+        let mut var_username = <String>::sse_decode(deserializer);
+        let mut var_credential = <String>::sse_decode(deserializer);
+        return crate::api::hubbub::AppIceServer {
+            url: var_url,
+            username: var_username,
+            credential: var_credential,
+        };
+    }
+}
+
 impl SseDecode for crate::api::hubbub::AppInvitePreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1376,12 +1390,14 @@ impl SseDecode for crate::api::hubbub::AppVoiceCredentials {
         let mut var_e2EeKey = <Vec<u8>>::sse_decode(deserializer);
         let mut var_host = <String>::sse_decode(deserializer);
         let mut var_term = <u64>::sse_decode(deserializer);
+        let mut var_ice = <Option<crate::api::hubbub::AppIceServer>>::sse_decode(deserializer);
         return crate::api::hubbub::AppVoiceCredentials {
             url: var_url,
             token: var_token,
             e2ee_key: var_e2EeKey,
             host: var_host,
             term: var_term,
+            ice: var_ice,
         };
     }
 }
@@ -1467,6 +1483,17 @@ impl SseDecode for Option<String> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<String>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::hubbub::AppIceServer> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::hubbub::AppIceServer>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -1641,6 +1668,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::hubbub::AppCommunity>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::hubbub::AppIceServer {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.url.into_into_dart().into_dart(),
+            self.username.into_into_dart().into_dart(),
+            self.credential.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::hubbub::AppIceServer
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::hubbub::AppIceServer>
+    for crate::api::hubbub::AppIceServer
+{
+    fn into_into_dart(self) -> crate::api::hubbub::AppIceServer {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::hubbub::AppInvitePreview {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -1809,6 +1858,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::hubbub::AppVoiceCredentials {
             self.e2ee_key.into_into_dart().into_dart(),
             self.host.into_into_dart().into_dart(),
             self.term.into_into_dart().into_dart(),
+            self.ice.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1887,6 +1937,15 @@ impl SseEncode for crate::api::hubbub::AppCommunity {
         <String>::sse_encode(self.cid, serializer);
         <String>::sse_encode(self.name, serializer);
         <bool>::sse_encode(self.is_owner, serializer);
+    }
+}
+
+impl SseEncode for crate::api::hubbub::AppIceServer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.url, serializer);
+        <String>::sse_encode(self.username, serializer);
+        <String>::sse_encode(self.credential, serializer);
     }
 }
 
@@ -1997,6 +2056,7 @@ impl SseEncode for crate::api::hubbub::AppVoiceCredentials {
         <Vec<u8>>::sse_encode(self.e2ee_key, serializer);
         <String>::sse_encode(self.host, serializer);
         <u64>::sse_encode(self.term, serializer);
+        <Option<crate::api::hubbub::AppIceServer>>::sse_encode(self.ice, serializer);
     }
 }
 
@@ -2070,6 +2130,16 @@ impl SseEncode for Option<String> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <String>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::hubbub::AppIceServer> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::hubbub::AppIceServer>::sse_encode(value, serializer);
         }
     }
 }

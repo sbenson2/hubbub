@@ -185,6 +185,31 @@ class AppCommunity {
           isOwner == other.isOwner;
 }
 
+class AppIceServer {
+  /// `turn:<ip>:<port>?transport=udp`
+  final String url;
+  final String username;
+  final String credential;
+
+  const AppIceServer({
+    required this.url,
+    required this.username,
+    required this.credential,
+  });
+
+  @override
+  int get hashCode => url.hashCode ^ username.hashCode ^ credential.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppIceServer &&
+          runtimeType == other.runtimeType &&
+          url == other.url &&
+          username == other.username &&
+          credential == other.credential;
+}
+
 /// What an invite says, read without joining.
 class AppInvitePreview {
   final String cid;
@@ -360,12 +385,18 @@ class AppVoiceCredentials {
   final String host;
   final BigInt term;
 
+  /// The ICE server the LiveKit client must use (relay-only): this node's TURN shim, which
+  /// carries call media through the iroh connection. `None` if the machine has no usable
+  /// network address; the client then connects directly.
+  final AppIceServer? ice;
+
   const AppVoiceCredentials({
     required this.url,
     required this.token,
     required this.e2EeKey,
     required this.host,
     required this.term,
+    this.ice,
   });
 
   @override
@@ -374,7 +405,8 @@ class AppVoiceCredentials {
       token.hashCode ^
       e2EeKey.hashCode ^
       host.hashCode ^
-      term.hashCode;
+      term.hashCode ^
+      ice.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -385,5 +417,6 @@ class AppVoiceCredentials {
           token == other.token &&
           e2EeKey == other.e2EeKey &&
           host == other.host &&
-          term == other.term;
+          term == other.term &&
+          ice == other.ice;
 }

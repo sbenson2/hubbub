@@ -66,6 +66,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppCommunity dco_decode_app_community(dynamic raw);
 
   @protected
+  AppIceServer dco_decode_app_ice_server(dynamic raw);
+
+  @protected
   AppInvitePreview dco_decode_app_invite_preview(dynamic raw);
 
   @protected
@@ -88,6 +91,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  AppIceServer dco_decode_box_autoadd_app_ice_server(dynamic raw);
 
   @protected
   AppInvitePreview dco_decode_box_autoadd_app_invite_preview(dynamic raw);
@@ -118,6 +124,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  AppIceServer? dco_decode_opt_box_autoadd_app_ice_server(dynamic raw);
 
   @protected
   AppInvitePreview? dco_decode_opt_box_autoadd_app_invite_preview(dynamic raw);
@@ -178,6 +187,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppCommunity sse_decode_app_community(SseDeserializer deserializer);
 
   @protected
+  AppIceServer sse_decode_app_ice_server(SseDeserializer deserializer);
+
+  @protected
   AppInvitePreview sse_decode_app_invite_preview(SseDeserializer deserializer);
 
   @protected
@@ -202,6 +214,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  AppIceServer sse_decode_box_autoadd_app_ice_server(
+    SseDeserializer deserializer,
+  );
 
   @protected
   AppInvitePreview sse_decode_box_autoadd_app_invite_preview(
@@ -242,6 +259,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  AppIceServer? sse_decode_opt_box_autoadd_app_ice_server(
+    SseDeserializer deserializer,
+  );
 
   @protected
   AppInvitePreview? sse_decode_opt_box_autoadd_app_invite_preview(
@@ -315,6 +337,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_app_community(AppCommunity self, SseSerializer serializer);
 
   @protected
+  void sse_encode_app_ice_server(AppIceServer self, SseSerializer serializer);
+
+  @protected
   void sse_encode_app_invite_preview(
     AppInvitePreview self,
     SseSerializer serializer,
@@ -346,6 +371,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_app_ice_server(
+    AppIceServer self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_app_invite_preview(
@@ -397,6 +428,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_app_ice_server(
+    AppIceServer? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_app_invite_preview(
