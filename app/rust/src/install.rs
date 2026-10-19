@@ -162,6 +162,64 @@ pub fn on_uninstall(reg: &dyn Registry, exe: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The install's own `livekit-server.exe` processes: the ones running from `<root>\current\`,
+/// whatever their name is spelled like. Matched by path, never by image name, so another copy's
+/// server (a dev build, the owner's other install) is not touched.
+#[cfg(windows)]
+fn install_servers(sys: &sysinfo::System, root: &Path) -> Vec<sysinfo::Pid> {
+    let dir = format!("{}\\current\\", root.display().to_string().trim_end_matches(['\\', '/']));
+    sys.processes()
+        .iter()
+        .filter(|(_, p)| {
+            p.exe().is_some_and(|e| {
+                let e = e.display().to_string();
+                e.to_ascii_lowercase().starts_with(&dir.to_ascii_lowercase())
+                    && e.to_ascii_lowercase().ends_with("livekit-server.exe")
+            })
+        })
+        .map(|(pid, _)| *pid)
+        .collect()
+}
+
+/// Called right before the updater is told to swap `<root>\current\`: the hub's shutdown has
+/// normally stopped LiveKit already (it awaits the child's exit), so this usually returns at
+/// once. If a server from this install is somehow still alive (the shutdown failed or timed
+/// out), wait up to `wait` for it to go, then kill it: a running exe in `current\` makes the
+/// swap fail. Returns how many had to be killed.
+#[cfg(windows)]
+pub fn settle_install_servers(root: &Path, wait: std::time::Duration) -> usize {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let me = sysinfo::get_current_pid().ok();
+    let scan = |sys: &mut System| {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        install_servers(sys, root).into_iter().filter(|p| Some(*p) != me).collect::<Vec<_>>()
+    };
+    let mut sys = System::new();
+    let deadline = std::time::Instant::now() + wait;
+    let mut alive = scan(&mut sys);
+    while !alive.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        alive = scan(&mut sys);
+    }
+    for pid in &alive {
+        if let Some(p) = sys.process(*pid) {
+            eprintln!("hubbub: livekit-server {pid} outlived the shutdown; killing it before the update");
+            p.kill();
+        }
+    }
+    if !alive.is_empty() {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !scan(&mut sys).is_empty() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    alive.len()
+}
+
 #[cfg(windows)]
 pub use win::WinRegistry;
 
@@ -403,6 +461,31 @@ mod tests {
         assert!(!start_at_login(&reg), "an update must not turn it back on");
         // ...and still repoints the link handler.
         assert!(reg.get(&format!(r"{PROTOCOL_KEY}\shell\open\command"), None).is_some());
+    }
+
+    /// A stand-in server: `ping` copied to `<root>\current\livekit-server.exe`, running ~30 s.
+    #[cfg(windows)]
+    fn fake_server(dir: &Path) -> std::process::Child {
+        std::fs::create_dir_all(dir).unwrap();
+        let exe = dir.join("livekit-server.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
+        std::process::Command::new(&exe).args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_server_left_in_the_install_is_stopped_before_the_swap_and_a_foreign_one_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ours = fake_server(&tmp.path().join("Hubbub").join("current"));
+        let mut other = fake_server(&tmp.path().join("HubbubOther").join("current"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let killed = settle_install_servers(&tmp.path().join("Hubbub"), std::time::Duration::from_millis(300));
+        assert_eq!(killed, 1);
+        assert!(ours.try_wait().unwrap().is_some(), "the install's server should be gone");
+        assert!(other.try_wait().unwrap().is_none(), "another copy's server must survive");
+        other.kill().unwrap();
+        // Nothing running: returns at once.
+        assert_eq!(settle_install_servers(&tmp.path().join("Hubbub"), std::time::Duration::from_secs(5)), 0);
     }
 
     #[test]

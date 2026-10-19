@@ -103,6 +103,12 @@ pub fn update_pending() -> Option<String> {
 pub fn update_apply_on_exit(restart: bool) -> Result<()> {
     let manager = installed_manager()?;
     let asset = manager.get_update_pending_restart().ok_or_else(|| anyhow!("no downloaded update"))?;
+    // The hub's shutdown has stopped LiveKit by now; make sure, because a running exe in
+    // `current\` fails the swap. Bounded: 5 s, then the stragglers are killed.
+    #[cfg(windows)]
+    if let crate::install::Layout::Installed { root } = crate::install::layout(&std::env::current_exe()?) {
+        crate::install::settle_install_servers(&root, std::time::Duration::from_secs(5));
+    }
     manager.wait_exit_then_apply_updates(&asset, true, restart, Vec::<String>::new())?;
     Ok(())
 }
