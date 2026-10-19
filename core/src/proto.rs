@@ -64,6 +64,15 @@ pub struct HaveChannel {
     pub ids: Vec<(MemberId, u64)>,
 }
 
+/// Every control message between nodes.
+///
+/// Mixed versions talk to each other (friends update at different times), so changes follow
+/// one rule: a field added to a message is optional (`#[serde(default)]`), and a new message
+/// is a new variant that older nodes read as `Unknown` and skip. A new *required* field makes
+/// older nodes fail to decode the whole message, log it as `Unknown` and silently ignore it
+/// (an ignored `Heartbeat` or `Announce` splits the election with no error anywhere). Anything
+/// that changes framing, or must not be ignored, gets a new ALPN (`hubbub/ctl/3/...`,
+/// `hubbub/sig/2/...`, the media ALPN) instead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum CtlMsg {

@@ -331,6 +331,16 @@ async fn after_a_host_change_the_shim_points_at_the_new_host() {
     println!("host change to media through the new host: {:?}", t0.elapsed());
 }
 
+#[tokio::test]
+async fn a_node_that_shut_down_no_longer_runs_a_shim() {
+    let (ns, _) = echo_cluster(&[true, false]).await;
+    wait_agree(&ns, Duration::from_secs(5)).await;
+    let Some(ice) = ns[1].voice_credentials("lobby").await.unwrap().ice else { return eprintln!("no usable network address; skipped") };
+    assert!(through(&ice, b"up", Duration::from_secs(2)).await.is_some());
+    ns[1].shutdown_ref().await;
+    assert!(through(&ice, b"down", Duration::from_secs(1)).await.is_none(), "the shim must be gone");
+}
+
 /// A LiveKit client opens its subscriber and publisher peer connections almost together, so two
 /// allocations arrive at a cold member at once. They must share one connection to the host.
 #[tokio::test]

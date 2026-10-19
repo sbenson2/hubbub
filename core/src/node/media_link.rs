@@ -84,7 +84,12 @@ impl UplinkSource for NodeUplink {
         if let Some(sender) = self.live_remote(host) {
             return Ok(sender);
         }
-        let conn = inner.dial(host, inner.net.media_alpn()).await?;
+        // The host may have changed while this allocation waited for the lock: do not dial the
+        // old one (the client asks again and gets the new host).
+        if inner.state.lock().unwrap().host.host != Some(host) {
+            anyhow::bail!("the host changed while this allocation waited to dial");
+        }
+        let conn = inner.dial_within(host, inner.net.media_alpn(), super::MEDIA_DIAL_TIMEOUT).await?;
         let sender = Arc::new(IrohSender::new(conn.clone(), self.stats.clone()));
         let down = routes.clone();
         let reader = tokio::spawn(pump(conn.clone(), self.stats.clone(), move |flow, payload| down.send_frame(flow, &payload)));
@@ -114,7 +119,8 @@ impl NodeUplink {
 impl Inner {
     /// The ICE server for the app's LiveKit client: this node's TURN shim, started on first
     /// use and restarted if the machine's address changed. `None` when the machine has no
-    /// usable address or the shim cannot start; the client then connects directly.
+    /// usable address or the shim cannot start; the app then refuses to join, because media
+    /// has no other way to the host.
     pub(super) async fn ice_config(self: &Arc<Self>) -> Option<IceConfig> {
         let _gate = self.shim_gate.lock().await;
         let ip = local_media_ip()?;

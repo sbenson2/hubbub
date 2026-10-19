@@ -98,7 +98,8 @@ pub fn update_pending() -> Option<String> {
 }
 
 /// Starts the updater, which waits for this process to exit, applies the downloaded update and
-/// (if `restart`) launches the new version. The caller shuts the hub down and exits right after.
+/// (if `restart`) launches the new version. The caller shuts the hub down first, calls this, and
+/// exits right after.
 #[frb(sync)]
 pub fn update_apply_on_exit(restart: bool) -> Result<()> {
     let manager = installed_manager()?;

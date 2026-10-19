@@ -585,6 +585,33 @@ async fn an_unknown_message_does_not_end_the_session() {
 }
 
 #[tokio::test]
+async fn a_repeated_text_have_is_answered_only_once() {
+    let (dirs, _, file) = community(&[true, false]);
+    let (host, _rx) = start(&dirs[0], &file, true, vec![]).await;
+    wait_agree(std::slice::from_ref(&host), Duration::from_secs(5)).await;
+    for body in ["one", "two"] {
+        host.send_text("general", body).await.unwrap();
+    }
+    let (_net, mut send, mut recv) = raw_member(&host, &dirs[1], &file).await;
+    for _ in 0..3 {
+        write_msg(&mut send, &CtlMsg::TextHave { since_ms: 0, have: vec![] }).await.unwrap();
+    }
+    // Count the history deliveries over a few seconds, answering pings so the session lives.
+    let mut delivered = 0;
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Ok(Some(msg)) = read_msg(&mut recv).await {
+            match msg {
+                CtlMsg::Ping { nonce } => write_msg(&mut send, &CtlMsg::Pong { nonce }).await.unwrap(),
+                CtlMsg::TextDeliver { .. } => delivered += 1,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert_eq!(delivered, 2, "the backlog must be sent once, not once per TextHave");
+}
+
+#[tokio::test]
 async fn a_peer_that_never_sends_text_have_still_gets_live_text() {
     let (dirs, _, file) = community(&[true, false]);
     let (host, _rx) = start(&dirs[0], &file, true, vec![]).await;

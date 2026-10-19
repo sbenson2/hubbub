@@ -53,7 +53,7 @@ pub struct AppVoiceCredentials {
     pub term: u64,
     /// The ICE server the LiveKit client must use (relay-only): this node's TURN shim, which
     /// carries call media through the iroh connection. `None` if the machine has no usable
-    /// network address; the client then connects directly.
+    /// network address; the app then refuses to join, because media has no other way to the host.
     pub ice: Option<AppIceServer>,
 }
 

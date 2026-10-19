@@ -308,7 +308,7 @@ impl LocalAddrs {
         if ip.is_loopback() {
             return true;
         }
-        if ip.is_multicast() || ip.is_unspecified() {
+        if ip.is_multicast() || ip.is_unspecified() || matches!(ip, IpAddr::V4(v4) if v4.is_broadcast()) {
             return false;
         }
         if let Some(&known) = self.known.lock().unwrap().get(&ip) {
@@ -557,6 +557,7 @@ mod tests {
             assert!(!l.contains(foreign.parse().unwrap()), "{foreign} is not ours");
         }
         assert!(!l.contains("224.0.0.1".parse().unwrap()) && !l.contains("0.0.0.0".parse().unwrap()));
+        assert!(!l.contains("255.255.255.255".parse().unwrap()), "the IPv4 broadcast address is nobody's");
     }
 
     #[test]

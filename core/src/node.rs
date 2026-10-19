@@ -62,6 +62,9 @@ const PINGS_KEPT: usize = 8;
 const DIAL_BACKOFF_MIN: Duration = Duration::from_secs(1);
 const DIAL_BACKOFF_MAX: Duration = Duration::from_secs(10);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+/// A media dial is shorter: the TURN shim answers its clients one datagram at a time, so a slow
+/// dial stalls every allocation behind it.
+const MEDIA_DIAL_TIMEOUT: Duration = Duration::from_secs(3);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long live text waits for a peer's `TextHave` before it flows anyway.
 const TEXT_HAVE_WAIT: Duration = Duration::from_secs(2);
@@ -454,6 +457,10 @@ impl Node {
         if inner.media.send(MediaCmd::Shutdown(tx)).is_ok() {
             let _ = rx.await;
         }
+        // Leaving or stopping ends the TURN shim too: it dials the host on the (possibly
+        // shared) endpoint, and nothing should be able to do that for a node that has left.
+        let shim = inner.shim.lock().unwrap().take();
+        drop(shim);
         let _ = timeout(CLOSE_TIMEOUT, inner.net.close()).await;
         let _ = self._stop.send(());
     }
@@ -476,6 +483,9 @@ struct Session {
     /// The peer has said what text it holds (`TextHave`) and been caught up, so live
     /// deliveries may go to it: none overtakes the catch-up.
     text_ready: bool,
+    /// A real `TextHave` was answered on this session. A second one is ignored, so a member
+    /// cannot make the host queue the whole backlog again and again.
+    text_have_answered: bool,
     /// TokenRequests sent on this session; the host answers them in order.
     tokens: VecDeque<TokenWaiter>,
 }
@@ -613,7 +623,25 @@ impl Inner {
 
     /// Answers a peer's `TextHave`: sends the deliveries it lacks on `out`, then lets live
     /// ones follow. The relay's lock is held throughout, so no delivery slips in between.
-    fn catch_up_text(&self, peer: MemberId, session: u64, out: &OutTx, since_ms: u64, have: &[HaveChannel]) {
+    ///
+    /// `peer_asked` is true for a `TextHave` from the peer: only the first one per session is
+    /// answered. The fallback after `TEXT_HAVE_WAIT` (false) never counts as that answer.
+    fn catch_up_text(
+        &self,
+        peer: MemberId,
+        session: u64,
+        out: &OutTx,
+        since_ms: u64,
+        have: &[HaveChannel],
+        peer_asked: bool,
+    ) {
+        if peer_asked {
+            let mut st = self.state.lock().unwrap();
+            let Some(s) = st.peers.get_mut(&peer).and_then(|p| p.sessions.get_mut(&session)) else { return };
+            if std::mem::replace(&mut s.text_have_answered, true) {
+                return;
+            }
+        }
         self.relay.catch_up(since_ms, have, |missing| {
             missing.iter().for_each(|d| {
                 let _ = out.send(Out::Msg(d.to_msg()));
@@ -738,13 +766,17 @@ impl Inner {
     }
 
     async fn dial(&self, to: MemberId, alpn: &[u8]) -> Result<Connection> {
+        self.dial_within(to, alpn, DIAL_TIMEOUT).await
+    }
+
+    async fn dial_within(&self, to: MemberId, alpn: &[u8], limit: Duration) -> Result<Connection> {
         let known = self.dial_addrs.lock().unwrap().get(&to).cloned();
         let addr = match known {
             Some(a) => a,
             // Not dialed at start (tests): iroh still knows the paths of a live connection.
             None => EndpointAddr::new(iroh::PublicKey::from_bytes(&to.0).context("invalid member id")?),
         };
-        timeout(DIAL_TIMEOUT, self.net.connect_addr(addr, alpn)).await.context("connect timed out")?
+        timeout(limit, self.net.connect_addr(addr, alpn)).await.context("connect timed out")?
     }
 
     fn has_session(&self, peer: MemberId) -> bool {
@@ -907,7 +939,7 @@ impl Inner {
                 let (node, out) = (self.clone(), out.clone());
                 async move {
                     sleep(TEXT_HAVE_WAIT).await;
-                    node.catch_up_text(peer, id, &out, u64::MAX, &[]);
+                    node.catch_up_text(peer, id, &out, u64::MAX, &[], false);
                 }
             }),
         ];
@@ -933,7 +965,7 @@ impl Inner {
             upload_mbps: None,
         });
         let first = p.sessions.is_empty();
-        p.sessions.insert(id, Session { out, text_ready: false, tokens: VecDeque::new() });
+        p.sessions.insert(id, Session { out, text_ready: false, text_have_answered: false, tokens: VecDeque::new() });
         p.newest = id;
         p.can_host = can_host;
         p.online_since_ms = since;
@@ -1012,7 +1044,7 @@ impl Inner {
                 // The peer's measurement of this node; the view uses other members' reports.
                 CtlMsg::ProbeResult { .. } => {}
                 CtlMsg::Unknown => {}
-                CtlMsg::TextHave { since_ms, have } => self.catch_up_text(peer, id, &out, since_ms, &have),
+                CtlMsg::TextHave { since_ms, have } => self.catch_up_text(peer, id, &out, since_ms, &have, true),
                 CtlMsg::TextSubmit { channel, client_id, ciphertext } => {
                     self.relay_text(peer, Submission { channel, client_id, ciphertext }, Some(out))
                 }

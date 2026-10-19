@@ -352,6 +352,13 @@ pub extern "C" fn hubbub_apply_pending() {
             return; // a dev run: not installed
         };
         if let Some(asset) = manager.get_update_pending_restart() {
+            // A LiveKit server left by a crashed run would keep `current\` busy and fail the swap.
+            #[cfg(windows)]
+            if let Ok(exe) = std::env::current_exe() {
+                if let Layout::Installed { root } = layout(&exe) {
+                    settle_install_servers(&root, std::time::Duration::from_secs(5));
+                }
+            }
             let args: Vec<String> = std::env::args().skip(1).collect();
             let _ = manager.apply_updates_and_restart_with_args(&asset, &args);
         }

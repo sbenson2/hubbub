@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `installed_manager`, `manager_for`
+// These functions are ignored because they are not marked as `pub`: `blocking`, `installed_manager`, `manager_for`
 
 /// The installed version, or `None` for a copy that was not installed (a dev run).
 String? installVersion() =>
@@ -33,6 +33,7 @@ Future<String> updateDownload({required String feed}) =>
 String? updatePending() => RustLib.instance.api.crateApiInstallUpdatePending();
 
 /// Starts the updater, which waits for this process to exit, applies the downloaded update and
-/// (if `restart`) launches the new version. The caller shuts the hub down and exits right after.
+/// (if `restart`) launches the new version. The caller shuts the hub down first, calls this, and
+/// exits right after.
 void updateApplyOnExit({required bool restart}) =>
     RustLib.instance.api.crateApiInstallUpdateApplyOnExit(restart: restart);
