@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import 'capture_options.dart';
+
 /// Connection quality sample taken from the WebRTC stats.
 class StatsSample {
   const StatsSample({this.rttMs, this.audioJitterMs, this.audioPacketsLost});
@@ -154,13 +156,6 @@ class LiveKitRoomAdapter implements RoomAdapter {
     return all.first;
   }
 
-  AudioCaptureOptions _capture(String? id) => AudioCaptureOptions(
-        deviceId: id,
-        noiseSuppression: true,
-        echoCancellation: true,
-        autoGainControl: true,
-      );
-
   /// In a call this restarts the local mic track on the new device: on desktop
   /// `Room.setAudioInputDevice` only calls the ADM setter, which a running recording ignores.
   /// A null id gives WebRTC no device, so it opens its default. A muted track only records
@@ -170,7 +165,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _inputId = id;
     final room = _room;
     if (room == null) return; // connect passes the id in its capture options
-    final opts = _capture(id);
+    final opts = captureOptionsFor(id);
     for (final pub in room.localParticipant?.audioTrackPublications ?? const []) {
       final track = pub.track;
       if (track == null) continue;
@@ -218,7 +213,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       roomOptions: RoomOptions(
         adaptiveStream: true,
         dynacast: true,
-        defaultAudioCaptureOptions: _capture(_inputId),
+        defaultAudioCaptureOptions: captureOptionsFor(_inputId),
         e2eeOptions: E2EEOptions(keyProvider: keyProvider),
       ),
     );
@@ -285,7 +280,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
   @override
   Future<void> setMicrophoneEnabled(bool on) async {
     // Explicit options, so a track created after a live device change uses that device.
-    await _room?.localParticipant?.setMicrophoneEnabled(on, audioCaptureOptions: _capture(_inputId));
+    await _room?.localParticipant?.setMicrophoneEnabled(on, audioCaptureOptions: captureOptionsFor(_inputId));
   }
 
   @override
