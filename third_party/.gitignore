@@ -2,6 +2,3 @@
 flutter_webrtc/third_party/downloads/
 flutter_webrtc/third_party/libwebrtc/
 flutter_webrtc/third_party/.libwebrtc_extract/
-*.zip
-*.dll
-*.lib
