@@ -296,22 +296,30 @@ async fn a_delivery_lost_with_the_senders_session_comes_back_once_in_the_same_te
     }
 }
 
-/// Node 0 (the only one that can host at first, so it wins) is dialled by 1 and 2, which do not
-/// know each other.
-async fn star_cluster() -> Cluster {
-    let (dirs, _, file) = community(&[true; 3]);
-    let (n0, r0) = start(&dirs[0], &file, true, vec![]).await;
-    let a0 = n0.endpoint_addr().await.unwrap();
-    let (n1, r1) = start(&dirs[1], &file, true, vec![a0.clone()]).await;
-    let (n2, r2) = start(&dirs[2], &file, true, vec![a0]).await;
-    Cluster { nodes: vec![n0, n1, n2], events: vec![r0, r1, r2], _dirs: dirs }
+/// Node 0 is dialled by every other node; those do not know each other.
+async fn star_cluster(n: usize) -> Cluster {
+    let (dirs, _, file) = community(&vec![true; n]);
+    let (first, first_rx) = start(&dirs[0], &file, true, vec![]).await;
+    let hub = first.endpoint_addr().await.unwrap();
+    let (mut nodes, mut events) = (vec![first], vec![first_rx]);
+    // The hub must be host before anyone else starts: a leaf only sees the hub, so a leaf host would never meet another.
+    wait_agree(&nodes, Duration::from_secs(20)).await;
+    for dir in &dirs[1..] {
+        let (node, rx) = start(dir, &file, true, vec![hub.clone()]).await;
+        nodes.push(node);
+        events.push(rx);
+        // One at a time: nodes that start together under load can each elect themselves.
+        wait_agree(&nodes, Duration::from_secs(20)).await;
+    }
+    Cluster { nodes, events, _dirs: dirs }
 }
 
-/// One round of the split-brain scenario: the host leaves (gracefully or not) and the two
-/// remaining members text each other straight away. Returns a description of any failure.
-async fn host_leaves_then_survivors_text(graceful: bool, star: bool) -> Result<(), String> {
-    let mut c = if star { star_cluster().await } else { cluster(&[true; 3]).await };
-    let old_host = wait_agree(&c.nodes, Duration::from_secs(10)).await;
+/// One round of the split-brain scenario: in a star of `survivors + 1` nodes the host leaves
+/// (gracefully or not), the survivors learn each other's addresses, and each texts at once.
+/// Every survivor must get every text, once. Returns a description of any failure.
+async fn host_leaves_then_survivors_text(graceful: bool, survivors: usize) -> Result<(), String> {
+    let mut c = star_cluster(survivors + 1).await;
+    let old_host = wait_agree(&c.nodes, Duration::from_secs(20)).await;
     let h = c.nodes.iter().position(|n| n.member_id() == old_host).unwrap();
     let gone = c.nodes.remove(h);
     c.events.remove(h);
@@ -320,48 +328,217 @@ async fn host_leaves_then_survivors_text(graceful: bool, star: bool) -> Result<(
     } else {
         drop(gone);
     }
-    if star {
-        // The survivors only now learn each other's addresses (they met through the host).
-        let (x, y) = (c.nodes[0].endpoint_addr().await.unwrap(), c.nodes[1].endpoint_addr().await.unwrap());
-        c.nodes[0].add_peer_addr(y);
-        c.nodes[1].add_peer_addr(x);
+    // The survivors only now learn each other's addresses (they met through the host).
+    let addrs = futures_addrs(&c.nodes).await;
+    for (i, n) in c.nodes.iter().enumerate() {
+        addrs.iter().enumerate().filter(|(j, _)| *j != i).for_each(|(_, a)| n.add_peer_addr(a.clone()));
     }
-    let (a, b) = (0, 1);
-    let ida = c.nodes[a].send_text("general", "a to b").await.unwrap();
-    let idb = c.nodes[b].send_text("general", "b to a").await.unwrap();
-    for (who, rx, from, id) in [("b", 1usize, a, ida), ("a", 0usize, b, idb)] {
-        let want_from = c.nodes[from].member_id();
+    let mut sent = Vec::new();
+    for (i, n) in c.nodes.iter().enumerate() {
+        sent.push((n.member_id(), n.send_text("general", &format!("from {i}")).await.unwrap()));
+    }
+    for (i, rx) in c.events.iter_mut().enumerate() {
+
+
+        // Everyone's own text is shown too: wait for all of them.
+        let mut want: Vec<_> = sent.iter().collect();
         let got = tokio::time::timeout(Duration::from_secs(12), async {
-            loop {
-                if let NodeEvent::Text { from, client_id, .. } = c.events[rx].recv().await.unwrap() {
-                    if from == want_from && client_id == id {
-                        return;
-                    }
+            while !want.is_empty() {
+                if let NodeEvent::Text { from, client_id, .. } = rx.recv().await.unwrap() {
+                    want.retain(|(m, id)| !(*m == from && *id == client_id));
                 }
             }
         })
         .await;
         if got.is_err() {
-            let st: Vec<_> = c.nodes.iter().map(|n| (n.member_id().tag(), n.host_state())).collect();
-            let hist: Vec<_> = c.nodes.iter().map(|n| n.text_history("general", 10).unwrap().iter().map(|m| (m.term, m.seq, m.body.clone())).collect::<Vec<_>>()).collect();
-            return Err(format!("{who} never got the text (graceful={graceful}): {st:?} history={hist:?}"));
+            let hist = histories(&c.nodes);
+            return Err(format!("survivor {i} lacks {} texts (graceful={graceful}, survivors={survivors}): history={hist:?}", want.len()));
         }
+    }
+    // Let stragglers land, then every history is the same set of (from, client_id), no repeats.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut sets = Vec::new();
+    for n in &c.nodes {
+        let mut keys: Vec<_> =
+            n.text_history("general", 50).unwrap().iter().map(|m| (m.from.0, m.client_id)).collect();
+        let n_all = keys.len();
+        keys.sort();
+        keys.dedup();
+        if keys.len() != n_all {
+            return Err(format!("duplicates in a history: {:?}", histories(&c.nodes)));
+        }
+        sets.push(keys);
+    }
+    if sets.iter().any(|k| *k != sets[0]) {
+        return Err(format!("histories differ: {:?}", histories(&c.nodes)));
     }
     Ok(())
 }
 
+async fn futures_addrs(ns: &[Node]) -> Vec<EndpointAddr> {
+    let mut v = Vec::new();
+    for n in ns {
+        v.push(n.endpoint_addr().await.unwrap());
+    }
+    v
+}
+
+fn histories(ns: &[Node]) -> Vec<Vec<(u64, u64, String)>> {
+    ns.iter()
+        .map(|n| n.text_history("general", 50).unwrap().iter().map(|m| (m.term, m.seq, m.body.clone())).collect())
+        .collect()
+}
+
+/// `SPLIT_ITERS` (default 2) sets how many times each of the four variants runs.
 #[tokio::test]
 async fn survivors_can_text_after_the_host_leaves() {
     let n: usize = std::env::var("SPLIT_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
     let mut fails = Vec::new();
     for i in 0..n {
         for graceful in [true, false] {
-            for star in [false, true] {
-            if let Err(e) = host_leaves_then_survivors_text(graceful, star).await {
-                fails.push(format!("iter {i} star={star}: {e}"));
-            }
+            for survivors in [2, 3] {
+                if let Err(e) = host_leaves_then_survivors_text(graceful, survivors).await {
+                    fails.push(format!("iter {i}: {e}"));
+                }
             }
         }
     }
     assert!(fails.is_empty(), "{} of {} rounds failed:\n{}", fails.len(), n * 4, fails.join("\n"));
+}
+
+/// The third-member case. After the host leaves, survivors 0 and 1 find each other and agree
+/// on a host while survivor 2 elects itself alone. A text from the non-host of the pair is
+/// ordered by the pair's host. Then all three meet: whichever host loses the tie must not
+/// strand that text, and survivor 2 must get it.
+async fn staged_split(graceful: bool) -> Result<(), String> {
+    let mut c = star_cluster(4).await;
+    let old_host = wait_agree(&c.nodes, Duration::from_secs(20)).await;
+    let h = c.nodes.iter().position(|n| n.member_id() == old_host).unwrap();
+    let gone = c.nodes.remove(h);
+    c.events.remove(h);
+    if graceful {
+        gone.shutdown().await;
+    } else {
+        drop(gone);
+    }
+    let addrs = futures_addrs(&c.nodes).await;
+    c.nodes[0].add_peer_addr(addrs[1].clone());
+    c.nodes[1].add_peer_addr(addrs[0].clone());
+    let pair_host = wait_agree(&c.nodes[..2], Duration::from_secs(12)).await;
+    let lone = c.nodes[2].member_id();
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while c.nodes[2].host_state().host != Some(lone) {
+        if Instant::now() > deadline {
+            return Err("the lone survivor never elected itself".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let sender = if c.nodes[0].member_id() == pair_host { 1 } else { 0 };
+    let from = c.nodes[sender].member_id();
+    let id = c.nodes[sender].send_text("general", "ordered by the pair's host").await.unwrap();
+    let pair_got = tokio::time::timeout(Duration::from_secs(5), async {
+        for i in [0usize, 1] {
+            loop {
+                if let NodeEvent::Text { client_id, .. } = c.events[i].recv().await.unwrap() {
+                    if client_id == id {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+    .await;
+    if pair_got.is_err() {
+        return Err("the pair did not get it".into());
+    }
+    for (i, n) in c.nodes.iter().enumerate() {
+        addrs.iter().enumerate().filter(|(j, _)| *j != i).for_each(|(_, a)| n.add_peer_addr(a.clone()));
+    }
+    let got = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            if let NodeEvent::Text { from: f, client_id, .. } = c.events[2].recv().await.unwrap() {
+                if f == from && client_id == id {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    if got.is_err() {
+        return Err(format!("the lone survivor never got it (graceful={graceful}, pair host was node {}): {:?}",
+            1 - sender, histories(&c.nodes)));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_text_ordered_by_a_losing_host_reaches_the_third_member() {
+    let n: usize = std::env::var("SPLIT_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let mut fails = Vec::new();
+    for i in 0..n {
+        for graceful in [true, false] {
+            if let Err(e) = staged_split(graceful).await {
+                fails.push(format!("iter {i}: {e}"));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} of {} rounds failed:\n{}", fails.len(), n * 2, fails.join("\n"));
+}
+
+#[tokio::test]
+async fn a_member_added_later_never_sees_earlier_messages() {
+    let (dirs, _, file) = community(&[true, false, false]);
+    let (host, _host_rx) = start(&dirs[0], &file, true, vec![]).await;
+    let addr = host.endpoint_addr().await.unwrap();
+    let (early, mut early_rx) = start(&dirs[1], &file, false, vec![addr.clone()]).await;
+    let nodes = [host, early];
+    assert_eq!(wait_agree(&nodes, Duration::from_secs(5)).await, nodes[0].member_id());
+    let host = &nodes[0];
+    for body in ["A", "B"] {
+        host.send_text("general", body).await.unwrap();
+    }
+    texts(&mut early_rx, 2, Duration::from_secs(5), "the early member").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The third member runs this community for the first time now.
+    let (late, mut late_rx) = start(&dirs[2], &file, false, vec![addr]).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(queued_texts(&mut late_rx), 0, "nothing from before it was added");
+    assert!(late.text_history("general", 10).unwrap().is_empty());
+    host.send_text("general", "C").await.unwrap();
+    let got = texts(&mut late_rx, 1, Duration::from_secs(5), "the late member").await;
+    assert_eq!(got[0].body, "C");
+    assert_eq!(late.text_history("general", 10).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_member_that_comes_back_gets_what_it_missed_once_and_in_order() {
+    let (dirs, _, file) = community(&[true, false]);
+    let (host, _host_rx) = start(&dirs[0], &file, true, vec![]).await;
+    let addr = host.endpoint_addr().await.unwrap();
+    let (phone, mut phone_rx) = start(&dirs[1], &file, false, vec![addr.clone()]).await;
+    let mut nodes = vec![host, phone];
+    wait_agree(&nodes, Duration::from_secs(5)).await;
+    let phone = nodes.pop().unwrap();
+    let host = nodes.pop().unwrap();
+    for body in ["A", "B"] {
+        host.send_text("general", body).await.unwrap();
+    }
+    texts(&mut phone_rx, 2, Duration::from_secs(5), "the phone").await;
+    phone.shutdown().await;
+    for i in 0..10 {
+        host.send_text("general", &format!("missed {i}")).await.unwrap();
+    }
+    let (phone, mut phone_rx) = start(&dirs[1], &file, false, vec![addr]).await;
+    // Live messages race the catch-up.
+    for i in 0..10 {
+        host.send_text("general", &format!("live {i}")).await.unwrap();
+    }
+    let got = texts(&mut phone_rx, 20, Duration::from_secs(8), "the phone").await;
+    let seqs: Vec<u64> = got.iter().map(|g| g.seq).collect();
+    assert_eq!(seqs, (3..=22).collect::<Vec<u64>>(), "only what it missed, in order: {got:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(queued_texts(&mut phone_rx), 0);
+    let stored: Vec<u64> = phone.text_history("general", 50).unwrap().iter().map(|m| m.seq).collect();
+    assert_eq!(stored, (1..=22).collect::<Vec<u64>>());
 }

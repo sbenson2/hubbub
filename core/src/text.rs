@@ -10,6 +10,15 @@
 //! A message is named by `(from, client_id)`, its `MessageKey`, and each member stores and
 //! shows it once, in the order it arrived. `(term, seq)` is not an id: a message resent
 //! after a hand-over gets a new one, and terms start again at 1 when every node restarts.
+//! A message can even carry two of them: ordered by a host that then lost a split, it keeps
+//! that `(term, seq)` on the nodes that already had it, and the winner's on the rest. Two
+//! different messages can then share one on a node. Only `(from, client_id)` is identity.
+//!
+//! Catching up: a node tells each peer what it holds (`CtlMsg::TextHave`), and a host
+//! sends back only what that node lacks and that was ordered since the node first ran this
+//! community. Nothing from before a member was added is ever sent (no history, as in Signal).
+//! A node resubmits what it sent lately, delivered or not, whenever the host or term changes,
+//! so a message ordered by a host that lost a split still reaches the host that won.
 //!
 //! Spike-only: the key is derived from the community secret instead of MLS.
 use std::collections::{HashMap, VecDeque};
@@ -17,7 +26,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, ensure, Context, Result};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -26,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::community::CommunityState;
 use crate::ids::MemberId;
-use crate::proto::CtlMsg;
+use crate::proto::{CtlMsg, HaveChannel};
 
 /// Longest message body, in characters.
 pub const MAX_BODY_CHARS: usize = 4000;
@@ -84,6 +93,24 @@ pub struct TextMessage {
     pub body: String,
 }
 
+/// How many of its newest messages a node lists per channel in `TextHave`, at most.
+const HAVE_PER_CHANNEL: usize = 64;
+/// All channels together list at most this many ids, so the frame stays small.
+const HAVE_TOTAL: usize = 256;
+/// A node resubmits delivered messages younger than this when the host changes: a split
+/// hand-over, not an old one. At most `RESEND_KEEP` of them.
+const RESEND_WINDOW: Duration = Duration::from_secs(30);
+const RESEND_KEEP: usize = 32;
+
+/// Whether a message delivered by `by` goes to the route's host and term too. Only when the
+/// host changed within one term: that is a tie broken between two self-elected hosts, so the
+/// message may never have reached the winner. A hand-over starts a new term; the old host's
+/// messages were heard by every member that mattered, and sending them again would only burn
+/// seqs.
+fn resend_after_swap(by: (MemberId, u64), route: (MemberId, u64)) -> bool {
+    by.1 == route.1 && by.0 != route.0
+}
+
 /// The keys of each channel's last `DEDUP_WINDOW` messages, each with a value.
 pub(crate) struct Recent<V> {
     values: HashMap<MessageKey, V>,
@@ -119,9 +146,18 @@ impl<V> Recent<V> {
         true
     }
 
-    /// The remembered values, each channel's oldest first.
+    /// The remembered values: channels by name, each channel's oldest first.
     pub fn in_order(&self) -> Vec<&V> {
-        self.order.values().flatten().filter_map(|k| self.values.get(k)).collect()
+        let mut channels: Vec<&String> = self.order.keys().collect();
+        channels.sort();
+        channels.into_iter().flat_map(|c| &self.order[c]).filter_map(|k| self.values.get(k)).collect()
+    }
+
+    /// `channel`'s newest `n` keys with their values, oldest first.
+    pub fn tail(&self, channel: &str, n: usize) -> Vec<(MessageKey, &V)> {
+        let Some(order) = self.order.get(channel) else { return Vec::new() };
+        let skip = order.len().saturating_sub(n);
+        order.iter().skip(skip).filter_map(|k| Some((*k, self.values.get(k)?))).collect()
     }
 }
 
@@ -249,9 +285,20 @@ impl Sequencer {
         Some(Ordered::New(d))
     }
 
-    /// The deliveries of this term still remembered, each channel in seq order.
-    pub fn recent(&self) -> Vec<Delivery> {
-        self.ordered.in_order().into_iter().cloned().collect()
+    /// The deliveries of this term that a node lacks, channels by name and each in seq order.
+    /// It is owed those ordered at or after `since_ms` and after the `floor_ms` of its list for
+    /// the channel, other than the ones it lists.
+    pub fn missing(&self, since_ms: u64, have: &[HaveChannel]) -> Vec<Delivery> {
+        self.ordered
+            .in_order()
+            .into_iter()
+            .filter(|d| {
+                let h = have.iter().find(|h| h.channel == d.channel);
+                let floor = h.map_or(0, |h| h.floor_ms);
+                d.sent_ms >= since_ms.max(floor) && !h.is_some_and(|h| h.ids.contains(&(d.from, d.client_id)))
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -316,8 +363,17 @@ impl Store {
 pub(crate) enum Route {
     /// This node, hosting at `term`.
     Local { term: u64 },
-    /// The host's control session `session`, at `term`.
-    Remote { term: u64, session: u64 },
+    /// `host`'s control session `session`, at `term`.
+    Remote { host: MemberId, term: u64, session: u64 },
+}
+
+impl Route {
+    fn host_term(&self, me: MemberId) -> (MemberId, u64) {
+        match *self {
+            Route::Local { term } => (me, term),
+            Route::Remote { host, term, .. } => (host, term),
+        }
+    }
 }
 
 /// A delivery this node opened and stored.
@@ -331,6 +387,10 @@ pub(crate) struct Received {
 struct Pending {
     submission: Submission,
     sent_on: Option<Route>,
+    sent_at: Instant,
+    /// The `(host, term)` that last delivered it to this node. Delivered messages stay for
+    /// `RESEND_WINDOW`, to go again if another host takes over the same term.
+    delivered_by: Option<(MemberId, u64)>,
 }
 
 /// A member's side of text: sealing, the pending queue, opening deliveries, and the store.
@@ -345,7 +405,10 @@ pub(crate) struct Chat {
     flushing: Mutex<()>,
     /// The messages this node stored lately, read back from the store at start. Held from
     /// the check through the store and the show, so both keep the order messages arrived in.
-    received: Mutex<Recent<()>>,
+    /// Each value is when the host ordered the message.
+    received: Mutex<Recent<u64>>,
+    /// When this device first ran this community, in ms since the Unix epoch.
+    since_ms: u64,
     /// Tests: the session bringing this node's next own delivery ends before reading it.
     #[cfg(feature = "test-util")]
     lose_own_delivery: std::sync::atomic::AtomicBool,
@@ -359,7 +422,7 @@ impl Chat {
             match store.load(channel, DEDUP_WINDOW) {
                 // A line stored without a client id names no message.
                 Ok(stored) => stored.iter().filter(|m| m.client_id != 0).for_each(|m| {
-                    received.insert(channel, (m.from, m.client_id), ());
+                    received.insert(channel, (m.from, m.client_id), m.sent_ms);
                 }),
                 Err(e) => eprintln!("hubbub node: stored #{channel} messages not read: {e:#}"),
             }
@@ -372,6 +435,7 @@ impl Chat {
             pending: Mutex::new(Vec::new()),
             flushing: Mutex::new(()),
             received: Mutex::new(received),
+            since_ms: first_run_ms(data_dir),
             #[cfg(feature = "test-util")]
             lose_own_delivery: Default::default(),
         }
@@ -403,7 +467,12 @@ impl Chat {
         let ciphertext = seal(&self.key, channel, &self.me, client_id, body);
         ensure!(ciphertext.len() <= MAX_CIPHERTEXT, "the message is too large to send");
         let submission = Submission { channel: channel.to_string(), client_id, ciphertext };
-        self.pending.lock().unwrap().push(Pending { submission, sent_on: None });
+        self.pending.lock().unwrap().push(Pending {
+            submission,
+            sent_on: None,
+            sent_at: Instant::now(),
+            delivered_by: None,
+        });
         Ok(client_id)
     }
 
@@ -412,9 +481,11 @@ impl Chat {
         let _in_order = self.flushing.lock().unwrap();
         let unsent: Vec<Submission> = {
             let mut pending = self.pending.lock().unwrap();
+            Self::forget_old(&mut pending);
+            let host_term = route.host_term(self.me);
             pending
                 .iter_mut()
-                .filter(|p| p.sent_on != Some(route))
+                .filter(|p| p.sent_on != Some(route) && p.delivered_by.is_none_or(|by| resend_after_swap(by, host_term)))
                 .map(|p| {
                     p.sent_on = Some(route);
                     p.submission.clone()
@@ -428,17 +499,21 @@ impl Chat {
     /// to `show`, which runs under the lock that keeps arrival order. Nothing happens when it
     /// does not open (an unknown channel, or a sender or channel it was not sealed for), when
     /// its client id is 0, or when this node already has its `(from, client_id)`.
-    pub fn receive(&self, d: &Delivery, show: impl FnOnce(Received)) {
+    pub fn receive(&self, d: &Delivery, host: MemberId, show: impl FnOnce(Received)) {
         if d.client_id == 0 || !self.channels.text.contains(&d.channel) {
             return;
         }
         let Ok(body) = open(&self.key, &d.channel, &d.from, d.client_id, &d.ciphertext) else { return };
         // Delivered, even if this node already had it (a second host sent it again).
         if d.from == self.me {
-            self.pending.lock().unwrap().retain(|p| p.submission.client_id != d.client_id);
+            let mut pending = self.pending.lock().unwrap();
+            if let Some(p) = pending.iter_mut().find(|p| p.submission.client_id == d.client_id) {
+                p.delivered_by = Some((host, d.term));
+            }
+            Self::forget_old(&mut pending);
         }
         let mut received = self.received.lock().unwrap();
-        if !received.insert(&d.channel, (d.from, d.client_id), ()) {
+        if !received.insert(&d.channel, (d.from, d.client_id), d.sent_ms) {
             return;
         }
         let message =
@@ -449,22 +524,51 @@ impl Chat {
         show(Received { channel: d.channel.clone(), message });
     }
 
-    /// A node that stops hosting asks the next host to order again what it ordered for itself:
-    /// nobody else need have heard of it (two members that elected themselves in a split).
-    pub fn resubmit_own(&self, ordered: &[Delivery]) {
-        let mut pending = self.pending.lock().unwrap();
-        for d in ordered.iter().filter(|d| d.from == self.me) {
-            if pending.iter().any(|p| p.submission.client_id == d.client_id) {
-                continue;
-            }
-            let submission = Submission { channel: d.channel.clone(), client_id: d.client_id, ciphertext: d.ciphertext.clone() };
-            pending.push(Pending { submission, sent_on: None });
-        }
+    /// Drops delivered messages too old to resubmit, and all but the newest `RESEND_KEEP`.
+    fn forget_old(pending: &mut Vec<Pending>) {
+        pending.retain(|p| p.delivered_by.is_none() || p.sent_at.elapsed() < RESEND_WINDOW);
+        let delivered = pending.iter().filter(|p| p.delivered_by.is_some()).count();
+        let mut excess = delivered.saturating_sub(RESEND_KEEP);
+        pending.retain(|p| {
+            let drop = excess > 0 && p.delivered_by.is_some();
+            excess -= usize::from(drop);
+            !drop
+        });
+    }
+
+    /// What this node tells a peer it holds, and since when it has been a member here.
+    pub fn have(&self) -> (u64, Vec<HaveChannel>) {
+        let received = self.received.lock().unwrap();
+        let each = (HAVE_TOTAL / self.channels.text.len().max(1)).clamp(1, HAVE_PER_CHANNEL);
+        let have = self
+            .channels
+            .text
+            .iter()
+            .map(|c| {
+                let tail = received.tail(c, each);
+                let floor_ms = if tail.len() == each { tail.first().map_or(0, |(_, ms)| **ms) } else { 0 };
+                HaveChannel { channel: c.clone(), floor_ms, ids: tail.into_iter().map(|(k, _)| k).collect() }
+            })
+            .collect();
+        (self.since_ms, have)
     }
 
     pub fn history(&self, channel: &str, limit: usize) -> Result<Vec<TextMessage>> {
         self.store.load(channel, limit)
     }
+}
+
+/// When this device first ran this community: read from `<data_dir>/first_run_ms`, written
+/// now if absent. The community state keeps no admission time, and a node starts its
+/// community right after it joins. A node that cannot write the file counts from now.
+fn first_run_ms(data_dir: &Path) -> u64 {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let file = data_dir.join("first_run_ms");
+    if let Some(ms) = fs::read_to_string(&file).ok().and_then(|s| s.trim().parse().ok()) {
+        return ms;
+    }
+    let _ = fs::write(&file, now.to_string());
+    now
 }
 
 /// A random client id. Never 0, which marks a line stored before the store kept client ids.
@@ -493,15 +597,16 @@ impl Relay {
         *self.sequencer.lock().unwrap() = Some(Sequencer::new(term, &self.channels));
     }
 
-    /// This node stops hosting. Returns what it ordered in that term, still remembered.
-    pub fn stop(&self) -> Vec<Delivery> {
-        self.sequencer.lock().unwrap().take().map(|q| q.recent()).unwrap_or_default()
+    pub fn stop(&self) {
+        *self.sequencer.lock().unwrap() = None;
     }
 
-    /// While hosting, the deliveries of this term still remembered, for a member that was not
-    /// connected when they went out. Members drop what they already have.
-    pub fn recent(&self) -> Vec<Delivery> {
-        self.sequencer.lock().unwrap().as_ref().map(|q| q.recent()).unwrap_or_default()
+    /// While hosting, calls `send` with the deliveries a node lacks (see `Sequencer::missing`).
+    /// It runs under the relay's lock, like `relay`'s `deliver`: what is sent here goes out
+    /// before any later delivery. Without a live sequencer it still runs, with none.
+    pub fn catch_up(&self, since_ms: u64, have: &[HaveChannel], send: impl FnOnce(Vec<Delivery>)) {
+        let sequencer = self.sequencer.lock().unwrap();
+        send(sequencer.as_ref().map(|q| q.missing(since_ms, have)).unwrap_or_default());
     }
 
     /// While hosting, orders `s` from `from` and calls `deliver` with the result, a new
@@ -742,20 +847,63 @@ mod tests {
             chat.flush(route, |s| out.push(s));
             out
         };
-        let first = flush(Route::Remote { term: 4, session: 1 });
+        let first = flush(Route::Remote { host: id(7), term: 4, session: 1 });
         assert_eq!(first.iter().map(|s| s.client_id).collect::<Vec<_>>(), [a, b]);
-        assert!(flush(Route::Remote { term: 4, session: 1 }).is_empty(), "already submitted on this route");
-        assert_eq!(flush(Route::Remote { term: 4, session: 2 }).len(), 2, "a new session to the host");
-        assert_eq!(flush(Route::Remote { term: 5, session: 2 }).len(), 2, "the same session at a new term");
+        assert!(flush(Route::Remote { host: id(7), term: 4, session: 1 }).is_empty(), "already submitted on this route");
+        assert_eq!(flush(Route::Remote { host: id(7), term: 4, session: 2 }).len(), 2, "a new session to the host");
+        assert_eq!(flush(Route::Remote { host: id(7), term: 5, session: 2 }).len(), 2, "the same session at a new term");
 
         let mut seq = Sequencer::new(4, &community.channels().text);
         let delivered = new(seq.submit(id(1), first[0].clone(), 500));
         let got = receive(&chat, &delivered).unwrap();
         let want = TextMessage { term: 4, seq: 1, from: id(1), client_id: a, sent_ms: 500, body: "one".into() };
         assert_eq!(got.message, want);
+        let same_host = flush(Route::Remote { host: id(7), term: 4, session: 3 });
+        assert_eq!(same_host.iter().map(|s| s.client_id).collect::<Vec<_>>(), [b], "delivered by this host and term");
         let left = flush(Route::Local { term: 6 });
-        assert_eq!(left.iter().map(|s| s.client_id).collect::<Vec<_>>(), [b], "delivered messages leave the queue");
+        assert_eq!(left.iter().map(|s| s.client_id).collect::<Vec<_>>(), [b], "a new term: delivered ones leave the queue");
+        let swapped = flush(Route::Remote { host: id(8), term: 4, session: 9 });
+        assert_eq!(swapped.iter().map(|s| s.client_id).collect::<Vec<_>>(), [a, b], "another host, same term: a tie was broken");
         assert_eq!(chat.history("general", 10).unwrap(), [got.message]);
+    }
+
+    #[test]
+    fn missing_is_what_a_node_lacks_and_was_ordered_since_it_began() {
+        let mut seq = Sequencer::new(3, &channels());
+        let mut ordered = Vec::new();
+        for (i, ms) in [100u64, 200, 300, 400].into_iter().enumerate() {
+            ordered.push(new(seq.submit(id(2), submission("general", i as u64 + 1), ms)));
+        }
+        let have = |floor_ms, ids: &[u64]| {
+            vec![HaveChannel { channel: "general".into(), floor_ms, ids: ids.iter().map(|&c| (id(2), c)).collect() }]
+        };
+        let ids = |ds: Vec<Delivery>| ds.iter().map(|d| d.client_id).collect::<Vec<_>>();
+        assert_eq!(ids(seq.missing(0, &[])), [1, 2, 3, 4], "a node with nothing, from the start");
+        assert_eq!(ids(seq.missing(250, &[])), [3, 4], "nothing ordered before the node began");
+        assert_eq!(ids(seq.missing(0, &have(0, &[1, 2]))), [3, 4], "a node that came back");
+        assert_eq!(ids(seq.missing(0, &have(0, &[1, 2, 3, 4]))), Vec::<u64>::new(), "up to date");
+        assert_eq!(ids(seq.missing(0, &have(0, &[2, 4]))), [1, 3], "by id, not by position");
+        assert_eq!(ids(seq.missing(0, &have(300, &[]))), [3, 4], "the floor of a full list");
+    }
+
+    #[test]
+    fn have_lists_the_newest_stored_messages_of_each_channel() {
+        let d = tempfile::tempdir().unwrap();
+        let community = test_state();
+        let chat = Chat::new(id(1), &community, d.path());
+        let key = community.text_key();
+        let each = (HAVE_TOTAL / community.channels().text.len().max(1)).clamp(1, HAVE_PER_CHANNEL);
+        for n in 1..=(each + 5) as u64 {
+            let mut dl = delivery(&key, id(2), n, "x");
+            dl.sent_ms = n * 10;
+            receive(&chat, &dl).unwrap();
+        }
+        let (since, have) = chat.have();
+        let general = have.iter().find(|h| h.channel == "general").unwrap();
+        assert_eq!(general.ids.len(), each);
+        assert_eq!(general.ids.last().unwrap().1, (each + 5) as u64, "the newest last");
+        assert_eq!(general.floor_ms, general.ids[0].1 * 10, "a full list has a floor");
+        assert_eq!(Chat::new(id(1), &community, d.path()).have().0, since, "the first run time is kept");
     }
 
     #[test]
@@ -784,7 +932,7 @@ mod tests {
     /// What `chat` shows for `d`, if anything.
     fn receive(chat: &Chat, d: &Delivery) -> Option<Received> {
         let mut shown = None;
-        chat.receive(d, |r| shown = Some(r));
+        chat.receive(d, id(7), |r| shown = Some(r));
         shown
     }
 

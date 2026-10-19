@@ -43,6 +43,17 @@ pub struct PeerReport {
     pub upload_mbps: Option<u32>,
 }
 
+/// What a member holds of one text channel: its newest stored messages, so a host can send
+/// what is missing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HaveChannel {
+    pub channel: String,
+    /// When the oldest of `ids` was ordered (host clock, ms), if the list is full; else 0.
+    /// Nothing older is wanted: the member has seen the channel since.
+    pub floor_ms: u64,
+    pub ids: Vec<(MemberId, u64)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum CtlMsg {
@@ -60,6 +71,10 @@ pub enum CtlMsg {
     TokenResponse { token: String },
     TokenDenied { reason: String },
     ProbeResult { mbps: u32 },
+    /// Sent first on every session: what this node holds of each text channel, and when it
+    /// first ran this community (`since_ms`). A host sends back only the deliveries it
+    /// ordered since then that the node lacks, and starts live deliveries on this session.
+    TextHave { since_ms: u64, have: Vec<HaveChannel> },
     /// A member's sealed text message, for the host to order (see `text`).
     TextSubmit {
         channel: String,

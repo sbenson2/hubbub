@@ -42,7 +42,7 @@ use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
 use crate::join::JoinMsg;
-use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, PeerReport};
+use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, HaveChannel, PeerReport};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
 use crate::view::build_view;
@@ -417,6 +417,9 @@ type Pings = Arc<Mutex<VecDeque<(u64, Instant)>>>;
 
 struct Session {
     out: OutTx,
+    /// The peer has said what text it holds (`TextHave`) and been caught up, so live
+    /// deliveries may go to it: none overtakes the catch-up.
+    text_ready: bool,
     /// TokenRequests sent on this session; the host answers them in order.
     tokens: VecDeque<TokenWaiter>,
 }
@@ -532,6 +535,30 @@ impl Inner {
         }
     }
 
+    /// Like `broadcast`, to the peers whose newest session has been caught up on text.
+    fn broadcast_text(&self, msg: &CtlMsg) {
+        let st = self.state.lock().unwrap();
+        for p in st.peers.values() {
+            if let Some(s) = p.sessions.get(&p.newest).filter(|s| s.text_ready) {
+                let _ = s.out.send(Out::Msg(msg.clone()));
+            }
+        }
+    }
+
+    /// Answers a peer's `TextHave`: sends the deliveries it lacks on `out`, then lets live
+    /// ones follow. The relay's lock is held throughout, so no delivery slips in between.
+    fn catch_up_text(&self, peer: MemberId, session: u64, out: &OutTx, since_ms: u64, have: &[HaveChannel]) {
+        self.relay.catch_up(since_ms, have, |missing| {
+            missing.iter().for_each(|d| {
+                let _ = out.send(Out::Msg(d.to_msg()));
+            });
+            let mut st = self.state.lock().unwrap();
+            if let Some(s) = st.peers.get_mut(&peer).and_then(|p| p.sessions.get_mut(&session)) {
+                s.text_ready = true;
+            }
+        });
+    }
+
     fn hello(&self, can_host: bool) -> CtlMsg {
         CtlMsg::Hello { member: self.me, can_host, online_since_ms: self.online_since_ms }
     }
@@ -617,8 +644,7 @@ impl Inner {
                 }
                 Action::StopHosting => {
                     *claim = None;
-                    let ordered = self.relay.stop();
-                    self.chat.resubmit_own(&ordered);
+                    self.relay.stop();
                     let _ = self.media.send(MediaCmd::Stop);
                 }
                 Action::SendHeartbeat { term, key } => {
@@ -791,10 +817,9 @@ impl Inner {
         let _ = self.election.send(Cmd::SessionUp(out.clone()));
         // This may be a new session to the host.
         self.flush_text();
-        // Or this node hosts, and the peer missed what it ordered before the session came up.
-        for d in self.relay.recent() {
-            let _ = out.send(Out::Msg(d.to_msg()));
-        }
+        // The peer, if it hosts, sends back what this node lacks (see `CtlMsg::TextHave`).
+        let (since_ms, have) = self.chat.have();
+        let _ = out.send(Out::Msg(CtlMsg::TextHave { since_ms, have }));
         let probe_conn = conn.clone();
         let prober = self.clone();
         let helpers = [
@@ -831,7 +856,7 @@ impl Inner {
             upload_mbps: None,
         });
         let first = p.sessions.is_empty();
-        p.sessions.insert(id, Session { out, tokens: VecDeque::new() });
+        p.sessions.insert(id, Session { out, text_ready: false, tokens: VecDeque::new() });
         p.newest = id;
         p.can_host = can_host;
         p.online_since_ms = since;
@@ -909,6 +934,7 @@ impl Inner {
                 CtlMsg::TokenDenied { reason } => self.answer_token(peer, id, Err(reason)),
                 // The peer's measurement of this node; the view uses other members' reports.
                 CtlMsg::ProbeResult { .. } => {}
+                CtlMsg::TextHave { since_ms, have } => self.catch_up_text(peer, id, &out, since_ms, &have),
                 CtlMsg::TextSubmit { channel, client_id, ciphertext } => {
                     self.relay_text(peer, Submission { channel, client_id, ciphertext }, Some(out))
                 }
@@ -917,7 +943,7 @@ impl Inner {
                     if self.chat.loses_delivery_from(&from) {
                         bail!("test: the session ends before this node reads its own delivery");
                     }
-                    self.receive_text(&Delivery { channel, term, seq, from, client_id, sent_ms, ciphertext })
+                    self.receive_text(&Delivery { channel, term, seq, from, client_id, sent_ms, ciphertext }, peer)
                 }
             }
         }
@@ -1067,7 +1093,7 @@ impl Inner {
             (Some(h), _) if h == self.me => {
                 self.chat.flush(Route::Local { term }, |s| self.relay_text(self.me, s, None))
             }
-            (Some(_), Some((session, out))) => self.chat.flush(Route::Remote { term, session }, |s| {
+            (Some(host), Some((session, out))) => self.chat.flush(Route::Remote { host, term, session }, |s| {
                 let _ = out.send(Out::Msg(s.to_msg()));
             }),
             _ => {}
@@ -1081,18 +1107,18 @@ impl Inner {
     fn relay_text(&self, from: MemberId, submission: Submission, reply: Option<&OutTx>) {
         self.relay.relay(from, submission, |ordered| match (ordered, reply) {
             (Ordered::New(d), _) => {
-                self.broadcast(&d.to_msg());
-                self.receive_text(&d);
+                self.broadcast_text(&d.to_msg());
+                self.receive_text(&d, self.me);
             }
             (Ordered::Again(d), Some(out)) => {
                 let _ = out.send(Out::Msg(d.to_msg()));
             }
-            (Ordered::Again(d), None) => self.receive_text(&d),
+            (Ordered::Again(d), None) => self.receive_text(&d, self.me),
         });
     }
 
-    fn receive_text(&self, d: &Delivery) {
-        self.chat.receive(d, |r| {
+    fn receive_text(&self, d: &Delivery, host: MemberId) {
+        self.chat.receive(d, host, |r| {
             let m = r.message;
             let (term, seq, from, sent_ms, body, client_id) = (m.term, m.seq, m.from, m.sent_ms, m.body, m.client_id);
             self.emit(NodeEvent::Text { channel: r.channel, term, seq, from, sent_ms, body, client_id });
