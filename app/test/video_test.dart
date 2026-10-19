@@ -352,4 +352,57 @@ void main() {
       expect(find.byKey(const ValueKey('fullscreen')), findsNothing);
     });
   });
+
+  group('stats overlay', () {
+    const stream = VideoFeed('TR_s');
+    const sample = VideoRxSample(
+        participantId: 'bbbb', width: 1920, height: 1080, framesPerSecond: 59.6, kbps: 5400.4);
+
+    test('video_rx_line_has_the_resolution_fps_and_kbps', () {
+      expect(formatVideoRx(sample), 'video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400');
+      expect(formatVideoRx(const VideoRxSample()), 'video_rx from=? 0x0 fps=0.0 kbps=0');
+    });
+
+    testWidgets('the_overlay_is_off_until_toggled_then_shows_what_is_received', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoRx(sample));
+      await tester.pumpAndSettle();
+      expect(find.text('1920x1080'), findsNothing);
+
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.text('1920x1080'), findsOneWidget);
+      expect(find.text('60 fps'), findsOneWidget);
+      expect(find.text('5400 kbps'), findsOneWidget);
+
+      room.emitSignal(const RoomVideoRx(VideoRxSample(
+          participantId: 'bbbb', width: 1280, height: 720, framesPerSecond: 30, kbps: 2400)));
+      await tester.pumpAndSettle();
+      expect(find.text('1280x720'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.text('1280x720'), findsNothing);
+    });
+
+    testWidgets('every_sample_is_logged_as_video_rx', (tester) async {
+      final lines = <String>[];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => lines.add(m ?? '');
+      try {
+        await pumpShell(tester);
+        await joinLobby(tester);
+        room.emitSignal(const RoomVideoRx(sample));
+        await tester.pump();
+      } finally {
+        debugPrint = old;
+      }
+      expect(lines, contains('hubbub: video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400'));
+    });
+  });
 }

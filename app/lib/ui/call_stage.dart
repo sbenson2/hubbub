@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../room_adapter.dart';
 import 'channel_sidebar.dart';
 import 'participant_tile.dart';
 import 'theme.dart';
@@ -34,7 +35,9 @@ class StageActions {
     required this.onFocus,
     required this.onClose,
     required this.onFullscreen,
-    this.statsOverlay,
+    required this.showStats,
+    required this.onToggleStats,
+    this.rx,
   });
 
   /// Whose streams are being watched (member ids).
@@ -49,8 +52,10 @@ class StageActions {
   final void Function(StageItem) onClose;
   final void Function(StageItem) onFullscreen;
 
-  /// Drawn over the focused stream (the received resolution, fps and kbps).
-  final Widget Function(StageItem)? statsOverlay;
+  /// Whether the stats panel is on, and the latest received sample for it.
+  final bool showStats;
+  final VoidCallback onToggleStats;
+  final VideoRxSample? rx;
 }
 
 /// Whether [item] has pictures to show large: a camera, a stream you watch, or your own.
@@ -79,17 +84,27 @@ class CallStage extends StatelessWidget {
       return _TileGrid(items: items, tileFor: _tile);
     }
     final others = [for (final i in items) if (i != focus) i];
+    final watchedStream = focus.stream && !focus.member.isMe;
     return Column(children: [
       Expanded(
         child: KeyedSubtree(
           key: const ValueKey('focused'),
           child: Stack(children: [
             Positioned.fill(child: _tile(focus, large: true)),
+            if (watchedStream && actions.showStats)
+              Positioned(left: 8, top: 40, child: _StatsPanel(actions.rx)),
             Positioned(
               top: 8,
               right: 8,
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (actions.statsOverlay != null && focus.stream) actions.statsOverlay!(focus),
+                if (watchedStream) ...[
+                  _OverlayButton(
+                    tooltip: 'Stream Stats',
+                    icon: Icons.bar_chart_rounded,
+                    onTap: actions.onToggleStats,
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 _OverlayButton(
                   tooltip: 'Full Screen',
                   icon: Icons.fullscreen_rounded,
@@ -141,6 +156,35 @@ class CallStage extends StatelessWidget {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => actions.onFocus(item.key), child: tile),
+    );
+  }
+}
+
+/// The received resolution, frame rate and bitrate of the stream on screen.
+class _StatsPanel extends StatelessWidget {
+  const _StatsPanel(this.rx);
+
+  final VideoRxSample? rx;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = rx;
+    final lines = r == null
+        ? const ['Waiting for video…']
+        : [
+            '${r.width ?? 0}x${r.height ?? 0}',
+            '${(r.framesPerSecond ?? 0).round()} fps',
+            '${(r.kbps ?? 0).round()} kbps',
+          ];
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(color: const Color(0xB3000000), borderRadius: BorderRadius.circular(4)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        for (final l in lines)
+          Text(l,
+              style: const TextStyle(
+                  fontFamily: hubFont, fontSize: 12, height: 1.3, color: HubColors.white)),
+      ]),
     );
   }
 }

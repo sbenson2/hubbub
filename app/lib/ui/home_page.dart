@@ -113,6 +113,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _seenSharing.clear();
       _watchGrace?.cancel();
       _focus = null;
+      _rx = null;
     }
     _inCall.value = c != null;
   }
@@ -140,6 +141,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// The tile shown large (a [StageItem.key]), if any.
   String? _focus;
+
+  /// The stream stats panel, and the latest received sample for the watched stream.
+  bool _showStats = false;
+  VideoRxSample? _rx;
   bool _mutedBeforeDeafen = false;
   bool _memberList = true;
   bool _starting = false;
@@ -437,6 +442,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _watching.remove(id);
       _seenSharing.remove(id);
       if (_focus == 'stream:$id') _focus = null;
+      if (_watching.isEmpty) _rx = null;
     });
     if (sid != null) {
       _requested.remove(sid);
@@ -544,6 +550,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _onSignal(RoomSignal s) {
     // One line per signal for the automated multi-machine check; samples are too chatty.
     if (s is! RoomStats && s is! RoomVideoRx) debugPrint('hubbub: ${_describe(s)}');
+    if (s is RoomVideoRx) {
+      // Every sample (every 2 s while a stream is watched) goes to the journal.
+      debugPrint('hubbub: ${formatVideoRx(s.sample)}');
+      if (mounted) setState(() => _rx = s.sample);
+    }
     if (s is! RoomDisconnected || _rejoining) return;
     final call = _call;
     final host = call?.node.host;
@@ -853,6 +864,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onFocus: _setFocus,
           onClose: _closeFocused,
           onFullscreen: _openFullscreen,
+          showStats: _showStats,
+          onToggleStats: () => setState(() => _showStats = !_showStats),
+          rx: _rx,
         ),
       );
     }

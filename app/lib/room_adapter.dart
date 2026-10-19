@@ -17,11 +17,23 @@ class StatsSample {
 
 /// Inbound video as received by this client.
 class VideoRxSample {
-  const VideoRxSample({this.width, this.height, this.framesPerSecond});
+  const VideoRxSample({this.participantId, this.width, this.height, this.framesPerSecond, this.kbps});
+
+  /// Whose stream this is.
+  final String? participantId;
   final int? width;
   final int? height;
   final double? framesPerSecond;
+
+  /// Received video bitrate over the last sampling interval.
+  final double? kbps;
 }
+
+/// The `video_rx` log line the controller reads from the journal, e.g.
+/// `video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400`.
+String formatVideoRx(VideoRxSample s) =>
+    'video_rx from=${s.participantId ?? '?'} ${s.width ?? 0}x${s.height ?? 0} '
+    'fps=${(s.framesPerSecond ?? 0).toStringAsFixed(1)} kbps=${(s.kbps ?? 0).round()}';
 
 sealed class RoomSignal {
   const RoomSignal();
@@ -582,7 +594,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _participants.add(list);
   }
 
-  /// Samples the first remote audio and video track; the public API has no RTT.
+  /// Bytes received and when, per watched stream, for the bitrate between two samples.
+  final _rxPrev = <String, (num, DateTime)>{};
+
+  /// Samples the first remote audio track, and the screen shares being watched (a share's
+  /// track exists only after Watch); the public API has no RTT.
   Future<void> _sampleStats() async {
     final room = _room;
     if (room == null) return;
@@ -590,8 +606,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
       double? jitter;
       int? lost;
       VideoRxSample? video;
+      final live = <String>{};
       for (final p in room.remoteParticipants.values) {
-        for (final pub in p.trackPublications.values) {
+        for (final pub in p.audioTrackPublications) {
           final track = pub.track;
           if (track is RemoteAudioTrack && jitter == null) {
             final st = await track.getReceiverStats();
@@ -600,18 +617,35 @@ class LiveKitRoomAdapter implements RoomAdapter {
               if (jitter != null) jitter *= 1000;
               lost = st.packetsLost?.toInt();
             }
-          } else if (track is RemoteVideoTrack && video == null) {
-            final st = await track.getReceiverStats();
-            if (st != null) {
-              video = VideoRxSample(
-                width: st.frameWidth?.toInt(),
-                height: st.frameHeight?.toInt(),
-                framesPerSecond: st.framesPerSecond?.toDouble(),
-              );
-            }
           }
         }
+        final share = p.getTrackPublicationBySource(TrackSource.screenShareVideo);
+        final track = share?.track;
+        if (share != null && track is RemoteVideoTrack) {
+          live.add(share.sid);
+          final st = await track.getReceiverStats();
+          if (st == null) continue;
+          final now = DateTime.now();
+          final bytes = st.bytesReceived;
+          final prev = _rxPrev[share.sid];
+          double? kbps;
+          if (bytes != null) {
+            if (prev != null) {
+              final secs = now.difference(prev.$2).inMilliseconds / 1000;
+              if (secs > 0) kbps = (bytes - prev.$1) * 8 / 1000 / secs;
+            }
+            _rxPrev[share.sid] = (bytes, now);
+          }
+          video ??= VideoRxSample(
+            participantId: p.identity,
+            width: st.frameWidth?.toInt(),
+            height: st.frameHeight?.toInt(),
+            framesPerSecond: st.framesPerSecond?.toDouble(),
+            kbps: kbps,
+          );
+        }
       }
+      _rxPrev.removeWhere((sid, _) => !live.contains(sid));
       _signals.add(RoomStats(StatsSample(audioJitterMs: jitter, audioPacketsLost: lost)));
       if (video != null) _signals.add(RoomVideoRx(video));
     } catch (e) {
