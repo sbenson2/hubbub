@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../audio_settings.dart';
 import '../device_settings.dart';
+import '../install.dart';
 import '../room_adapter.dart';
 import 'context_menu.dart';
 import 'mic_meter.dart';
@@ -16,16 +17,17 @@ Future<void> showSettingsDialog(
   required DeviceSettings devices,
   required AudioSettings audio,
   required ValueListenable<bool> inCall,
+  WindowsSettings? windows,
   bool voice = false,
 }) =>
     showDialog<void>(
       context: context,
       barrierColor: const Color(0xD9000000),
       builder: (context) => _SettingsDialog(
-          memberId: memberId, tag: tag, devices: devices, audio: audio, inCall: inCall, voice: voice),
+          memberId: memberId, tag: tag, devices: devices, audio: audio, inCall: inCall, windows: windows, voice: voice),
     );
 
-enum _Section { account, voice }
+enum _Section { account, voice, windows }
 
 class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog({
@@ -34,6 +36,7 @@ class _SettingsDialog extends StatefulWidget {
     required this.devices,
     required this.audio,
     required this.inCall,
+    required this.windows,
     required this.voice,
   });
 
@@ -42,6 +45,9 @@ class _SettingsDialog extends StatefulWidget {
   final DeviceSettings devices;
   final AudioSettings audio;
   final ValueListenable<bool> inCall;
+
+  /// The Windows switches; the section is absent when null.
+  final WindowsSettings? windows;
   final bool voice;
 
   @override
@@ -73,13 +79,21 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     () => setState(() => _section = _Section.account)),
                 _NavItem('Voice & Video', _section == _Section.voice,
                     () => setState(() => _section = _Section.voice)),
+                if (widget.windows != null)
+                  _NavItem('Windows Settings', _section == _Section.windows,
+                      () => setState(() => _section = _Section.windows)),
               ]),
             ),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(40, 60, 40, 24),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(_section == _Section.account ? 'My Account' : 'Voice & Video',
+                  Text(
+                      switch (_section) {
+                        _Section.account => 'My Account',
+                        _Section.voice => 'Voice & Video',
+                        _Section.windows => 'Windows Settings',
+                      },
                       style: const TextStyle(
                         fontFamily: hubFont,
                         fontSize: 20,
@@ -90,12 +104,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                   const SizedBox(height: 20),
                   Expanded(
                     child: SingleChildScrollView(
-                      child: _section == _Section.account
-                          ? _Account(memberId: widget.memberId, tag: widget.tag)
-                          : _VoiceVideo(
-                              devices: widget.devices,
-                              audio: widget.audio,
-                              inCall: widget.inCall),
+                      child: switch (_section) {
+                        _Section.account => _Account(memberId: widget.memberId, tag: widget.tag),
+                        _Section.voice => _VoiceVideo(
+                            devices: widget.devices, audio: widget.audio, inCall: widget.inCall),
+                        _Section.windows => _WindowsSection(settings: widget.windows!),
+                      },
                     ),
                   ),
                   Row(children: [
@@ -193,6 +207,46 @@ class _Account extends StatelessWidget {
           SelectableText(tag, style: HubText.message),
         ],
       );
+}
+
+/// Start at login (on by default after an install, like Discord) and the installed version.
+class _WindowsSection extends StatefulWidget {
+  const _WindowsSection({required this.settings});
+  final WindowsSettings settings;
+
+  @override
+  State<_WindowsSection> createState() => _WindowsSectionState();
+}
+
+class _WindowsSectionState extends State<_WindowsSection> {
+  late bool _login = widget.settings.startAtLogin;
+
+  @override
+  Widget build(BuildContext context) {
+    final version = widget.settings.version;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('SYSTEM', style: HubText.category),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        key: const Key('start-at-login'),
+        contentPadding: EdgeInsets.zero,
+        activeThumbColor: HubColors.accent,
+        title: const Text('Open Hubbub', style: HubText.message),
+        subtitle: const Text('Start Hubbub in the tray when you log in to Windows, so your servers stay online.',
+            style: TextStyle(fontFamily: hubFont, fontSize: 14, height: 1.3, color: HubColors.muted)),
+        value: _login,
+        onChanged: (on) {
+          widget.settings.setStartAtLogin(on);
+          setState(() => _login = widget.settings.startAtLogin);
+        },
+      ),
+      const SizedBox(height: 24),
+      const Text('VERSION', style: HubText.category),
+      const SizedBox(height: 8),
+      Text(version == null ? 'Not installed (running from a build folder)' : 'Hubbub $version',
+          key: const Key('app-version'), style: HubText.message),
+    ]);
+  }
 }
 
 /// Input and output side by side, the camera below.

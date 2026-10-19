@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../audio_settings.dart';
 import '../device_settings.dart';
 import '../hub_controller.dart';
+import '../install.dart';
 import '../links.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
@@ -26,6 +27,7 @@ import 'dialogs/join_dialog.dart';
 import 'dialogs/leave_dialog.dart';
 import 'dialogs/name_dialog.dart';
 import 'dialogs/share_picker_dialog.dart';
+import 'dialogs/update_banner.dart';
 import 'member_list.dart';
 import 'settings_dialog.dart';
 import 'text_channel_view.dart';
@@ -51,6 +53,8 @@ class HomePage extends StatefulWidget {
     this.linkSource,
     this.deviceStore,
     this.audioStore,
+    this.updates,
+    this.windowsSettings,
     this.shareSources = desktopShareSources,
     this.setFullscreen = setWindowFullscreen,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
@@ -78,6 +82,12 @@ class HomePage extends StatefulWidget {
 
   /// Where the output volumes are kept; in memory when null (tests).
   final AudioPrefsStore? audioStore;
+
+  /// Self-update state for the "Update ready" banner; null when this build does not update.
+  final UpdateController? updates;
+
+  /// The Windows switches in User Settings (start at login); null elsewhere.
+  final WindowsSettings? windowsSettings;
 
   /// Replaces the wall clock for message times (tests).
   final DateTime Function()? clock;
@@ -116,6 +126,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _rx.clear();
     }
     _inCall.value = c != null;
+    widget.updates?.callActive.value = c != null;
   }
 
   _Call? _callValue;
@@ -728,6 +739,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final narrow = box.maxWidth < narrowWidth;
       final nav = _navigation();
       final main = Column(children: [
+        if (widget.updates != null) UpdateBanner(updates: widget.updates!),
         if (_offered != null)
           ClipboardBanner(
             preview: _offered!,
@@ -839,6 +851,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         devices: _devices,
         audio: _audio,
         inCall: _inCall,
+        windows: widget.windowsSettings,
         voice: voice,
       );
 

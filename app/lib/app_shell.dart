@@ -79,6 +79,7 @@ class TrayLifecycle {
     required this.shutdown,
     required this.notice,
     this.showNotice,
+    this.beforeExit,
   });
 
   final AppShell shell;
@@ -88,6 +89,10 @@ class TrayLifecycle {
   /// Tells the user, once, that Hubbub keeps running in the tray. Awaited before the window hides.
   /// Returns false when it could not be shown (then it is offered again next time).
   final Future<bool> Function()? showNotice;
+
+  /// Runs once the hub has shut down and the process is about to exit, on every path that ends
+  /// the app by choice (not a Windows log-off). The updater hands a downloaded update over here.
+  final void Function()? beforeExit;
 
   Future<void> start() async {
     shell.onCloseRequested = () => unawaited(_close());
@@ -123,6 +128,7 @@ class TrayLifecycle {
       return false;
     }
     await _shutDown();
+    beforeExit?.call();
     return true;
   }
 
@@ -146,6 +152,7 @@ class TrayLifecycle {
   /// Shuts down once, then ends the process.
   Future<void> quit() => _quitting ??= () async {
         await _shutDown();
+        beforeExit?.call();
         await shell.exitApp();
       }();
 }

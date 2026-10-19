@@ -10,11 +10,13 @@ import 'audio_settings.dart';
 import 'device_settings.dart';
 import 'frb_hub.dart';
 import 'hub_controller.dart';
+import 'install.dart';
 import 'links.dart';
 import 'node_controller.dart';
 import 'plugin_shell.dart';
 import 'room_adapter.dart';
 import 'src/rust/api/hubbub.dart';
+import 'src/rust/api/install.dart' as install;
 import 'ui/home_page.dart';
 import 'ui/theme.dart';
 
@@ -58,7 +60,7 @@ Future<String> hubRoot() async {
   return (await getApplicationSupportDirectory()).path;
 }
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await initCore();
   final hub = HubController(FrbHub());
@@ -72,15 +74,26 @@ Future<void> main() async {
   }
   final navigator = GlobalKey<NavigatorState>();
   final shell = PluginAppShell();
+  // Self-update only exists for an installed copy; a dev run never polls a feed.
+  final installed = (Platform.isWindows || Platform.isLinux) && install.installVersion() != null;
+  final updates = installed ? UpdateController(service: RustUpdateService(), feed: resolveUpdateFeed()) : null;
   final lifecycle = TrayLifecycle(
     shell: shell,
     shutdown: hub.shutdown,
+    beforeExit: updates?.applyBeforeExit,
     notice: HideNoticeStore.file('$root${Platform.pathSeparator}shell.json'),
     showNotice: () => showHideNotice(navigator),
   );
   _installExitHooks(lifecycle);
   await lifecycle.start();
+  updates?.quit = lifecycle.quit;
+  // A start at login runs with --background and the runner leaves the window hidden. Without a
+  // tray there would be no way to bring it back, so show it then.
+  if (args.contains('--background') && !shell.hasTray) await shell.showWindow();
+  updates?.start();
   runApp(HubbubApp(
+      updates: updates,
+      windowsSettings: Platform.isWindows ? RustWindowsSettings() : null,
       hub: hub,
       room: room,
       links: WindowRevealingLinks(AppLinkSource(), shell),
@@ -127,6 +140,8 @@ void _installExitHooks(TrayLifecycle lifecycle) {
 class HubbubApp extends StatelessWidget {
   const HubbubApp(
       {super.key,
+      this.updates,
+      this.windowsSettings,
       required this.hub,
       required this.room,
       this.links,
@@ -134,6 +149,8 @@ class HubbubApp extends StatelessWidget {
       this.audio,
       this.navigatorKey});
 
+  final UpdateController? updates;
+  final WindowsSettings? windowsSettings;
   final HubController hub;
   final RoomAdapter room;
   final LinkSource? links;
@@ -148,7 +165,15 @@ class HubbubApp extends StatelessWidget {
       title: 'Hubbub',
       debugShowCheckedModeBanner: false,
       theme: hubbubTheme(),
-      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links, deviceStore: devices, audioStore: audio),
+      home: HomePage(
+          hub: hub,
+          room: room,
+          loadConfig: nodeConfig,
+          linkSource: links,
+          deviceStore: devices,
+          audioStore: audio,
+          updates: updates,
+          windowsSettings: windowsSettings),
     );
   }
 }
