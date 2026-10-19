@@ -79,6 +79,11 @@ Community chat shouldn't depend on one company's servers, business model or term
 
 Version 0.1.0, pre-release and unsigned.
 
+**The goal right now is a solid foundation.** Joining, calls, text, screen sharing and host handover have to work well and consistently on every platform before anything else is added. After that, new features come from what the community asks for and helps build.
+
+1. **Foundation (now):** reliability across networks and machines, the macOS build, Linux screen sharing on Wayland, signed installers and automatic updates.
+2. **Community features (next):** whatever users ask for most. Open an issue to suggest something or to vote on an existing idea.
+
 | Platform | State |
 | --- | --- |
 | Windows | Primary platform. Velopack installer, tray icon, start at login. |
@@ -136,7 +141,14 @@ The first Windows or Linux build downloads a prebuilt libwebrtc, so it needs net
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for anything large. Before sending a change, run `flutter analyze` and `flutter test` in `app/`, and `cargo test -p hubbub-core --features test-util` for the core. If you change a wire message, read the compatibility rule above `CtlMsg` in `core/src/proto.rs`: people update at different times, so different builds talk to each other.
+Hubbub is meant to be built together, and help of every kind is welcome:
+
+- **Test it.** Use it with friends on different networks and machines, and report what breaks, with logs if you can. This is the most valuable help while the foundation is being finished.
+- **Report bugs and suggest features** in [Issues](https://github.com/sbenson2/hubbub/issues).
+- **Send code.** Pull requests are welcome. Open an issue first for anything large, so we can agree on the approach.
+- **Improve the docs**, translations and the first-run experience.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a change.
 
 ## License
 
