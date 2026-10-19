@@ -1,0 +1,7 @@
+# Downloaded at CMake configure time by flutter_webrtc/third_party/CMakeLists.txt
+flutter_webrtc/third_party/downloads/
+flutter_webrtc/third_party/libwebrtc/
+flutter_webrtc/third_party/.libwebrtc_extract/
+*.zip
+*.dll
+*.lib
