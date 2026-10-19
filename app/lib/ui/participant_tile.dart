@@ -23,12 +23,12 @@ class ParticipantTile extends StatelessWidget {
           color: HubColors.tile,
           borderRadius: BorderRadius.circular(8),
         ),
-        foregroundDecoration: m.speaking
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: HubColors.green, width: 2),
-              )
-            : null,
+        // The ring is always there, clear while quiet: a foreground decoration that comes and
+        // goes changes the Container's tree, which remounts the video (a black flash per word).
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: m.speaking ? HubColors.green : Colors.transparent, width: 2),
+        ),
         child: Stack(children: [
           if (m.camera != null)
             Positioned.fill(
