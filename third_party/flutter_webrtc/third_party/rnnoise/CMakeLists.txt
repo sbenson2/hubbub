@@ -25,5 +25,6 @@ if(MSVC)
   # MSVC does not define __SSE2__; x64 always has SSE2, so select the SSE code path
   # (otherwise vec.h falls back to an Opus-only header that is not part of RNNoise).
   target_compile_definitions(rnnoise PRIVATE _CRT_SECURE_NO_WARNINGS __SSE2__=1)
-  target_compile_options(rnnoise PRIVATE /W1 /O2)
+  # /O2 clashes with /RTC1 in Debug configurations (D8016), so optimise only the others.
+  target_compile_options(rnnoise PRIVATE /W1 $<$<NOT:$<CONFIG:Debug>>:/O2>)
 endif()
