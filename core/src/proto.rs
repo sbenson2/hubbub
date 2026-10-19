@@ -24,6 +24,12 @@ pub fn sig_alpn(cid: &CommunityId) -> Vec<u8> {
     format!("hubbub/sig/1/{cid}").into_bytes()
 }
 
+/// The media-tunnel ALPN of one community: `hubbub/media/1/<cid-hex>`. Call media (UDP) rides
+/// QUIC datagrams on it, between a member and the host that runs the community's LiveKit.
+pub fn media_alpn(cid: &CommunityId) -> Vec<u8> {
+    format!("hubbub/media/1/{cid}").into_bytes()
+}
+
 /// Prefix of a community's rejoin ALPN, the one route a non-member may use (see `join`).
 pub const REJOIN_PREFIX: &[u8] = b"hubbub/rejoin/1/";
 
@@ -180,6 +186,7 @@ mod tests {
         let cid: CommunityId = "000102030405060708090a0b0c0d0e0f".parse().unwrap();
         assert_eq!(ctl_alpn(&cid), b"hubbub/ctl/2/000102030405060708090a0b0c0d0e0f");
         assert_eq!(sig_alpn(&cid), b"hubbub/sig/1/000102030405060708090a0b0c0d0e0f");
+        assert_eq!(media_alpn(&cid), b"hubbub/media/1/000102030405060708090a0b0c0d0e0f");
         assert!(ctl_alpn(&cid).starts_with(CTL_PREFIX));
     }
 

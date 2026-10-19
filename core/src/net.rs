@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, watch};
 use crate::community::CommunityState;
 use crate::identity::Identity;
 use crate::ids::MemberId;
-use crate::proto::{ctl_alpn, rejoin_alpn, sig_alpn, CTL_PREFIX, REJOIN_PREFIX};
+use crate::proto::{ctl_alpn, media_alpn, rejoin_alpn, sig_alpn, CTL_PREFIX, REJOIN_PREFIX};
 
 /// Application close code for a connection from a non-member or with an unknown ALPN.
 const CLOSE_FORBIDDEN: u32 = 403;
@@ -88,26 +88,28 @@ impl Switch {
     /// Starts serving `community`'s ALPN pair and returns its view of this endpoint.
     pub fn register(self: &Arc<Self>, community: watch::Receiver<Arc<CommunityState>>) -> Net {
         let cid = community.borrow().id;
-        let (ctl, sig, rejoin) = (ctl_alpn(&cid), sig_alpn(&cid), rejoin_alpn(&cid));
+        let (ctl, sig, media, rejoin) = (ctl_alpn(&cid), sig_alpn(&cid), media_alpn(&cid), rejoin_alpn(&cid));
         let (tx, rx) = mpsc::channel(32);
         let route = Route { community, conns: Arc::default(), live: Arc::default(), tx };
         {
             let mut routes = self.routes.lock().unwrap();
             routes.insert(ctl.clone(), route.clone());
             routes.insert(sig.clone(), route.clone());
+            routes.insert(media.clone(), route.clone());
             routes.insert(rejoin.clone(), route.clone());
             self.endpoint.set_alpns(routes.keys().cloned().collect());
         }
-        Net { switch: self.clone(), owns: false, ctl, sig, rejoin, route, incoming: tokio::sync::Mutex::new(rx) }
+        Net { switch: self.clone(), owns: false, ctl, sig, media, rejoin, route, incoming: tokio::sync::Mutex::new(rx) }
     }
 
     /// Stops serving a community, but only if `route` is still the registered one.
-    fn unregister(&self, ctl: &[u8], sig: &[u8], rejoin: &[u8], route: &Route) {
+    fn unregister(&self, ctl: &[u8], sig: &[u8], media: &[u8], rejoin: &[u8], route: &Route) {
         let mut routes = self.routes.lock().unwrap();
         let ours = routes.get(ctl).is_some_and(|r| Arc::ptr_eq(&r.live, &route.live));
         if ours {
             routes.remove(ctl);
             routes.remove(sig);
+            routes.remove(media);
             routes.remove(rejoin);
             self.endpoint.set_alpns(routes.keys().cloned().collect());
         }
@@ -162,6 +164,7 @@ pub struct Net {
     owns: bool,
     ctl: Vec<u8>,
     sig: Vec<u8>,
+    media: Vec<u8>,
     rejoin: Vec<u8>,
     route: Route,
     incoming: tokio::sync::Mutex<mpsc::Receiver<Accepted>>,
@@ -169,7 +172,7 @@ pub struct Net {
 
 impl Drop for Net {
     fn drop(&mut self) {
-        self.switch.unregister(&self.ctl, &self.sig, &self.rejoin, &self.route);
+        self.switch.unregister(&self.ctl, &self.sig, &self.media, &self.rejoin, &self.route);
     }
 }
 
@@ -195,6 +198,11 @@ impl Net {
     /// This community's LiveKit signal-tunnel ALPN.
     pub fn sig_alpn(&self) -> &[u8] {
         &self.sig
+    }
+
+    /// This community's media-tunnel ALPN (call media as QUIC datagrams).
+    pub fn media_alpn(&self) -> &[u8] {
+        &self.media
     }
 
     /// This community's rejoin ALPN, open to members the others have not yet heard of.
@@ -231,7 +239,7 @@ impl Net {
             self.switch.close().await;
             return;
         }
-        self.switch.unregister(&self.ctl, &self.sig, &self.rejoin, &self.route);
+        self.switch.unregister(&self.ctl, &self.sig, &self.media, &self.rejoin, &self.route);
         let live = std::mem::take(&mut *self.route.live.lock().unwrap());
         for c in live {
             c.close(VarInt::from_u32(0), b"bye");

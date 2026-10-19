@@ -12,7 +12,7 @@ use hubbub_core::identity::Identity;
 use hubbub_core::ids::{CommunityId, MemberId};
 use hubbub_core::media_host::{FakeHost, MediaHost};
 use hubbub_core::net::RelayChoice;
-use hubbub_core::proto::{ctl_alpn, rejoin_alpn, sig_alpn};
+use hubbub_core::proto::{ctl_alpn, media_alpn, rejoin_alpn, sig_alpn};
 
 fn cfg() -> HubConfig {
     HubConfig { can_host: true, relay: RelayChoice::Disabled, livekit_bin: None }
@@ -125,7 +125,7 @@ async fn a_hub_in_only_one_server_refuses_the_others_alpn_both_ways() {
     let t = trio().await;
     let (a, c) = (&t.hubs[0], &t.hubs[2]);
     // C serves only s1's pair.
-    assert_eq!(c.switch().alpns(), { let mut v = vec![ctl_alpn(&t.s1), sig_alpn(&t.s1), rejoin_alpn(&t.s1)]; v.sort(); v });
+    assert_eq!(c.switch().alpns(), { let mut v = vec![ctl_alpn(&t.s1), sig_alpn(&t.s1), media_alpn(&t.s1), rejoin_alpn(&t.s1)]; v.sort(); v });
     // A dialing C for s2: C never offers that ALPN.
     assert!(a.switch().connect_raw(c.endpoint_addr(), &ctl_alpn(&t.s2)).await.is_err());
     assert!(a.switch().connect_raw(c.endpoint_addr(), &sig_alpn(&t.s2)).await.is_err());
@@ -145,7 +145,7 @@ async fn leaving_drops_the_servers_alpn_and_archives_it_but_not_the_other_server
     a.leave(&t.s2).await.unwrap();
     assert!(a.node(&t.s2).is_none());
     assert_eq!(a.communities().len(), 1);
-    assert_eq!(a.switch().alpns(), { let mut v = vec![ctl_alpn(&t.s1), sig_alpn(&t.s1), rejoin_alpn(&t.s1)]; v.sort(); v });
+    assert_eq!(a.switch().alpns(), { let mut v = vec![ctl_alpn(&t.s1), sig_alpn(&t.s1), media_alpn(&t.s1), rejoin_alpn(&t.s1)]; v.sort(); v });
     assert!(b.switch().connect_raw(a.endpoint_addr(), &ctl_alpn(&t.s2)).await.is_err());
     assert!(b.switch().connect_raw(a.endpoint_addr(), &sig_alpn(&t.s2)).await.is_err());
     let live = dirs_of(t.dirs[0].path().join("communities"));
