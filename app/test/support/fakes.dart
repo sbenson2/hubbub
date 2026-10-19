@@ -6,6 +6,7 @@ import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/links.dart';
 import 'package:hubbub/node_controller.dart';
 import 'package:hubbub/room_adapter.dart';
+import 'package:hubbub/share_sources.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
 import 'package:hubbub/text_controller.dart';
 
@@ -248,6 +249,23 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> setVideoQuality(String participantId, String trackSid, {required bool high}) async =>
       calls.add('quality:$participantId:$trackSid:${high ? 'high' : 'low'}');
+}
+
+/// The screens and windows the share picker offers; [error] makes the platform refuse.
+class FakeShareSources {
+  List<ShareSource> sources = [
+    const ShareSource(id: 'screen:0:0', name: 'Screen 1', kind: ShareKind.screen),
+    const ShareSource(id: 'window:42:0', name: 'Doom Eternal', kind: ShareKind.window),
+    const ShareSource(id: 'window:43:0', name: 'Spotify', kind: ShareKind.window),
+  ];
+  Object? error;
+  int loads = 0;
+
+  Future<List<ShareSource>> load() async {
+    loads++;
+    if (error != null) throw error!;
+    return List.of(sources);
+  }
 }
 
 /// An in-memory hub: servers are [FakeNode]s the test registers; create, join and leave

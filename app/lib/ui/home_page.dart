@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -10,6 +11,7 @@ import '../hub_controller.dart';
 import '../links.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
+import '../share_sources.dart';
 import '../src/rust/api/hubbub.dart';
 import '../text_controller.dart';
 import 'audio_menus.dart';
@@ -22,6 +24,7 @@ import 'dialogs/invite_dialog.dart';
 import 'dialogs/join_dialog.dart';
 import 'dialogs/leave_dialog.dart';
 import 'dialogs/name_dialog.dart';
+import 'dialogs/share_picker_dialog.dart';
 import 'member_list.dart';
 import 'settings_dialog.dart';
 import 'text_channel_view.dart';
@@ -46,6 +49,7 @@ class HomePage extends StatefulWidget {
     this.linkSource,
     this.deviceStore,
     this.audioStore,
+    this.shareSources = desktopShareSources,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
   /// A single server (the pre-hub path); [hub] holds every server.
@@ -55,6 +59,9 @@ class HomePage extends StatefulWidget {
   /// Replaces the rail's "+" (Create a server); tests use it.
   final VoidCallback? onAddServer;
   final RoomAdapter room;
+
+  /// What the Share Your Screen picker lists; tests give a fixed list.
+  final ShareSourceLoader shareSources;
   final Future<AppNodeConfig> Function() loadConfig;
 
   /// Where `hubbub://` links come from; each opens the Join dialog once a name is set.
@@ -92,7 +99,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   set _call(_Call? c) {
     _callValue = c;
     // Camera and share belong to the call: a new call starts with both off.
-    if (c == null) _cameraOn = _sharing = false;
+    if (c == null) {
+      _cameraOn = _sharing = false;
+      _shareSource = null;
+    }
     _inCall.value = c != null;
   }
 
@@ -105,6 +115,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _deafened = false;
   bool _cameraOn = false;
   bool _sharing = false;
+
+  /// The screen or window being shared, so a host change can share it again.
+  String? _shareSource;
   bool _mutedBeforeDeafen = false;
   bool _memberList = true;
   bool _starting = false;
@@ -343,6 +356,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (mounted) setState(() => _cameraOn = false);
       }
     }
+    if (_sharing) {
+      try {
+        await widget.room.setScreenShareEnabled(true, sourceId: _shareSource);
+      } catch (e) {
+        _toast('Could not start sharing again: $e');
+        if (mounted) setState(() => _sharing = false);
+      }
+    }
   }
 
   Future<void> _toggleCamera() async {
@@ -356,7 +377,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _toggleShare() async {}
+  /// Stop Streaming, or open the picker and Go Live on what it returns.
+  Future<void> _toggleShare() async {
+    if (_sharing) {
+      setState(() {
+        _sharing = false;
+        _shareSource = null;
+      });
+      try {
+        await widget.room.setScreenShareEnabled(false);
+      } catch (e) {
+        _toast('Could not stop the stream: $e');
+      }
+      return;
+    }
+    final source = await showSharePicker(context, widget.shareSources);
+    if (source == null || !mounted || _call == null) return;
+    setState(() {
+      _sharing = true;
+      _shareSource = source;
+    });
+    try {
+      await widget.room.setScreenShareEnabled(true, sourceId: source);
+    } catch (e) {
+      _toast(defaultTargetPlatform == TargetPlatform.linux
+          ? shareUnsupported
+          : 'Could not start the stream: $e');
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
 
   /// Once the community is known, opens its first text channel.
   void _openFirstChannel() {

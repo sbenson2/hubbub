@@ -481,11 +481,41 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> setScreenShareEnabled(bool on, {String? sourceId}) async {
-    await _room?.localParticipant?.setScreenShareEnabled(
-      on,
-      screenShareCaptureOptions:
-          sourceId == null ? null : ScreenShareCaptureOptions(sourceId: sourceId),
-    );
+    final local = _room?.localParticipant;
+    if (local == null) return;
+    for (final source in [TrackSource.screenShareVideo, TrackSource.screenShareAudio]) {
+      final old = local.getTrackPublicationBySource(source);
+      if (old != null) await local.removePublishedTrack(old.sid);
+    }
+    if (!on) return;
+    final capture = screenCaptureOptionsFor(sourceId);
+    // The app's (Windows) or the system's (Linux) audio goes along where the platform has it;
+    // when the capture with audio is refused, share the picture alone.
+    List<LocalTrack> tracks;
+    try {
+      tracks = await LocalVideoTrack.createScreenShareTracksWithAudio(capture);
+    } catch (e) {
+      debugPrint('hubbub: screen capture with audio failed ($e), trying video only');
+      tracks = [await LocalVideoTrack.createScreenShareTrack(capture)];
+    }
+    final publish = screenPublishOptionsFor(av1: await _canSendAv1());
+    for (final t in tracks) {
+      if (t is LocalVideoTrack) {
+        await local.publishVideoTrack(t, publishOptions: publish);
+      } else if (t is LocalAudioTrack) {
+        await local.publishAudioTrack(t);
+      }
+    }
+  }
+
+  Future<bool> _canSendAv1() async {
+    try {
+      final caps = await rtc.getRtpSenderCapabilities('video');
+      return canSendAv1([for (final c in caps.codecs ?? const <rtc.RTCRtpCodecCapability>[]) c.mimeType]);
+    } catch (e) {
+      debugPrint('hubbub: codec capabilities unavailable: $e');
+      return false;
+    }
   }
 
   @override
