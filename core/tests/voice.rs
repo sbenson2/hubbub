@@ -85,14 +85,19 @@ async fn wait_agree(ns: &[Node], within: Duration) -> MemberId {
 
 /// Node 0 is dialled by every other node; those do not know each other.
 async fn star_cluster(n: usize) -> Cluster {
-    let (dirs, _, file) = community(&vec![true; n]);
+    star_cluster_of(&vec![true; n]).await
+}
+
+/// A star whose members may or may not host; the first (the hub) must.
+async fn star_cluster_of(can_host: &[bool]) -> Cluster {
+    let (dirs, _, file) = community(can_host);
     let (first, first_rx) = start(&dirs[0], &file, true, vec![]).await;
     let hub = first.endpoint_addr().await.unwrap();
     let (mut nodes, mut events) = (vec![first], vec![first_rx]);
     // The hub must be host before anyone else starts: a leaf only sees the hub, so a leaf host would never meet another.
     wait_agree(&nodes, Duration::from_secs(20)).await;
-    for dir in &dirs[1..] {
-        let (node, rx) = start(dir, &file, true, vec![hub.clone()]).await;
+    for (dir, &host) in dirs[1..].iter().zip(&can_host[1..]) {
+        let (node, rx) = start(dir, &file, host, vec![hub.clone()]).await;
         nodes.push(node);
         events.push(rx);
         // One at a time: nodes that start together under load can each elect themselves.
@@ -261,4 +266,30 @@ async fn unknown_voice_channel_is_ignored() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(c.nodes[0].voice_roster().is_empty());
     assert!(c.nodes[1].voice_roster().is_empty());
+}
+
+#[tokio::test]
+async fn star_leaf_drops_the_dead_hub_and_stale_rows() {
+    let mut c = star_cluster_of(&[true, false, false]).await;
+    let host = wait_agree(&c.nodes, Duration::from_secs(20)).await;
+    assert_eq!(host, me(&c.nodes[0]), "the hub hosts");
+    for n in &c.nodes {
+        n.set_voice(Some("lobby".into()), false, false);
+    }
+    let all: Vec<VoicePresence> = c.nodes.iter().map(|n| entry(n, "lobby", false, false)).collect();
+    for n in &c.nodes {
+        roster_is(n, &all, WITHIN, "before crash").await;
+    }
+    drop(c.nodes.remove(0));
+    // The hub's own row goes at once; the other leaf is not a direct peer, so it goes after the grace.
+    let leaf = &c.nodes[0];
+    let start = Instant::now();
+    loop {
+        if !leaf.voice_roster().iter().any(|e| e.member == host) {
+            break;
+        }
+        assert!(start.elapsed() < WITHIN, "dead hub still shown: {:?}", leaf.voice_roster());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    roster_is(leaf, &[entry(leaf, "lobby", false, false)], Duration::from_secs(20), "after grace").await;
 }

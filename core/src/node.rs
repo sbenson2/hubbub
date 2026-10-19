@@ -654,6 +654,7 @@ impl Inner {
     /// roster this node shows changed, emits it. Call after anything that can change it.
     fn refresh_voice(&self) {
         let mut st = self.state.lock().unwrap();
+        st.voice.expire(self.now_ms());
         let host = st.host;
         let r = st.voice.refresh(self.me, host);
         if let Some((term, entries)) = r.broadcast {
@@ -1022,7 +1023,6 @@ impl Inner {
             h.abort();
         }
         if self.remove_session(peer, id) {
-            self.state.lock().unwrap().voice.peer_down(peer);
             self.refresh_voice();
             self.emit(NodeEvent::PeerDown { member: peer });
             self.elect(Input::PeerDown { member: peer, now_ms: self.now_ms() });
@@ -1059,6 +1059,8 @@ impl Inner {
         }
         st.peers.remove(&peer);
         st.reports.remove(&peer);
+        // Under the same lock: a peer that reconnects meanwhile must not lose its fresh VoiceState.
+        st.voice.peer_down(peer, self.now_ms());
         true
     }
 
@@ -1515,7 +1517,10 @@ async fn election_loop(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Cmd>) 
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         let input = tokio::select! {
-            _ = tick.tick() => Input::Tick { now_ms: inner.now_ms() },
+            _ = tick.tick() => {
+                inner.refresh_voice();
+                Input::Tick { now_ms: inner.now_ms() }
+            }
             cmd = rx.recv() => match cmd {
                 None => return,
                 Some(Cmd::Input(input)) => input,

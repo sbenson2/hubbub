@@ -10,6 +10,9 @@ use crate::election::HostState;
 use crate::ids::MemberId;
 use crate::proto::VoicePresence;
 
+/// How long rows the old host vouched for stay after it went down, waiting for a new host's roster.
+pub const STALE_GRACE_MS: u64 = 10_000;
+
 /// One member's place in a call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Slot {
@@ -42,6 +45,10 @@ pub struct VoiceBook {
     offered: HashMap<MemberId, (u64, Vec<VoicePresence>)>,
     /// The last roster accepted from a host; kept across a host change.
     accepted: Vec<VoicePresence>,
+    /// Who sent `accepted` (this node itself while hosting).
+    accepted_from: Option<MemberId>,
+    /// When rows not backed by a direct peer are dropped, if the host that vouched for them went down.
+    stale_at_ms: Option<u64>,
     shown: Vec<VoicePresence>,
     sent: Option<(u64, Vec<VoicePresence>)>,
 }
@@ -70,9 +77,24 @@ impl VoiceBook {
     }
 
     /// The peer's last session ended.
-    pub fn peer_down(&mut self, peer: MemberId) {
+    pub fn peer_down(&mut self, peer: MemberId, now_ms: u64) {
         self.peers.remove(&peer);
         self.offered.remove(&peer);
+        if self.accepted_from == Some(peer) {
+            // The host is gone: its own row at once, the rest only a new host can vouch for.
+            self.accepted.retain(|e| e.member != peer);
+            self.accepted_from = None;
+            self.stale_at_ms = Some(now_ms + STALE_GRACE_MS);
+        }
+    }
+
+    /// Drops rows no direct peer or this node backs once the grace after a host loss is over.
+    pub fn expire(&mut self, now_ms: u64) {
+        if self.stale_at_ms.is_some_and(|t| now_ms >= t) {
+            self.stale_at_ms = None;
+            let peers = &self.peers;
+            self.accepted.retain(|e| peers.contains_key(&e.member));
+        }
     }
 
     /// A roster `peer` sent; `entries` must already hold only known voice channels.
@@ -91,6 +113,8 @@ impl VoiceBook {
         if hosting {
             let all = self.mine.iter().map(|s| s.presence(me)).chain(self.peers.iter().map(|(m, s)| s.presence(*m)));
             self.accepted = normalized(all);
+            self.accepted_from = Some(me);
+            self.stale_at_ms = None;
             if self.sent.as_ref() != Some(&(host.term, self.accepted.clone())) {
                 self.sent = Some((host.term, self.accepted.clone()));
                 out.broadcast = Some((host.term, self.accepted.clone()));
@@ -101,6 +125,8 @@ impl VoiceBook {
                 if let Some((term, entries)) = self.offered.get(&h) {
                     if *term == host.term {
                         self.accepted = normalized(entries.iter().cloned());
+                        self.accepted_from = Some(h);
+                        self.stale_at_ms = None;
                     }
                 }
             }
@@ -148,7 +174,7 @@ mod tests {
         assert_eq!(r.shown.as_ref().unwrap().len(), 2);
         assert_eq!(r.broadcast.as_ref().unwrap().0, 4);
         assert_eq!(b.refresh(id(1), hs(1, 4)), Refresh::default());
-        b.peer_down(id(2));
+        b.peer_down(id(2), 0);
         let r = b.refresh(id(1), hs(1, 4));
         assert_eq!(r.shown.unwrap().len(), 1);
     }
@@ -166,5 +192,23 @@ mod tests {
         let r = b.refresh(id(1), HostState { host: None, term: 5 });
         assert_eq!(r.shown.unwrap().len(), 2);
         assert!(r.broadcast.is_none());
+    }
+
+    #[test]
+    fn host_loss_drops_its_row_at_once_and_unbacked_rows_after_the_grace() {
+        let mut b = VoiceBook::default();
+        let row = |n| VoicePresence { member: id(n), channel: "lobby".into(), muted: false, deafened: false };
+        b.set_peer(id(2), Some(slot("lobby")));
+        b.offer(id(2), 5, vec![row(2), row(3), row(4)]);
+        assert_eq!(b.refresh(id(1), hs(2, 5)).shown.unwrap().len(), 3);
+        // Peer 3 stays a direct peer; peer 2 (the host) goes down.
+        b.set_peer(id(3), Some(slot("lobby")));
+        b.peer_down(id(2), 1_000);
+        let shown = b.refresh(id(1), HostState { host: None, term: 5 }).shown.unwrap();
+        assert_eq!(shown, vec![row(3), row(4)], "host row gone at once");
+        b.expire(1_000 + STALE_GRACE_MS - 1);
+        assert_eq!(b.refresh(id(1), HostState { host: None, term: 5 }).shown, None, "inside the grace");
+        b.expire(1_000 + STALE_GRACE_MS);
+        assert_eq!(b.refresh(id(1), HostState { host: None, term: 5 }).shown, Some(vec![row(3)]));
     }
 }
