@@ -131,6 +131,9 @@ class FakeRoom implements RoomAdapter {
   /// When set, a connect waits for this to complete.
   Completer<void>? connectGate;
 
+  /// When set, a connect fails with this after the gate.
+  Object? connectError;
+
   void emitParticipants(List<RoomParticipant> p) => _participants.add(p);
   void emitSignal(RoomSignal s) => _signals.add(s);
 
@@ -143,6 +146,7 @@ class FakeRoom implements RoomAdapter {
   Future<void> connect(String url, String token, Uint8List e2eeKey) async {
     calls.add('connect');
     await connectGate?.future;
+    if (connectError != null) throw connectError!;
     _participants.add(onConnect);
   }
 

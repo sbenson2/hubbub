@@ -84,6 +84,38 @@ void main() {
     expect(find.text('Voice Connected'), findsOneWidget);
   });
 
+  testWidgets('a_host_change_during_an_in_flight_rejoin_is_not_lost', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.connectGate = Completer<void>();
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pump();
+    expect(node.credentialRequests, ['lobby', 'lobby']);
+    // Another change lands while the rejoin to bbbb is still connecting.
+    events.add(AppNodeEvent.hostChanged(host: 'cccc', term: BigInt.from(3), isMe: false));
+    await tester.pump();
+    final gate = room.connectGate!;
+    room.connectGate = null;
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(node.credentialRequests, ['lobby', 'lobby', 'lobby']);
+    expect(find.text('Voice Connected'), findsOneWidget);
+  });
+
+  testWidgets('a_failed_rejoin_disconnects_the_room_and_ends_the_call', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.connectError = StateError('no route');
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pumpAndSettle();
+
+    expect(room.calls, contains('disconnect'));
+    expect(find.text('Voice Connected'), findsNothing);
+  });
+
   testWidgets('deafen_mutes_the_mic_and_undeafen_restores_both', (tester) async {
     await pumpShell(tester);
     await joinLobby(tester);

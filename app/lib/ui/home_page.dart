@@ -282,9 +282,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     } catch (e) {
       _toast('Could not rejoin ${call.channel}: $e');
+      // Do not leave a half-connected room live while the UI shows no call.
+      try {
+        await widget.room.disconnect();
+      } catch (_) {}
       if (mounted && _call == call) setState(() => _call = null);
     } finally {
       _rejoining = false;
+      // A host change that landed meanwhile was skipped; check again.
+      if (mounted) _followHost();
     }
   }
 
@@ -365,6 +371,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _toast('Could not join $channel: $e');
     } finally {
       if (mounted) setState(() => _joining = null);
+      if (mounted) _followHost();
     }
   }
 
