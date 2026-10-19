@@ -66,6 +66,7 @@ struct Levels {
   float pre = 0;      // peak before RNNoise and gain, 0..1
   float post = 0;     // peak after gain and limiter, 0..1
   float speech = -1;  // RNNoise speech probability 0..1, -1 when RNNoise is off
+  float clip = 0;     // fraction of blocks in the window with pre peak >= 0.98
 };
 
 // In-place mono processor: RNNoise (any rate, resampled to 48 kHz), then input
@@ -109,6 +110,7 @@ class CapturePipeline {
   size_t window_len_ = 2400;
   size_t window_pos_ = 0;
   float pre_peak_ = 0, post_peak_ = 0;
+  int blocks_ = 0, clipped_blocks_ = 0;
 };
 
 }  // namespace hubbub

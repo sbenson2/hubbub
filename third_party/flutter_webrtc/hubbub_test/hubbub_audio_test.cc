@@ -161,6 +161,31 @@ static void TestPeaks() {
   RunPipeline(q, hot, 480);
   CHECK(!g2.empty() && g2.back().pre >= 0.999f, "pre=%f", g2.empty() ? -1.f : g2.back().pre);
   CHECK(!g2.empty() && g2.back().post < 0.25f, "post=%f", g2.empty() ? -1.f : g2.back().post);
+  CHECK(!g2.empty() && g2.back().clip == 1.f, "clip=%f", g2.empty() ? -1.f : g2.back().clip);
+}
+
+static void TestClipFraction() {
+  std::printf("meter: clip is the fraction of blocks whose pre-gain peak is >= 0.98\n");
+  CapturePipeline p;
+  p.Initialize(48000, 1);
+  std::vector<Levels> got;
+  p.SetLevelsCallback([&](const Levels& l) { got.push_back(l); });
+  // 48 kHz: 480-sample blocks, 5 blocks per 50 ms window. One hot block in each
+  // window, the rest at half scale.
+  std::vector<float> in(48000, 16000.f);
+  for (size_t w = 0; w < 20; ++w)
+    for (size_t i = 0; i < 480; ++i) in[w * 2400 + 960 + i] = 32500.f;  // block 2
+  RunPipeline(p, in, 480);
+  CHECK(got.size() >= 19, "windows=%zu", got.size());
+  for (const Levels& l : got) CHECK(std::fabs(l.clip - 0.2f) < 1e-4f, "clip=%f", l.clip);
+  // 0.97 of full scale does not count
+  CapturePipeline q;
+  q.Initialize(48000, 1);
+  std::vector<Levels> g2;
+  q.SetLevelsCallback([&](const Levels& l) { g2.push_back(l); });
+  std::vector<float> warm(4800, 0.97f * 32768.f);
+  RunPipeline(q, warm, 480);
+  CHECK(!g2.empty() && g2.back().clip == 0.f, "clip=%f", g2.empty() ? -1.f : g2.back().clip);
 }
 
 static void TestResampler() {
@@ -242,6 +267,7 @@ int main() {
   TestSoftLimit();
   TestGain();
   TestPeaks();
+  TestClipFraction();
   TestResampler();
   TestRnnoise(48000);
   TestRnnoise(16000);

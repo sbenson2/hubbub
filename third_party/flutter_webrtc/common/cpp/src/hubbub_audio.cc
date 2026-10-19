@@ -19,6 +19,7 @@ constexpr float kKnee = 0.85f * kFullScale;
 constexpr float kMaxOut = 32767.f;
 constexpr int kRnnoiseRate = 48000;
 constexpr int kRnnoiseFrame = 480;
+constexpr float kClipLevel = 0.98f * kFullScale;
 }  // namespace
 
 float SoftLimit(float x) {
@@ -104,6 +105,7 @@ void CapturePipeline::Initialize(int sample_rate, int channels) {
   window_len_ = std::max<size_t>(1, rate_ / 20);
   window_pos_ = 0;
   pre_peak_ = post_peak_ = 0;
+  blocks_ = clipped_blocks_ = 0;
   applied_gain_ = gain_.load();
   ResetDenoise();
   denoise_active_ = false;
@@ -190,6 +192,8 @@ void CapturePipeline::Process(float* x, size_t n) {
   for (size_t i = 0; i < n; ++i) post = std::max(post, std::fabs(x[i]));
 
   pre_peak_ = std::max(pre_peak_, pre);
+  ++blocks_;
+  if (pre >= kClipLevel) ++clipped_blocks_;
   post_peak_ = std::max(post_peak_, post);
   window_pos_ += n;
   if (window_pos_ >= window_len_) {
@@ -198,10 +202,12 @@ void CapturePipeline::Process(float* x, size_t n) {
       Levels l;
       l.pre = std::min(1.f, pre_peak_ / kFullScale);
       l.post = std::min(1.f, post_peak_ / kFullScale);
+      l.clip = blocks_ > 0 ? (float)clipped_blocks_ / (float)blocks_ : 0.f;
       l.speech = (denoise_active_ && speech_n_ > 0) ? speech_sum_ / speech_n_ : -1.f;
       cb_(l);
     }
     pre_peak_ = post_peak_ = 0;
+    blocks_ = clipped_blocks_ = 0;
     speech_sum_ = 0;
     speech_n_ = 0;
   }

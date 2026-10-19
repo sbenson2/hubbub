@@ -101,6 +101,7 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
     info[EncodableValue("pre")] = (double)l.pre;
     info[EncodableValue("post")] = (double)l.post;
     info[EncodableValue("speech")] = (double)l.speech;
+    info[EncodableValue("clip")] = (double)l.clip;
     channel->Success(EncodableValue(info), false);
   });
   audio_processing_->SetCapturePostProcessing(hubbub_processor_.get());
