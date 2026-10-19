@@ -135,9 +135,15 @@ void main() {
       room.plugDevices(const [_mic1]);
       await openVoiceVideo(tester);
       expect(find.text('No devices found'), findsNWidgets(2));
+      for (final k in ['device-output', 'device-camera']) {
+        final dd = tester.widget<DropdownButton<int>>(find.byKey(Key(k)));
+        expect(dd.onChanged, isNull, reason: '$k is disabled');
+      }
+      expect(tester.widget<DropdownButton<int>>(find.byKey(const Key('device-input'))).onChanged,
+          isNotNull);
     });
 
-    testWidgets('choosing_an_input_in_a_call_switches_once_and_keeps_mute', (tester) async {
+    testWidgets('choosing_an_input_in_a_call_asks_the_adapter_once_with_no_rejoin_and_mute_kept', (tester) async {
       await pumpShell(tester);
       await tester.tap(find.text('lobby'));
       await tester.pumpAndSettle();
@@ -153,6 +159,38 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.descendant(of: find.byType(UserPanel), matching: find.byTooltip('Unmute')),
           findsOneWidget);
+    });
+
+    testWidgets('a_failed_output_switch_reverts_the_dropdown_and_says_so', (tester) async {
+      await pumpShell(tester);
+      await openVoiceVideo(tester);
+      room.outputError = StateError('Not found device id');
+      await pick(tester, 'device-output', 'Desk Speakers');
+      expect(find.text("Couldn't switch to Desk Speakers. Still using Default."), findsOneWidget);
+      expect(find.text('Desk Speakers'), findsNothing);
+      expect((await store.load()).output, isNull);
+      room.outputError = null;
+      await pick(tester, 'device-output', 'Desk Speakers');
+      expect(find.textContaining("Couldn't switch"), findsNothing);
+      expect((await store.load()).output!.id, 's1');
+    });
+
+    testWidgets('an_unlabelled_device_is_saved_with_its_real_empty_label', (tester) async {
+      await pumpShell(tester);
+      room.plugDevices(const [MediaDeviceInfo('a', '', DeviceKind.audioInput)]);
+      await openVoiceVideo(tester);
+      await pick(tester, 'device-input', 'Microphone 1');
+      final saved = (await store.load()).input!;
+      expect((saved.id, saved.label), ('a', ''));
+    });
+
+    testWidgets('choosing_default_for_the_camera_reaches_the_adapter', (tester) async {
+      await pumpShell(tester);
+      await openVoiceVideo(tester);
+      await pick(tester, 'device-camera', 'Logitech C920');
+      await pick(tester, 'device-camera', 'Default');
+      expect(room.deviceCalls.where((c) => c.startsWith('camera:')).toList(),
+          ['camera:c1', 'camera:default']);
     });
 
     testWidgets('a_choice_out_of_a_call_is_used_by_the_next_connect', (tester) async {

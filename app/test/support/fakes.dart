@@ -138,6 +138,9 @@ class FakeRoom implements RoomAdapter {
   /// kept apart from [calls] so call-flow tests stay exact.
   final deviceCalls = <String>[];
   List<MediaDeviceInfo> devices = const [];
+
+  /// When set, switching the output device fails with this.
+  Object? outputError;
   final _devicesChanged = StreamController<void>.broadcast();
 
   /// What the last connect had chosen as input and output.
@@ -160,6 +163,7 @@ class FakeRoom implements RoomAdapter {
 
   @override
   Future<void> setOutputDevice(String? id) async {
+    if (outputError != null) throw outputError!;
     outputId = id;
     deviceCalls.add('output:${id ?? 'default'}');
   }

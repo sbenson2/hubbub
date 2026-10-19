@@ -253,6 +253,14 @@ class _DevicePicker extends StatelessWidget {
           ),
         ),
       ),
+      if (devices.errorOf(kind) != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(devices.errorOf(kind)!,
+              key: Key('error-${kind.name}'),
+              style: const TextStyle(
+                  fontFamily: hubFont, fontSize: 12, height: 1.33, color: HubColors.red)),
+        ),
     ]);
   }
 }

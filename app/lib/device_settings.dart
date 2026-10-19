@@ -111,11 +111,17 @@ class DeviceSettings extends ChangeNotifier {
   final _applied = <DeviceKind, String?>{};
   bool _disposed = false;
 
+  /// Why the last switch of a kind failed (shown under its dropdown); cleared by a success.
+  final _errors = <DeviceKind, String>{};
+  String? errorOf(DeviceKind k) => _errors[k];
+
   DevicePrefs get prefs => _prefs;
 
   Future<void> start() async {
-    _prefs = await _store.load();
     _sub = _room.devicesChanged.listen((_) => unawaited(_refresh(apply: true)));
+    final loaded = await _store.load();
+    if (_disposed) return;
+    _prefs = loaded;
     await _refresh(apply: false);
   }
 
@@ -140,10 +146,22 @@ class DeviceSettings extends ChangeNotifier {
   }
 
   Future<void> choose(DeviceKind k, MediaDeviceInfo? d) async {
-    _prefs = _prefs.with_(k, d == null ? null : DeviceChoice(d.id, labelOf(d)));
+    final before = _prefs;
+    // The real label is saved, empty or not: a synthetic "Microphone 2" could never match.
+    _prefs = _prefs.with_(k, d == null ? null : DeviceChoice(d.id, d.label));
+    _errors.remove(k);
     notifyListeners();
+    final err = await _push(k, force: true);
+    if (err != null) {
+      // Show what is really in use: undo the choice and say so.
+      _prefs = before;
+      final now = selected(k);
+      _errors[k] = "Couldn't switch to ${d == null ? 'Default' : labelOf(d)}. "
+          'Still using ${now == null ? 'Default' : labelOf(now)}.';
+      await _push(k, force: true); // best effort to put the previous device back
+    }
     await _store.save(_prefs);
-    await _push(k, force: true);
+    if (!_disposed) notifyListeners();
   }
 
   /// Before a join: make the adapter use the saved choices that are present right now.
@@ -171,9 +189,10 @@ class DeviceSettings extends ChangeNotifier {
     }
   }
 
-  Future<void> _push(DeviceKind k, {required bool force}) async {
+  /// Null when the adapter took the choice, else the failure.
+  Future<Object?> _push(DeviceKind k, {required bool force}) async {
     final id = selected(k)?.id;
-    if (!force && _applied.containsKey(k) && _applied[k] == id) return;
+    if (!force && _applied.containsKey(k) && _applied[k] == id) return null;
     _applied[k] = id;
     try {
       switch (k) {
@@ -184,8 +203,10 @@ class DeviceSettings extends ChangeNotifier {
         case DeviceKind.videoInput:
           await _room.setCameraDevice(id);
       }
+      return null;
     } catch (e) {
       debugPrint('could not switch $k: $e');
+      return e;
     }
   }
 

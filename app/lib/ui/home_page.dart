@@ -285,6 +285,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
       await _devices.applyForJoin();
+      if (!mounted || _call != call) return;
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
@@ -375,6 +376,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final key = _key;
       final c = await node.credentials(channel);
       await _devices.applyForJoin();
+      if (!mounted) return;
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);

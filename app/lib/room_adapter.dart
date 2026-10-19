@@ -135,9 +135,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
     ];
   }
 
-  /// The device with [id], or the OS default of [type] when [id] is null or gone. WebRTC has
-  /// no "follow the default" selector, so the default is the entry named "default" when the
-  /// OS lists one, else the first of its kind.
+  /// The playback or camera device with [id]; when [id] is null or gone, the OS default.
+  /// Desktop WebRTC lists no `default` id: it names devices by ADM index, and on Windows the
+  /// first entries are the system "Default" (and "Communications") devices. So Default is an
+  /// entry with id `default` or a label starting "Default", else the first entry (ADM index 0,
+  /// the same device WebRTC itself opens when no id is given).
   Future<MediaDevice?> _resolve(String? id, String type) async {
     final all = await Hardware.instance.enumerateDevices(type: type);
     if (all.isEmpty) return null;
@@ -147,25 +149,36 @@ class LiveKitRoomAdapter implements RoomAdapter {
       }
     }
     for (final d in all) {
-      if (d.deviceId == 'default') return d;
+      if (d.deviceId == 'default' || d.label.startsWith('Default')) return d;
     }
     return all.first;
   }
 
+  AudioCaptureOptions _capture(String? id) => AudioCaptureOptions(
+        deviceId: id,
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true,
+      );
+
+  /// In a call this restarts the local mic track on the new device: on desktop
+  /// `Room.setAudioInputDevice` only calls the ADM setter, which a running recording ignores.
+  /// A null id gives WebRTC no device, so it opens its default. A muted track only records
+  /// the options (no capture starts) and the unmute restart uses them, so mute is kept.
   @override
   Future<void> setInputDevice(String? id) async {
     _inputId = id;
-    await _applyInput();
-  }
-
-  Future<void> _applyInput() async {
-    final d = await _resolve(_inputId, 'audioinput');
-    if (d == null) return;
     final room = _room;
-    if (room != null) {
-      await room.setAudioInputDevice(d);
-    } else {
-      await Hardware.instance.selectAudioInput(d);
+    if (room == null) return; // connect passes the id in its capture options
+    final opts = _capture(id);
+    for (final pub in room.localParticipant?.audioTrackPublications ?? const []) {
+      final track = pub.track;
+      if (track == null) continue;
+      if (track.muted) {
+        track.currentOptions = opts;
+      } else {
+        await track.restartTrack(opts);
+      }
     }
   }
 
@@ -190,7 +203,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Future<void> setCameraDevice(String? id) async {
     _cameraId = id;
     final room = _room;
-    if (room == null || id == null) return;
+    if (room == null) return;
     final d = await _resolve(id, 'videoinput');
     if (d != null) await room.setVideoInputDevice(d);
   }
@@ -198,7 +211,6 @@ class LiveKitRoomAdapter implements RoomAdapter {
   @override
   Future<void> connect(String url, String token, Uint8List e2eeKey) async {
     await disconnect();
-    await _applyInput();
     // Every member derives the same key, so the shared-key provider is enough.
     final keyProvider = await BaseKeyProvider.create();
     await keyProvider.setSharedKey(base64.encode(e2eeKey));
@@ -206,12 +218,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       roomOptions: RoomOptions(
         adaptiveStream: true,
         dynacast: true,
-        defaultAudioCaptureOptions: AudioCaptureOptions(
-          deviceId: _inputId,
-          noiseSuppression: true,
-          echoCancellation: true,
-          autoGainControl: true,
-        ),
+        defaultAudioCaptureOptions: _capture(_inputId),
         e2eeOptions: E2EEOptions(keyProvider: keyProvider),
       ),
     );
@@ -277,7 +284,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> setMicrophoneEnabled(bool on) async {
-    await _room?.localParticipant?.setMicrophoneEnabled(on);
+    // Explicit options, so a track created after a live device change uses that device.
+    await _room?.localParticipant?.setMicrophoneEnabled(on, audioCaptureOptions: _capture(_inputId));
   }
 
   @override
