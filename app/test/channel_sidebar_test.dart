@@ -15,6 +15,7 @@ void main() {
     ChannelRef? selected,
     Set<String> unread = const {},
     ValueChanged<ChannelRef>? onSelect,
+    Map<String, List<VoiceMember>>? extraVoice,
   }) =>
       MaterialApp(
         theme: hubbubTheme(),
@@ -27,12 +28,14 @@ void main() {
               voiceChannels: const ['lobby', 'afk'],
               selected: selected,
               isUnread: unread.contains,
-              connectedVoice: 'lobby',
-              voiceMembers: [
-                VoiceMember(id: alice, name: 'Alice', speaking: true, hosting: true),
-                VoiceMember(id: bob, name: 'Bob', muted: true),
-                VoiceMember(id: cat, name: 'Cat', muted: true, deafened: true),
-              ],
+              voiceByChannel: {
+                'lobby': [
+                  VoiceMember(id: alice, name: 'Alice', speaking: true, hosting: true),
+                  VoiceMember(id: bob, name: 'Bob', muted: true),
+                  VoiceMember(id: cat, name: 'Cat', muted: true, deafened: true),
+                ],
+                ...?extraVoice,
+              },
               onSelect: onSelect ?? (_) {},
             ),
           ),
@@ -58,6 +61,35 @@ void main() {
     expect(find.descendant(of: row(bob), matching: find.byTooltip('Muted')), findsOneWidget);
     expect(find.descendant(of: row(bob), matching: find.byTooltip('Deafened')), findsNothing);
     expect(find.descendant(of: row(cat), matching: find.byTooltip('Deafened')), findsOneWidget);
+  });
+
+  testWidgets('members_of_a_channel_we_are_not_in_are_listed_and_dropped_with_the_roster',
+      (tester) async {
+    final dan = memberIdFor('dddd');
+    await tester.pumpWidget(sidebar(extraVoice: {
+      'afk': [VoiceMember(id: dan, name: 'Dan', muted: true)],
+    }));
+    expect(row(dan), findsOneWidget);
+    expect(find.descendant(of: row(dan), matching: find.byTooltip('Muted')), findsOneWidget);
+    expect(find.descendant(of: row(dan), matching: find.text('Dan')), findsOneWidget);
+
+    await tester.pumpWidget(sidebar());
+    expect(row(dan), findsNothing);
+  });
+
+  testWidgets('a_collapsed_voice_category_still_shows_channels_with_people', (tester) async {
+    final dan = memberIdFor('dddd');
+    await tester.pumpWidget(sidebar(
+      selected: const ChannelRef.text('general'),
+      extraVoice: {
+        'afk': [VoiceMember(id: dan, name: 'Dan')],
+      },
+    ));
+    await tester.tap(find.text('VOICE CHANNELS'));
+    await tester.pump();
+    expect(row(dan), findsOneWidget);
+    expect(find.text('afk'), findsOneWidget);
+    expect(find.text('lobby'), findsOneWidget);
   });
 
   testWidgets('channels_select_and_unread_text_is_bold_white', (tester) async {

@@ -83,6 +83,12 @@ class FakeNode extends NodeController {
   final FakeTextService text;
   final credentialRequests = <String>[];
 
+  /// Every `setVoice` call, as `channel muted deafened` (`-` for no channel).
+  final voiceCalls = <String>[];
+  @override
+  void setVoice(String? channel, {bool muted = false, bool deafened = false}) =>
+      voiceCalls.add('${channel ?? '-'} $muted $deafened');
+
   /// The ICE server the next credentials carry, as the core's TURN shim would hand out.
   AppIceServer? ice = const AppIceServer(
       url: 'turn:192.168.1.5:50000?transport=udp', username: 'hbuser', credential: 'secret');

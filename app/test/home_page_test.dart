@@ -57,6 +57,12 @@ void main() {
     room.calls.clear();
   }
 
+  Future<void> joinLobbyAgain(WidgetTester tester) async {
+    await tester.tap(find.text('lobby').first);
+    await tester.pumpAndSettle();
+    room.calls.clear();
+  }
+
   testWidgets('clicking_a_voice_channel_joins_and_shows_voice_connected', (tester) async {
     await pumpShell(tester);
     await joinLobby(tester);
@@ -69,6 +75,78 @@ void main() {
     await tester.pumpAndSettle();
     expect(room.calls, ['disconnect']);
     expect(find.text('Voice Connected'), findsNothing);
+  });
+
+  testWidgets('the_core_is_told_about_join_mute_deafen_and_leave', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+    expect(node.voiceCalls, ['lobby false false']);
+
+    await tester.tap(find.byTooltip('Mute').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Deafen'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Undeafen'));
+    await tester.pumpAndSettle();
+    expect(node.voiceCalls, [
+      'lobby false false',
+      'lobby true false',
+      'lobby true true',
+      'lobby true false',
+    ]);
+
+    node.voiceCalls.clear();
+    await tester.tap(find.descendant(
+        of: find.byType(VoiceConnectedBar), matching: find.byTooltip('Disconnect')));
+    await tester.pumpAndSettle();
+    expect(node.voiceCalls, ['- false false']);
+  });
+
+  testWidgets('a_failed_join_clears_voice_and_a_dropped_call_does_too', (tester) async {
+    await pumpShell(tester);
+    room.micError = StateError('capture refused');
+    await tester.tap(find.text('lobby'));
+    await tester.pumpAndSettle();
+    expect(node.voiceCalls, ['- false false']);
+
+    room.micError = null;
+    node.voiceCalls.clear();
+    await joinLobbyAgain(tester);
+    expect(node.voiceCalls, ['lobby false false']);
+    room.emitSignal(RoomSignal.disconnected);
+    await tester.pumpAndSettle();
+    expect(node.voiceCalls, ['lobby false false', '- false false']);
+  });
+
+  testWidgets('a_failed_rejoin_clears_voice_but_a_good_rejoin_says_nothing', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+    node.voiceCalls.clear();
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pumpAndSettle();
+    expect(find.text('Voice Connected'), findsOneWidget);
+    expect(node.voiceCalls, isEmpty, reason: 'same channel after a host change');
+
+    room.connectError = StateError('no route');
+    events.add(AppNodeEvent.hostChanged(host: 'cccc', term: BigInt.from(3), isMe: false));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Voice Connected'), findsNothing);
+    expect(node.voiceCalls, ['- false false']);
+  });
+
+  testWidgets('the_sidebar_lists_who_is_in_a_channel_we_are_not_in', (tester) async {
+    await pumpShell(tester);
+    events.add(AppNodeEvent.voiceRoster(entries: [
+      AppVoicePresence(member: memberIdFor('bbbb'), channel: 'lobby', muted: true, deafened: false),
+    ]));
+    await tester.pumpAndSettle();
+    expect(find.byKey(ValueKey('voice:${memberIdFor('bbbb')}')), findsOneWidget);
+    expect(find.text('Voice Connected'), findsNothing);
+
+    events.add(const AppNodeEvent.voiceRoster(entries: []));
+    await tester.pumpAndSettle();
+    expect(find.byKey(ValueKey('voice:${memberIdFor('bbbb')}')), findsNothing);
   });
 
   testWidgets('a_host_change_during_a_call_reconnects_with_credentials_from_the_new_host', (tester) async {

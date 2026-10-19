@@ -21,6 +21,33 @@ void main() {
     expect(controller.isHost, false);
   });
 
+  test('voice_roster_event_replaces_who_is_in_each_channel_and_logs', () async {
+    final logged = <String>[];
+    final print = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) => logged.add(message ?? '');
+    addTearDown(() => debugPrint = print);
+    final events = StreamController<AppNodeEvent>();
+    final controller = NodeController(eventsOverride: events.stream);
+    addTearDown(controller.dispose);
+    addTearDown(events.close);
+    var notified = 0;
+    controller.addListener(() => notified++);
+
+    AppVoicePresence at(String tag, String channel, {bool muted = false}) => AppVoicePresence(
+        member: '${tag.toLowerCase()}${'0' * 60}', channel: channel, muted: muted, deafened: false);
+    events.add(AppNodeEvent.voiceRoster(entries: [at('aaaa', 'lobby'), at('bbbb', 'afk', muted: true)]));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.voiceIn('lobby').map((e) => e.member), ['aaaa${'0' * 60}']);
+    expect(controller.voiceIn('afk').single.muted, isTrue);
+    expect(controller.voiceIn('nowhere'), isEmpty);
+    expect(notified, 1);
+    expect(logged, contains('hubbub: VoiceRoster 2 in voice'));
+
+    events.add(const AppNodeEvent.voiceRoster(entries: []));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.voiceIn('lobby'), isEmpty);
+  });
+
   test('text_event_logs_channel_sender_tag_and_id', () async {
     final logged = <String>[];
     final print = debugPrint;

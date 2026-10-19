@@ -122,7 +122,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// Switching server leaves the call running, as Discord does.
   _Call? get _call => _callValue;
   set _call(_Call? c) {
+    final before = _callValue;
     _callValue = c;
+    // Every member sees who is in voice. A rejoin after a host change keeps the same
+    // channel, so it says nothing; any other end of a call says "none" to the old server.
+    if (before != null && (c == null || c.node != before.node || c.channel != before.channel)) {
+      before.node.setVoice(null);
+    }
+    if (c != null && (before == null || c.node != before.node || c.channel != before.channel)) {
+      c.node.setVoice(c.channel, muted: _muted, deafened: _deafened);
+    }
     // Camera and share belong to the call: a new call starts with both off.
     if (c == null) {
       _cameraOn = _sharing = false;
@@ -740,6 +749,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _call = _Call(key, channel, node, c.host, c.term.toInt()));
     } catch (e) {
       _toast('Could not join $channel: $e');
+      // Nothing said we were in it, but make sure no stale "in voice" is left on the server.
+      _node.setVoice(null);
     } finally {
       // Anything that failed after connect started must not leave a live room behind while
       // the UI shows no call.
@@ -777,7 +788,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _deafened = deafened;
     });
     // Out of a call these settings apply on the next join.
-    if (_call == null) return;
+    final call = _call;
+    if (call == null) return;
+    call.node.setVoice(call.channel, muted: muted, deafened: deafened);
     var deafApplied = false;
     try {
       if (deafChanged) {
@@ -793,6 +806,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _muted = !muteChanged ? _muted : !muted;
           _deafened = !deafChanged || deafApplied ? _deafened : !deafened;
         });
+        if (_call == call) call.node.setVoice(call.channel, muted: _muted, deafened: _deafened);
       }
     }
   }
@@ -819,6 +833,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             share: p.share,
           ),
       ];
+
+  /// Who is in each voice channel of the server on screen. For the call we are in this is the
+  /// room's own list (speaking, camera, share); for the others it is what the core reports.
+  Map<String, List<VoiceMember>> get _voiceByChannel {
+    final node = _node;
+    final here = _callHere;
+    return {
+      for (final ch in node.channels.voice)
+        ch: ch == here
+            ? _voiceMembers
+            : [
+                for (final p in node.voiceIn(ch))
+                  VoiceMember(
+                    id: p.member,
+                    name: _nameOf(p.member, node),
+                    muted: p.muted,
+                    deafened: p.deafened,
+                    hosting: p.member == node.host,
+                  ),
+              ],
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -897,8 +933,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   voiceChannels: channels.voice,
                   selected: _view,
                   isUnread: _text.isUnread,
-                  connectedVoice: _callHere,
-                  voiceMembers: _callHere == null ? const [] : _voiceMembers,
+                  voiceByChannel: _voiceByChannel,
                   onSelect: _select,
                   onInvite: _multi && started ? _invite : null,
                   onLeave: _multi && started ? _leaveServer : null,

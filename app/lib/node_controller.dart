@@ -42,6 +42,7 @@ class NodeController extends ChangeNotifier implements TextService {
   AppChannels _channels = const AppChannels(text: [], voice: []);
   List<AppMember> _members = const [];
   final _online = <String>{};
+  Map<String, List<AppVoicePresence>> _voice = const {};
   StreamSubscription<AppNodeEvent>? _sub;
   StreamSubscription<void>? _membersSub;
   final _events = StreamController<AppNodeEvent>.broadcast();
@@ -90,6 +91,18 @@ class NodeController extends ChangeNotifier implements TextService {
   List<AppMember> loadMembers() {
     final node = _node;
     return node == null ? _members : nodeMembers(n: node);
+  }
+
+  /// Everyone in voice channel [channel], as the core last reported (no matter whether we are
+  /// in that call ourselves).
+  List<AppVoicePresence> voiceIn(String channel) => _voice[channel] ?? const [];
+
+  /// Tells every member where we are in voice; [channel] null means in none. Not awaited:
+  /// it only queues messages.
+  void setVoice(String? channel, {bool muted = false, bool deafened = false}) {
+    final node = _node;
+    if (node == null) return;
+    nodeSetVoice(n: node, channel: channel, muted: muted, deafened: deafened);
   }
 
   Future<AppVoiceCredentials> credentials(String room) =>
@@ -141,6 +154,12 @@ class NodeController extends ChangeNotifier implements TextService {
         break;
       case AppNodeEvent_MembersChanged():
         _members = loadMembers();
+      case AppNodeEvent_VoiceRoster(:final entries):
+        final byChannel = <String, List<AppVoicePresence>>{};
+        for (final e in entries) {
+          byChannel.putIfAbsent(e.channel, () => []).add(e);
+        }
+        _voice = byChannel;
     }
     _events.add(ev);
     notifyListeners();
@@ -153,6 +172,7 @@ class NodeController extends ChangeNotifier implements TextService {
           'PeerUp member=$member direct=$direct',
         AppNodeEvent_PeerDown(:final member) => 'PeerDown member=$member',
         AppNodeEvent_MembersChanged() => 'MembersChanged',
+        AppNodeEvent_VoiceRoster(:final entries) => 'VoiceRoster ${entries.length} in voice',
         AppNodeEvent_Text(:final message) =>
           'Text #${message.channel} from=${_tag(message.from)} '
               'seq=${message.term}.${message.seq}',

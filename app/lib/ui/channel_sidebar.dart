@@ -58,7 +58,7 @@ class VoiceMember {
 }
 
 /// The community header, collapsible text and voice categories, and the people in the
-/// voice channel we are connected to.
+/// voice channels.
 class ChannelSidebar extends StatefulWidget {
   const ChannelSidebar({
     super.key,
@@ -67,8 +67,7 @@ class ChannelSidebar extends StatefulWidget {
     required this.voiceChannels,
     required this.selected,
     required this.isUnread,
-    required this.connectedVoice,
-    required this.voiceMembers,
+    required this.voiceByChannel,
     required this.onSelect,
     this.onInvite,
     this.onLeave,
@@ -80,9 +79,8 @@ class ChannelSidebar extends StatefulWidget {
   final ChannelRef? selected;
   final bool Function(String textChannel) isUnread;
 
-  /// The voice channel we are in, whose [voiceMembers] are listed under it.
-  final String? connectedVoice;
-  final List<VoiceMember> voiceMembers;
+  /// Who is in each voice channel, listed under it. A channel without an entry is empty.
+  final Map<String, List<VoiceMember>> voiceByChannel;
   final ValueChanged<ChannelRef> onSelect;
 
   /// The header's dropdown offers Invite People and Leave Server when these are given.
@@ -123,15 +121,14 @@ class _ChannelSidebarState extends State<ChannelSidebar> {
       for (final name in w.voiceChannels)
         if (!_voiceCollapsed ||
             w.selected == ChannelRef.voice(name) ||
-            w.connectedVoice == name) ...[
+            (w.voiceByChannel[name] ?? const []).isNotEmpty) ...[
           _ChannelRow(
             channel: ChannelRef.voice(name),
             selected: w.selected == ChannelRef.voice(name),
             unread: false,
             onTap: () => w.onSelect(ChannelRef.voice(name)),
           ),
-          if (w.connectedVoice == name)
-            for (final m in w.voiceMembers) _VoiceMemberRow(member: m),
+          for (final m in w.voiceByChannel[name] ?? const <VoiceMember>[]) _VoiceMemberRow(member: m),
         ],
     ];
     return ColoredBox(
