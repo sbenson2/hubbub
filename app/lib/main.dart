@@ -23,6 +23,9 @@ String? bundledLiveKit() {
   } else if (Platform.isWindows) {
     // Installed next to hubbub.exe by windows/CMakeLists.txt.
     bin = File('${exe.parent.path}\\livekit-server.exe');
+  } else if (Platform.isLinux) {
+    // Installed next to the executable by linux/CMakeLists.txt.
+    bin = File('${exe.parent.path}/livekit-server');
   } else {
     return null;
   }

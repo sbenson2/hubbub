@@ -126,3 +126,9 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# The media server a hosting desktop runs, next to the executable (see bundledLiveKit()
+# in lib/main.dart). Fetch it with tools/fetch-livekit.sh linux amd64.
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/livekit/linux-amd64/livekit-server"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
