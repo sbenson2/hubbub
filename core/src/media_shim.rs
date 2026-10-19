@@ -10,6 +10,7 @@
 //! The server is webrtc-rs's `turn` crate (MIT/Apache-2.0). Its relay sockets are replaced by
 //! `TunnelConn`s whose sends and receives are frames. The address a client names as the
 //! peer is ignored: the host forwards everything to its own LiveKit and nowhere else.
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket};
 use std::sync::atomic::{AtomicU16, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,9 @@ pub struct IceConfig {
 pub trait UplinkSource: Send + Sync {
     /// A sink for frames toward the host's LiveKit, whose replies arrive in `routes`.
     async fn uplink(&self, routes: &Routes) -> Result<Arc<dyn FrameSink>>;
+
+    /// The host changed: drop any connection kept toward the old one.
+    fn repoint(&self) {}
 }
 
 /// This machine's address for the TURN server: the source address the OS picks toward the
@@ -86,6 +90,7 @@ pub struct TurnShim {
     routes: Routes,
     ice: IceConfig,
     local: SocketAddr,
+    source: Arc<dyn UplinkSource>,
 }
 
 impl Drop for TurnShim {
@@ -110,8 +115,8 @@ impl TurnShim {
         let credential = random_alnum(24);
         let cfg = turn::server::config::ServerConfig {
             conn_configs: vec![turn::server::config::ConnConfig {
-                conn: Arc::new(ResetTolerant(sock)),
-                relay_addr_generator: Box::new(Gen { ip, next: AtomicU16::new(0), routes: routes.clone(), source }),
+                conn: Arc::new(ResetTolerant::new(sock)),
+                relay_addr_generator: Box::new(Gen { ip, next: AtomicU16::new(0), routes: routes.clone(), source: source.clone() }),
             }],
             realm: REALM.to_string(),
             auth_handler: Arc::new(Auth { username: username.clone(), credential: credential.clone() }),
@@ -120,7 +125,7 @@ impl TurnShim {
         };
         let server = turn::server::Server::new(cfg).await.context("starting the TURN shim")?;
         let ice = IceConfig { url: format!("turn:{local}?transport=udp"), username, credential };
-        Ok(TurnShim { server: Arc::new(server), routes, ice, local })
+        Ok(TurnShim { server: Arc::new(server), routes, ice, local, source })
     }
 
     pub fn ice(&self) -> &IceConfig {
@@ -140,6 +145,7 @@ impl TurnShim {
     /// rejoin (the app follows the host) and their new allocations go to the new one.
     pub fn repoint(&self) {
         self.routes.clear();
+        self.source.repoint();
     }
 }
 
@@ -226,7 +232,10 @@ impl Conn for TunnelConn {
             return Err(webrtc_util::Error::ErrUseClosedNetworkConn);
         }
         *self.peer.lock().unwrap() = Some(target);
-        self.uplink.send_frame(self.flow, buf);
+        // An empty frame means "flow closed" on the wire, so an empty datagram is not sent.
+        if !buf.is_empty() {
+            self.uplink.send_frame(self.flow, buf);
+        }
         Ok(buf.len())
     }
 
@@ -239,7 +248,12 @@ impl Conn for TunnelConn {
     }
 
     async fn close(&self) -> R<()> {
-        self.routes.close(self.flow);
+        // Only tell the host if this allocation still owned the flow (a repoint cleared it, and
+        // the old host is gone or dropped the connection).
+        if self.routes.contains(self.flow) {
+            self.routes.close(self.flow);
+            self.uplink.close_flow(self.flow);
+        }
         Ok(())
     }
 
@@ -248,15 +262,76 @@ impl Conn for TunnelConn {
     }
 }
 
+/// The TURN socket. Two jobs.
+///
 /// Windows reports an ICMP port-unreachable (a peer that went away) as a receive error
 /// (`ConnectionReset`, WSAECONNRESET 10054) on a UDP socket, and the TURN server's read
 /// loop ends on any error: the shim would die after the first client left. Skip it.
-pub struct ResetTolerant(pub UdpSocket);
+///
+/// The only legitimate client is this machine's own libwebrtc, but the socket is on a LAN
+/// address, and the `turn` crate keeps a nonce for every unauthenticated request it gets
+/// (never removed), so a flood from the LAN would grow memory without bound. Datagrams from
+/// any source that is not one of this machine's addresses are dropped before the crate sees them.
+pub struct ResetTolerant {
+    sock: UdpSocket,
+    is_local: Box<dyn Fn(IpAddr) -> bool + Send + Sync>,
+}
+
+impl ResetTolerant {
+    /// Accepts datagrams from this machine's own addresses only.
+    pub fn new(sock: UdpSocket) -> ResetTolerant {
+        let own = sock.local_addr().ok().map(|a| a.ip());
+        let locals = LocalAddrs::default();
+        ResetTolerant { sock, is_local: Box::new(move |ip| Some(ip) == own || locals.contains(ip)) }
+    }
+
+    /// Accepts datagrams from the sources `is_local` approves.
+    pub fn with_local_check(sock: UdpSocket, is_local: impl Fn(IpAddr) -> bool + Send + Sync + 'static) -> ResetTolerant {
+        ResetTolerant { sock, is_local: Box::new(is_local) }
+    }
+}
+
+/// Decides whether an IP is an address of this machine, without enumerating adapters: the OS
+/// lets a socket bind only to its own addresses, so a successful bind (port 0, dropped at once)
+/// proves it. libwebrtc sends from whichever adapter routes to the shim (Wi-Fi, Ethernet,
+/// Tailscale), so all of them must pass. Answers are cached, and the cache is bounded: a flood
+/// of spoofed sources only costs a failed bind per datagram.
+#[derive(Default)]
+struct LocalAddrs {
+    known: Mutex<HashMap<IpAddr, bool>>,
+}
+
+const LOCAL_CACHE: usize = 64;
+
+impl LocalAddrs {
+    fn contains(&self, ip: IpAddr) -> bool {
+        if ip.is_loopback() {
+            return true;
+        }
+        if ip.is_multicast() || ip.is_unspecified() {
+            return false;
+        }
+        if let Some(&known) = self.known.lock().unwrap().get(&ip) {
+            return known;
+        }
+        let local = StdUdpSocket::bind((ip, 0)).is_ok();
+        // Only positive answers are kept: a negative one is cheap to recompute, and spoofed
+        // sources must not be able to evict the real adapters.
+        if local {
+            let mut known = self.known.lock().unwrap();
+            if known.len() >= LOCAL_CACHE {
+                known.clear();
+            }
+            known.insert(ip, true);
+        }
+        local
+    }
+}
 
 #[async_trait]
 impl Conn for ResetTolerant {
     async fn connect(&self, addr: SocketAddr) -> R<()> {
-        Ok(self.0.connect(addr).await?)
+        Ok(self.sock.connect(addr).await?)
     }
 
     async fn recv(&self, buf: &mut [u8]) -> R<usize> {
@@ -265,23 +340,24 @@ impl Conn for ResetTolerant {
 
     async fn recv_from(&self, buf: &mut [u8]) -> R<(usize, SocketAddr)> {
         loop {
-            match self.0.recv_from(buf).await {
+            match self.sock.recv_from(buf).await {
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Ok((_, from)) if !(self.is_local)(from.ip()) => continue,
                 r => return Ok(r?),
             }
         }
     }
 
     async fn send(&self, buf: &[u8]) -> R<usize> {
-        Ok(self.0.send(buf).await?)
+        Ok(self.sock.send(buf).await?)
     }
 
     async fn send_to(&self, buf: &[u8], target: SocketAddr) -> R<usize> {
-        Ok(self.0.send_to(buf, target).await?)
+        Ok(self.sock.send_to(buf, target).await?)
     }
 
     fn local_addr(&self) -> R<SocketAddr> {
-        Ok(self.0.local_addr()?)
+        Ok(self.sock.local_addr()?)
     }
 
     fn remote_addr(&self) -> Option<SocketAddr> {
@@ -440,7 +516,7 @@ mod tests {
     /// ConnectionReset; the wrapper must swallow it and deliver the next real packet.
     #[tokio::test]
     async fn reset_tolerant_socket_survives_an_icmp_port_unreachable() {
-        let a = ResetTolerant(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let a = ResetTolerant::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let a_addr = a.local_addr().unwrap();
         let closed = {
             let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -453,6 +529,34 @@ mod tests {
         let mut buf = [0u8; 16];
         let (n, _) = timeout(T, a.recv_from(&mut buf)).await.expect("not stuck").expect("no ConnectionReset error");
         assert_eq!(&buf[..n], b"real");
+    }
+
+    #[tokio::test]
+    async fn datagrams_from_other_machines_never_reach_the_turn_server() {
+        // Only 127.0.0.1 counts as local here; a sender on 127.0.0.2 stands in for a LAN host.
+        let a = ResetTolerant::with_local_check(UdpSocket::bind("0.0.0.0:0").await.unwrap(), |ip| ip == IpAddr::from([127, 0, 0, 1]));
+        let port = a.local_addr().unwrap().port();
+        let stranger = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let friend = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        stranger.send_to(b"flood", ("127.0.0.1", port)).await.unwrap();
+        friend.send_to(b"mine", ("127.0.0.1", port)).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, from) = timeout(T, a.recv_from(&mut buf)).await.expect("not stuck").unwrap();
+        assert_eq!((&buf[..n], from.ip()), (&b"mine"[..], IpAddr::from([127, 0, 0, 1])), "the stranger's datagram was skipped");
+    }
+
+    #[test]
+    fn this_machines_addresses_count_as_local_and_others_do_not() {
+        let l = LocalAddrs::default();
+        assert!(l.contains("127.0.0.1".parse().unwrap()) && l.contains("::1".parse().unwrap()));
+        if let Some(ip) = local_media_ip() {
+            assert!(l.contains(ip), "{ip} is this machine's own address");
+        }
+        // TEST-NET addresses are never assigned to a machine.
+        for foreign in ["192.0.2.77", "198.51.100.9", "203.0.113.5", "2001:db8::77"] {
+            assert!(!l.contains(foreign.parse().unwrap()), "{foreign} is not ours");
+        }
+        assert!(!l.contains("224.0.0.1".parse().unwrap()) && !l.contains("0.0.0.0".parse().unwrap()));
     }
 
     #[test]

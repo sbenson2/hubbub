@@ -25,6 +25,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::ids::MemberId;
+
 /// Bytes of flow id in front of each payload.
 pub const FLOW_HEADER: usize = 2;
 /// Largest frame accepted on a uni stream (a UDP datagram is at most 64 KiB).
@@ -52,6 +54,10 @@ pub fn decode_frame(frame: &[u8]) -> Option<(u16, &[u8])> {
 /// frame that cannot go now is dropped and counted.
 pub trait FrameSink: Send + Sync {
     fn send_frame(&self, flow: u16, payload: &[u8]);
+
+    /// The flow is over; the far end may drop its state at once. Best effort (a lost close
+    /// is covered by the host's idle expiry).
+    fn close_flow(&self, _flow: u16) {}
 }
 
 /// Counters for one tunnel end; also the evidence behind the tests.
@@ -110,6 +116,80 @@ impl Default for FlowLimits {
     }
 }
 
+/// How many flows one member may hold on this host, across all of its media connections.
+pub struct FlowBudget {
+    used: AtomicUsize,
+    max: usize,
+}
+
+impl FlowBudget {
+    pub fn new(max: usize) -> Arc<FlowBudget> {
+        Arc::new(FlowBudget { used: AtomicUsize::new(0), max })
+    }
+
+    fn take(&self) -> bool {
+        self.used.try_update(Relaxed, Relaxed, |u| (u < self.max).then_some(u + 1)).is_ok()
+    }
+
+    fn release(&self) {
+        self.used.fetch_sub(1, Relaxed);
+    }
+
+    /// Flows held now.
+    pub fn used(&self) -> usize {
+        self.used.load(Relaxed)
+    }
+}
+
+/// Media connections one member may hold on this host at once (a call needs one; the rest
+/// is headroom for a reconnect that overlaps the old connection's close).
+pub const MAX_MEDIA_CONNS: usize = 4;
+
+/// The host's per-member view of media: each member's flow budget and connection count.
+#[derive(Default)]
+pub struct MemberMedia {
+    slots: Mutex<HashMap<MemberId, (Arc<FlowBudget>, usize)>>,
+}
+
+/// One admitted media connection; dropping it frees the member's connection slot.
+pub struct MediaPermit {
+    owner: Arc<MemberMedia>,
+    member: MemberId,
+    /// The member's flow budget, shared by all of its connections.
+    pub budget: Arc<FlowBudget>,
+}
+
+impl MemberMedia {
+    /// Admits a new media connection from `member`, or `None` if it already holds
+    /// [`MAX_MEDIA_CONNS`].
+    pub fn admit(self: &Arc<Self>, member: MemberId, limits: &FlowLimits) -> Option<MediaPermit> {
+        let mut slots = self.slots.lock().unwrap();
+        let slot = slots.entry(member).or_insert_with(|| (FlowBudget::new(limits.max_flows), 0));
+        if slot.1 >= MAX_MEDIA_CONNS {
+            return None;
+        }
+        slot.1 += 1;
+        Some(MediaPermit { owner: self.clone(), member, budget: slot.0.clone() })
+    }
+
+    /// Members with a media connection now.
+    pub fn members(&self) -> usize {
+        self.slots.lock().unwrap().len()
+    }
+}
+
+impl Drop for MediaPermit {
+    fn drop(&mut self) {
+        let mut slots = self.owner.slots.lock().unwrap();
+        if let Some(slot) = slots.get_mut(&self.member) {
+            slot.1 -= 1;
+            if slot.1 == 0 {
+                slots.remove(&self.member);
+            }
+        }
+    }
+}
+
 struct Flow {
     /// Used to send; a std socket, because a tokio one refuses its first sends until the
     /// reactor has registered it.
@@ -117,11 +197,14 @@ struct Flow {
     /// Milliseconds since the table started, of the last frame in either direction.
     last_ms: Arc<AtomicU64>,
     reader: JoinHandle<()>,
+    /// Holds one unit of the member's budget until the flow is dropped.
+    budget: Arc<FlowBudget>,
 }
 
 impl Drop for Flow {
     fn drop(&mut self) {
         self.reader.abort();
+        self.budget.release();
     }
 }
 
@@ -129,6 +212,7 @@ struct Table {
     target: SocketAddr,
     reply: Arc<dyn FrameSink>,
     limits: FlowLimits,
+    budget: Arc<FlowBudget>,
     epoch: Instant,
     flows: Mutex<HashMap<u16, Flow>>,
     stats: Arc<TunnelStats>,
@@ -136,7 +220,8 @@ struct Table {
 
 /// The host-side forwarder for one member: frames in become UDP to `target` on a socket of
 /// their own per flow; UDP coming back goes out through `reply` as frames on the same flow.
-/// Flows open on their first frame, expire when idle and are capped.
+/// Flows open on their first frame, expire when idle (or when the far end closes them) and are
+/// capped by a [`FlowBudget`].
 pub struct FlowTable {
     table: Arc<Table>,
     reaper: JoinHandle<()>,
@@ -152,10 +237,23 @@ impl Drop for FlowTable {
 impl FlowTable {
     /// Must run inside a tokio runtime.
     pub fn new(target: SocketAddr, reply: Arc<dyn FrameSink>, limits: FlowLimits, stats: Arc<TunnelStats>) -> FlowTable {
+        FlowTable::with_budget(target, reply, limits, FlowBudget::new(limits.max_flows), stats)
+    }
+
+    /// As [`FlowTable::new`], with the flow cap drawn from `budget`, which a member's several
+    /// connections share.
+    pub fn with_budget(
+        target: SocketAddr,
+        reply: Arc<dyn FrameSink>,
+        limits: FlowLimits,
+        budget: Arc<FlowBudget>,
+        stats: Arc<TunnelStats>,
+    ) -> FlowTable {
         let table = Arc::new(Table {
             target,
             reply,
             limits,
+            budget,
             epoch: Instant::now(),
             flows: Mutex::new(HashMap::new()),
             stats,
@@ -181,7 +279,16 @@ impl FlowTable {
 impl FrameSink for FlowTable {
     /// A frame toward LiveKit.
     fn send_frame(&self, flow: u16, payload: &[u8]) {
-        self.table.forward(flow, payload);
+        if payload.is_empty() {
+            // A header-only frame is the far end closing the flow.
+            self.close_flow(flow);
+        } else {
+            self.table.forward(flow, payload);
+        }
+    }
+
+    fn close_flow(&self, flow: u16) {
+        self.table.flows.lock().unwrap().remove(&flow);
     }
 }
 
@@ -193,7 +300,7 @@ impl Table {
     fn forward(self: &Arc<Self>, flow: u16, payload: &[u8]) {
         let mut flows = self.flows.lock().unwrap();
         if !flows.contains_key(&flow) {
-            if flows.len() >= self.limits.max_flows {
+            if !self.budget.take() {
                 self.stats.flows_refused.fetch_add(1, Relaxed);
                 return;
             }
@@ -203,6 +310,7 @@ impl Table {
                     self.stats.flows_opened.fetch_add(1, Relaxed);
                 }
                 Err(e) => {
+                    self.budget.release();
                     eprintln!("hubbub media: opening flow {flow} toward {} failed: {e}", self.target);
                     return;
                 }
@@ -240,6 +348,9 @@ impl Table {
                     match sock.recv(&mut buf).await {
                         Ok(n) => {
                             last.store(epoch.elapsed().as_millis() as u64, Relaxed);
+                            if n == 0 {
+                                continue; // an empty frame would read as a close
+                            }
                             stats.down_pkts.fetch_add(1, Relaxed);
                             stats.down_bytes.fetch_add(n as u64, Relaxed);
                             reply.send_frame(flow, &buf[..n]);
@@ -252,7 +363,7 @@ impl Table {
                 }
             })
         };
-        Ok(Flow { send: std_sock, last_ms, reader })
+        Ok(Flow { send: std_sock, last_ms, reader, budget: self.budget.clone() })
     }
 
     fn expire(&self) {
@@ -302,6 +413,9 @@ impl Routes {
 
 impl FrameSink for Routes {
     fn send_frame(&self, flow: u16, payload: &[u8]) {
+        if payload.is_empty() {
+            return;
+        }
         let tx = self.map.lock().unwrap().get(&flow).cloned();
         if let Some(tx) = tx {
             // A full queue drops the frame, as a congested network would.
@@ -324,6 +438,11 @@ impl IrohSender {
 }
 
 impl FrameSink for IrohSender {
+    /// A header-only datagram. Not counted as media; a lost one is covered by idle expiry.
+    fn close_flow(&self, flow: u16) {
+        let _ = self.conn.send_datagram(encode_frame(flow, &[]));
+    }
+
     fn send_frame(&self, flow: u16, payload: &[u8]) {
         let frame = encode_frame(flow, payload);
         self.stats.wire_tx_pkts.fetch_add(1, Relaxed);
@@ -357,7 +476,8 @@ impl FrameSink for IrohSender {
     }
 }
 
-/// Reads frames from `conn` (datagrams and uni streams) into `on_frame` until it closes.
+/// Reads frames from `conn` (datagrams and uni streams) into `on_frame` until it closes. A
+/// frame with an empty payload means the sender closed that flow.
 pub async fn pump<F>(conn: Connection, stats: Arc<TunnelStats>, on_frame: F)
 where
     F: Fn(u16, Bytes) + Send + Sync + 'static,
@@ -365,11 +485,12 @@ where
     let on_frame = Arc::new(on_frame);
     let deliver = |frame: Bytes, on_frame: &F| {
         if let Some((flow, payload)) = decode_frame(&frame) {
+            // An empty payload is a close for the flow; it is not media, so not counted.
             if !payload.is_empty() {
                 stats.wire_rx_pkts.fetch_add(1, Relaxed);
                 stats.wire_rx_bytes.fetch_add(payload.len() as u64, Relaxed);
-                on_frame(flow, frame.slice(FLOW_HEADER..));
             }
+            on_frame(flow, frame.slice(FLOW_HEADER..));
         }
     };
     loop {
@@ -401,9 +522,10 @@ where
 
 /// Serves one member's media connection on the host: its frames go to `target` (the host's
 /// LiveKit UDP port) and the answers come back, until the connection closes.
-pub async fn serve_media_host(conn: Connection, target: SocketAddr, limits: FlowLimits, stats: Arc<TunnelStats>) {
+/// `budget` is the member's flow budget, shared by all of its media connections here.
+pub async fn serve_media_host(conn: Connection, target: SocketAddr, limits: FlowLimits, budget: Arc<FlowBudget>, stats: Arc<TunnelStats>) {
     let reply = Arc::new(IrohSender::new(conn.clone(), stats.clone()));
-    let table = FlowTable::new(target, reply, limits, stats.clone());
+    let table = FlowTable::with_budget(target, reply, limits, budget, stats.clone());
     pump(conn, stats, move |flow, payload| table.send_frame(flow, &payload)).await;
 }
 
@@ -488,6 +610,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_closed_flow_frees_its_place_at_once() {
+        let (sink, mut rx) = collector();
+        let stats = Arc::new(TunnelStats::default());
+        let limits = FlowLimits { max_flows: 2, idle: Duration::from_secs(30) };
+        let table = FlowTable::new(echo().await, sink, limits, stats.clone());
+        table.send_frame(1, b"x");
+        table.send_frame(2, b"x");
+        for _ in 0..2 {
+            timeout(T, rx.recv()).await.unwrap().unwrap();
+        }
+        table.close_flow(1);
+        assert_eq!(table.flows(), 1);
+        table.send_frame(3, b"x");
+        assert_eq!(timeout(T, rx.recv()).await.unwrap().unwrap(), (3, b"x".to_vec()));
+        assert_eq!(stats.flows_refused.load(Relaxed), 0);
+        // A header-only frame is the wire form of a close.
+        table.send_frame(2, b"");
+        assert_eq!(table.flows(), 1);
+    }
+
+    #[tokio::test]
+    async fn tables_sharing_a_budget_share_its_cap() {
+        let (sink, mut rx) = collector();
+        let stats = Arc::new(TunnelStats::default());
+        let limits = FlowLimits { max_flows: 2, idle: Duration::from_secs(30) };
+        let (target, budget) = (echo().await, FlowBudget::new(2));
+        let a = FlowTable::with_budget(target, sink.clone(), limits, budget.clone(), stats.clone());
+        let b = FlowTable::with_budget(target, sink, limits, budget.clone(), stats.clone());
+        a.send_frame(1, b"x");
+        b.send_frame(1, b"x");
+        b.send_frame(2, b"x");
+        for _ in 0..2 {
+            timeout(T, rx.recv()).await.unwrap().unwrap();
+        }
+        assert!(timeout(Duration::from_millis(300), rx.recv()).await.is_err(), "the third flow, on either table, is refused");
+        assert_eq!((a.flows() + b.flows(), budget.used(), stats.flows_refused.load(Relaxed)), (2, 2, 1));
+        drop(a);
+        assert_eq!(budget.used(), 1, "a dropped table gives its flows back");
+    }
+
+    #[test]
+    fn a_member_may_hold_only_a_few_media_connections() {
+        let reg = Arc::new(MemberMedia::default());
+        let (me, other) = (MemberId([1; 32]), MemberId([2; 32]));
+        let limits = FlowLimits::default();
+        let permits: Vec<_> = (0..MAX_MEDIA_CONNS).map(|_| reg.admit(me, &limits).expect("within the cap")).collect();
+        assert!(reg.admit(me, &limits).is_none(), "one connection too many");
+        assert!(Arc::ptr_eq(&permits[0].budget, &permits[1].budget), "one budget per member");
+        let theirs = reg.admit(other, &limits).expect("another member is unaffected");
+        assert!(!Arc::ptr_eq(&permits[0].budget, &theirs.budget));
+        drop(permits);
+        assert!(reg.admit(me, &limits).is_some(), "closed connections free their slots");
+        drop(theirs);
+        assert_eq!(reg.members(), 0, "nothing is kept for members with no connection");
+    }
+
+    #[tokio::test]
+    async fn several_connections_of_one_member_share_one_flow_cap() {
+        let (a, b) = two_member_nets().await;
+        let target = echo().await;
+        let limits = FlowLimits { max_flows: 2, idle: Duration::from_secs(30) };
+        let budget = FlowBudget::new(2);
+        let host_stats = Arc::new(TunnelStats::default());
+        let mut senders = vec![];
+        let mut rxs = vec![];
+        for _ in 0..3 {
+            let conn_a = a.connect_addr(b.addr().await.unwrap(), a.media_alpn()).await.unwrap();
+            let (_, _, conn_b) = b.accept().await.unwrap();
+            tokio::spawn(serve_media_host(conn_b, target, limits, budget.clone(), host_stats.clone()));
+            let (sink, rx) = collector();
+            tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
+            senders.push(IrohSender::new(conn_a, Arc::new(TunnelStats::default())));
+            rxs.push(rx);
+        }
+        for (i, s) in senders.iter().enumerate() {
+            s.send_frame(i as u16 + 1, b"hi");
+        }
+        let mut answered = 0;
+        for rx in &mut rxs {
+            if timeout(Duration::from_millis(700), rx.recv()).await.is_ok() {
+                answered += 1;
+            }
+        }
+        assert_eq!(answered, 2, "three connections, one flow each, but the member's cap is 2");
+        assert_eq!(host_stats.flows_refused.load(Relaxed), 1);
+        assert_eq!(budget.used(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_close_frame_over_the_wire_frees_the_hosts_flow() {
+        let (a, b) = two_member_nets().await;
+        let target = echo().await;
+        let conn_a = a.connect_addr(b.addr().await.unwrap(), a.media_alpn()).await.unwrap();
+        let (_, _, conn_b) = b.accept().await.unwrap();
+        let budget = FlowBudget::new(16);
+        tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), budget.clone(), Arc::new(TunnelStats::default())));
+        let (sink, mut rx) = collector();
+        tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
+        let sender = IrohSender::new(conn_a, Arc::new(TunnelStats::default()));
+        sender.send_frame(7, b"open");
+        timeout(T, rx.recv()).await.unwrap().unwrap();
+        assert_eq!(budget.used(), 1);
+        sender.close_flow(7);
+        let t0 = Instant::now();
+        while budget.used() != 0 {
+            assert!(t0.elapsed() < T, "the host never dropped the closed flow");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
     async fn flow_table_expires_idle_flows_and_keeps_busy_ones() {
         let (sink, mut rx) = collector();
         let stats = Arc::new(TunnelStats::default());
@@ -514,7 +747,7 @@ mod tests {
         let (who, alpn, conn_b) = b.accept().await.unwrap();
         assert_eq!((who, alpn.as_slice()), (a.member_id(), b.media_alpn()));
         let host_stats = Arc::new(TunnelStats::default());
-        tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), host_stats.clone()));
+        tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), FlowBudget::new(16), host_stats.clone()));
         let (sink, mut rx) = collector();
         tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
         let sender = IrohSender::new(conn_a, Arc::new(TunnelStats::default()));
@@ -531,7 +764,7 @@ mod tests {
         let conn_a = a.connect_addr(b.addr().await.unwrap(), a.media_alpn()).await.unwrap();
         let (_, _, conn_b) = b.accept().await.unwrap();
         let host_stats = Arc::new(TunnelStats::default());
-        tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), host_stats.clone()));
+        tokio::spawn(serve_media_host(conn_b, target, FlowLimits::default(), FlowBudget::new(16), host_stats.clone()));
         let (sink, mut rx) = collector();
         tokio::spawn(pump(conn_a.clone(), Arc::new(TunnelStats::default()), move |flow, p| sink.send_frame(flow, &p)));
         let stats = Arc::new(TunnelStats::default());

@@ -330,3 +330,57 @@ async fn after_a_host_change_the_shim_points_at_the_new_host() {
     assert_eq!(reply, [&tag_of(new_index)[..], b"two"].concat());
     println!("host change to media through the new host: {:?}", t0.elapsed());
 }
+
+/// A LiveKit client opens its subscriber and publisher peer connections almost together, so two
+/// allocations arrive at a cold member at once. They must share one connection to the host.
+#[tokio::test]
+async fn concurrent_first_allocations_both_get_media_both_ways() {
+    let (ns, seen) = echo_cluster(&[true, false]).await;
+    wait_agree(&ns, Duration::from_secs(5)).await;
+    let Some(ice) = ns[1].voice_credentials("lobby").await.unwrap().ice else { return eprintln!("no usable network address; skipped") };
+    let (c1, c2) = (turn_client(&ice, &ice.credential).await, turn_client(&ice, &ice.credential).await);
+    let (r1, r2) = tokio::join!(c1.allocate(), c2.allocate());
+    let (r1, r2) = (r1.expect("first allocation"), r2.expect("second allocation"));
+    for round in 0..3u8 {
+        for (i, relay) in [&r1, &r2].into_iter().enumerate() {
+            let msg = [round, i as u8];
+            relay.send_to(&msg, PEER.parse().unwrap()).await.unwrap();
+            let mut buf = [0u8; 64];
+            let (n, _) = timeout(Duration::from_secs(2), relay.recv_from(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("allocation {i} got no reply in round {round}"))
+                .unwrap();
+            assert_eq!(&buf[..n], [&b"0"[..], &msg[..]].concat());
+        }
+    }
+    assert_eq!(seen[0].load(Ordering::SeqCst), 6);
+    assert_eq!(ns[0].media_stats().flows_opened, 2);
+}
+
+/// Ending an allocation tells the host, so reconnect churn does not pile up dead flows against
+/// the cap (16) while their 30 s idle expiry runs.
+#[tokio::test]
+async fn closed_allocations_do_not_use_up_the_hosts_flow_cap() {
+    let (ns, _) = echo_cluster(&[true, false]).await;
+    wait_agree(&ns, Duration::from_secs(5)).await;
+    let Some(ice) = ns[1].voice_credentials("lobby").await.unwrap().ice else { return eprintln!("no usable network address; skipped") };
+    for i in 0..24u8 {
+        let c = turn_client(&ice, &ice.credential).await;
+        let relay = timeout(Duration::from_secs(5), c.allocate()).await.expect("allocation").expect("allocated");
+        relay.send_to(&[i], PEER.parse().unwrap()).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = timeout(Duration::from_secs(2), relay.recv_from(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("allocation {i} got no reply"))
+            .unwrap();
+        assert_eq!(&buf[..n], [b'0', i]);
+        relay.close().await.unwrap();
+        // Let the refresh-to-zero and the close frame land before the next one.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let fresh = through(&ice, b"fresh", Duration::from_secs(2)).await;
+    assert_eq!(fresh.as_deref(), Some(&b"0fresh"[..]), "a fresh allocation still gets media");
+    let h = ns[0].media_stats();
+    assert_eq!(h.flows_refused, 0, "dead flows must not count against the cap");
+    assert_eq!(h.flows_opened, 25);
+}

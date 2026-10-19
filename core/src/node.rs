@@ -40,7 +40,7 @@ use crate::invite::Invite;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::MediaHost;
 use crate::media_shim::IceConfig;
-use crate::media_tunnel::{serve_media_host, FlowLimits, TunnelStats};
+use crate::media_tunnel::{serve_media_host, FlowLimits, MemberMedia, TunnelStats};
 use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
@@ -229,6 +229,7 @@ impl Node {
             tunnel_port,
             shim: Mutex::new(None),
             media_stats: Arc::default(),
+            media_members: Arc::default(),
             shim_gate: tokio::sync::Mutex::new(()),
             state: Mutex::new(State {
                 host: HostState { host: None, term: 0 },
@@ -551,6 +552,8 @@ struct Inner {
     shim: Mutex<Option<media_link::ShimSlot>>,
     /// Counters of the media tunnel on this node (as host and as member).
     media_stats: Arc<TunnelStats>,
+    /// Per-member flow budgets and connection counts for media connections served here.
+    media_members: Arc<MemberMedia>,
     /// Serialises starting the shim.
     shim_gate: tokio::sync::Mutex<()>,
     state: Mutex<State>,
@@ -1126,7 +1129,13 @@ impl Inner {
 
     /// Serves a member's media connection while this node's media host runs: its frames go to
     /// the host's loopback LiveKit. Only members reach this (`net` checks the ALPN's community).
-    fn serve_media(self: &Arc<Self>, conn: Connection) {
+    fn serve_media(self: &Arc<Self>, member: MemberId, conn: Connection) {
+        let limits = FlowLimits::default();
+        // The cap is per member, over all of its media connections here.
+        let Some(permit) = self.media_members.admit(member, &limits) else {
+            conn.close(VarInt::from_u32(2), b"too many media connections");
+            return;
+        };
         let target = {
             let mut st = self.state.lock().unwrap();
             if st.rtc.is_some() {
@@ -1140,7 +1149,8 @@ impl Inner {
         };
         let inner = self.clone();
         self.spawn(async move {
-            serve_media_host(conn.clone(), target, FlowLimits::default(), inner.media_stats.clone()).await;
+            serve_media_host(conn.clone(), target, limits, permit.budget.clone(), inner.media_stats.clone()).await;
+            drop(permit);
             inner.state.lock().unwrap().lk_served.retain(|c| c.stable_id() != conn.stable_id());
         });
     }
@@ -1322,7 +1332,7 @@ async fn accept_loop(inner: Arc<Inner>) {
         } else if alpn == inner.net.sig_alpn() {
             inner.serve_signal(member, conn);
         } else if alpn == inner.net.media_alpn() {
-            inner.serve_media(conn);
+            inner.serve_media(member, conn);
         } else if alpn == inner.net.rejoin_alpn() {
             let node = inner.clone();
             inner.spawn(node.serve_rejoin(member, conn));

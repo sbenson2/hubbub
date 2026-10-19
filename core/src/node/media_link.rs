@@ -42,6 +42,9 @@ impl Cached {
 pub(super) struct NodeUplink {
     inner: Weak<Inner>,
     cached: Mutex<Cached>,
+    /// Held from the cache check through the dial, so allocations that arrive together on a
+    /// cold member share one connection instead of replacing each other's.
+    dial: tokio::sync::Mutex<()>,
     stats: Arc<TunnelStats>,
 }
 
@@ -73,22 +76,38 @@ impl UplinkSource for NodeUplink {
             *cached = Cached::Local { rtc, table: table.clone() };
             return Ok(table);
         }
-        {
-            let cached = self.cached.lock().unwrap();
-            if let Cached::Remote { host: h, conn, sender, .. } = &*cached {
-                if *h == host && conn.close_reason().is_none() {
-                    return Ok(sender.clone());
-                }
-            }
+        if let Some(sender) = self.live_remote(host) {
+            return Ok(sender);
+        }
+        let _dialing = self.dial.lock().await;
+        // Another allocation may have dialed while this one waited.
+        if let Some(sender) = self.live_remote(host) {
+            return Ok(sender);
         }
         let conn = inner.dial(host, inner.net.media_alpn()).await?;
         let sender = Arc::new(IrohSender::new(conn.clone(), self.stats.clone()));
         let down = routes.clone();
         let reader = tokio::spawn(pump(conn.clone(), self.stats.clone(), move |flow, payload| down.send_frame(flow, &payload)));
         let mut cached = self.cached.lock().unwrap();
+        // Nothing live toward `host` is cached here (checked under the dial lock), so this
+        // only retires a connection to an old host or a dead one.
         cached.close();
         *cached = Cached::Remote { host, conn, sender: sender.clone(), pump: reader };
         Ok(sender)
+    }
+
+    fn repoint(&self) {
+        self.cached.lock().unwrap().close();
+    }
+}
+
+impl NodeUplink {
+    /// The cached connection to `host`, if it is still open.
+    fn live_remote(&self, host: MemberId) -> Option<Arc<IrohSender>> {
+        match &*self.cached.lock().unwrap() {
+            Cached::Remote { host: h, conn, sender, .. } if *h == host && conn.close_reason().is_none() => Some(sender.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -107,6 +126,7 @@ impl Inner {
         let source = Arc::new(NodeUplink {
             inner: Arc::downgrade(self),
             cached: Mutex::new(Cached::Nothing),
+            dial: tokio::sync::Mutex::new(()),
             stats: self.media_stats.clone(),
         });
         match TurnShim::start(ip, source).await {
