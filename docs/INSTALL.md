@@ -14,7 +14,8 @@ User Settings, Windows Settings. It updates itself: when a new version is ready 
 To remove it, use Settings, Apps, Hubbub, Uninstall. Your servers and name stay in
 `%APPDATA%\dev.hubbub` until you delete that folder.
 
-If Windows Firewall asks whether to let Hubbub or its media server talk on your network, choose Allow.
+If Windows Firewall asks whether to let Hubbub talk on your network, Allow is best (it lets devices on
+your network connect to you directly); Cancel still works, connections then go through Hubbub's relay.
 
 If you cannot see "Run anyway" (Windows 11 with Smart App Control on, or a managed PC), the installer
 is blocked by the system and cannot be run until Hubbub is signed.
