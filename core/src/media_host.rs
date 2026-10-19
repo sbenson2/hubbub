@@ -714,8 +714,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let work = tmp.path().join("not").join("yet");
         let mut host = LiveKitHost::new(tmp.path().join("no-such-livekit"), work.clone(), LkPorts::default());
-        let err = host.start("127.0.0.1".parse().unwrap()).await.unwrap_err();
-        assert!(format!("{err:#}").contains("spawning"), "unexpected failure: {err:#}");
+        let err = format!("{:#}", host.start("127.0.0.1".parse().unwrap()).await.unwrap_err());
+        // Windows fails at the spawn; on Linux the shell wrapper starts and then exits.
+        assert!(err.contains("spawning") || err.contains("exited during startup"), "unexpected failure: {err}");
         assert!(work.join("livekit.yaml").exists(), "config not written into the created dir");
     }
 

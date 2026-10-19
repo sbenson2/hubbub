@@ -233,7 +233,7 @@ impl Node {
             shim: Mutex::new(None),
             media_stats: Arc::default(),
             media_members: Arc::default(),
-            shim_gate: tokio::sync::Mutex::new(()),
+            shim_gate: tokio::sync::Mutex::new(false),
             state: Mutex::new(State {
                 host: HostState { host: None, term: 0 },
                 can_host,
@@ -459,7 +459,11 @@ impl Node {
         }
         // Leaving or stopping ends the TURN shim too: it dials the host on the (possibly
         // shared) endpoint, and nothing should be able to do that for a node that has left.
+        // Holding the gate waits out a shim that is starting, and closing it stops the next.
+        let mut closed = inner.shim_gate.lock().await;
+        *closed = true;
         let shim = inner.shim.lock().unwrap().take();
+        drop(closed);
         drop(shim);
         let _ = timeout(CLOSE_TIMEOUT, inner.net.close()).await;
         let _ = self._stop.send(());
@@ -564,8 +568,8 @@ struct Inner {
     media_stats: Arc<TunnelStats>,
     /// Per-member flow budgets and connection counts for media connections served here.
     media_members: Arc<MemberMedia>,
-    /// Serialises starting the shim.
-    shim_gate: tokio::sync::Mutex<()>,
+    /// Serialises starting the shim. `true` once the node has shut down: no shim starts after.
+    shim_gate: tokio::sync::Mutex<bool>,
     state: Mutex<State>,
     events: broadcast::Sender<NodeEvent>,
     election: mpsc::UnboundedSender<Cmd>,

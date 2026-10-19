@@ -119,10 +119,13 @@ impl NodeUplink {
 impl Inner {
     /// The ICE server for the app's LiveKit client: this node's TURN shim, started on first
     /// use and restarted if the machine's address changed. `None` when the machine has no
-    /// usable address or the shim cannot start; the app then refuses to join, because media
-    /// has no other way to the host.
+    /// usable address, the node has shut down or the shim cannot start; the app then refuses
+    /// to join, because media has no other way to the host.
     pub(super) async fn ice_config(self: &Arc<Self>) -> Option<IceConfig> {
-        let _gate = self.shim_gate.lock().await;
+        let closed = self.shim_gate.lock().await;
+        if *closed {
+            return None;
+        }
         let ip = local_media_ip()?;
         if let Some(slot) = &*self.shim.lock().unwrap() {
             if slot.ip == ip {
