@@ -16,6 +16,10 @@ pub trait MediaHost: Send + Sync {
     async fn start(&mut self, node_ip: IpAddr) -> anyhow::Result<SocketAddr>;
     async fn stop(&mut self);
     fn mint(&self, member: &MemberId, name: &str, room: &str) -> anyhow::Result<String>;
+    /// The UDP port LiveKit takes media on, on loopback, once started.
+    fn rtc_port(&self) -> u16 {
+        LkPorts::default().rtc_udp
+    }
 }
 
 /// Media host for members that cannot host (phones): starting always fails, so
@@ -48,14 +52,22 @@ impl Default for LkPorts {
     }
 }
 
+/// LiveKit's config. It listens on loopback only: the signal port, and the one UDP media
+/// port (`rtc.ips.includes` limits the sockets to 127.0.0.0/8, where LiveKit would otherwise
+/// open one per network interface). `tcp_port: 0` drops the ICE-TCP listener, which binds all
+/// interfaces. With nothing open on a real interface, Windows shows no firewall prompt and no
+/// router mapping is needed; remote media comes in through the iroh tunnel (`media_tunnel`).
+/// `node_ip` is the address LiveKit advertises, which nobody dials directly.
+/// `rtc_tcp` of `LkPorts` is therefore unused.
 pub fn render_config(ports: &LkPorts, node_ip: IpAddr, api_key: &str, api_secret: &str) -> String {
     format!(
         "port: {}\n\
          bind_addresses: [\"127.0.0.1\"]\n\
-         rtc:\n  tcp_port: {}\n  udp_port: {}\n  use_external_ip: false\n  node_ip: {}\n\
+         rtc:\n  tcp_port: 0\n  udp_port: {}\n  use_external_ip: false\n  node_ip: {}\n  \
+         enable_loopback_candidate: true\n  ips:\n    includes: [\"127.0.0.0/8\"]\n\
          keys:\n  {}: {}\n\
          logging:\n  level: info\n",
-        ports.signal, ports.rtc_tcp, ports.rtc_udp, node_ip, api_key, api_secret
+        ports.signal, ports.rtc_udp, node_ip, api_key, api_secret
     )
 }
 
@@ -344,6 +356,10 @@ fn reap_stale(pidfile: &std::path::Path, expected_name: &str) {
 
 #[async_trait::async_trait]
 impl MediaHost for LiveKitHost {
+    fn rtc_port(&self) -> u16 {
+        self.ports.rtc_udp
+    }
+
     async fn start(&mut self, node_ip: IpAddr) -> anyhow::Result<SocketAddr> {
         if self.child.is_some() {
             bail!("livekit host already started");
@@ -827,12 +843,15 @@ mod tests {
     }
 
     #[test]
-    fn render_config_pins_localhost_signal_and_single_udp_port() {
-        let y = render_config(&LkPorts::default(), "192.168.1.20".parse().unwrap(), "hbK", "S");
+    fn render_config_listens_on_loopback_only() {
+        let y = render_config(&LkPorts::default(), "127.0.0.1".parse().unwrap(), "hbK", "S");
         assert!(y.contains("bind_addresses: [\"127.0.0.1\"]"));
         assert!(y.contains("udp_port: 7882"));
-        assert!(y.contains("node_ip: 192.168.1.20"));
+        assert!(y.contains("node_ip: 127.0.0.1"));
         assert!(y.contains("use_external_ip: false"));
+        assert!(y.contains("tcp_port: 0"), "no ICE-TCP listener on all interfaces");
+        assert!(y.contains("includes: [\"127.0.0.0/8\"]"), "media sockets only on loopback");
+        assert!(y.contains("enable_loopback_candidate: true"));
     }
 
     #[test]

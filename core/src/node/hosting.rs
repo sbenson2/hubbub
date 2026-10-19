@@ -19,6 +19,7 @@ async fn stop(inner: &Inner, lease: &mut Option<MediaLease>) {
     let served = {
         let mut st = inner.state.lock().unwrap();
         st.signal = None;
+        st.rtc = None;
         std::mem::take(&mut st.lk_served)
     };
     for c in served {
@@ -46,7 +47,11 @@ pub(super) async fn media_actor(inner: Arc<Inner>, media: Arc<SharedMedia>, mut 
                 stop(&inner, &mut lease).await;
                 match media.acquire(inner.community().id).await {
                     Ok(l) => {
-                        inner.state.lock().unwrap().signal = Some(l.signal());
+                        {
+                            let mut st = inner.state.lock().unwrap();
+                            st.signal = Some(l.signal());
+                            st.rtc = Some(l.rtc());
+                        }
                         lease = Some(l);
                     }
                     Err(e) => {

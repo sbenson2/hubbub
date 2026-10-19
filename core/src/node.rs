@@ -37,7 +37,8 @@ use crate::election::{Action, Candidate, Election, HostState, Input, RankKey};
 use crate::identity::Identity;
 use crate::invite::Invite;
 use crate::ids::{CommunityId, MemberId};
-use crate::media_host::{LkPorts, MediaHost};
+use crate::media_host::MediaHost;
+use crate::media_tunnel::{serve_media_host, FlowLimits, TunnelStats};
 use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
@@ -176,10 +177,8 @@ impl Node {
         let tunnel_port = listener.local_addr()?.port();
         let media = match media {
             Media::Shared(m) => m,
-            // Outside a hub the node has its own host and its own UPnP mapping.
-            Media::Private(host) => {
-                Arc::new(SharedMedia::new(host, uses_upnp(can_host, cfg.relay), LkPorts::default().rtc_udp))
-            }
+            // Outside a hub the node has its own host.
+            Media::Private(host) => Arc::new(SharedMedia::new(host)),
         };
         let (stop_tx, stop) = watch::channel(());
         let (events, _) = broadcast::channel(256);
@@ -207,6 +206,7 @@ impl Node {
                 peers: HashMap::new(),
                 reports: HashMap::new(),
                 signal: None,
+                rtc: None,
                 lk_served: Vec::new(),
                 lk_client: None,
             }),
@@ -447,6 +447,8 @@ struct State {
     reports: HashMap<MemberId, Vec<PeerReport>>,
     /// The media host's signal address while it runs.
     signal: Option<SocketAddr>,
+    /// The media host's UDP address (loopback) while it runs: where members' media goes.
+    rtc: Option<SocketAddr>,
     /// Members' signal connections served while hosting; closed when hosting stops.
     lk_served: Vec<Connection>,
     /// This node's signal connection to the current host, reused across tunnel connections.
@@ -1060,6 +1062,27 @@ impl Inner {
         });
     }
 
+    /// Serves a member's media connection while this node's media host runs: its frames go to
+    /// the host's loopback LiveKit. Only members reach this (`net` checks the ALPN's community).
+    fn serve_media(self: &Arc<Self>, conn: Connection) {
+        let target = {
+            let mut st = self.state.lock().unwrap();
+            if st.rtc.is_some() {
+                st.lk_served.push(conn.clone());
+            }
+            st.rtc
+        };
+        let Some(target) = target else {
+            conn.close(VarInt::from_u32(1), b"not host");
+            return;
+        };
+        let inner = self.clone();
+        self.spawn(async move {
+            serve_media_host(conn.clone(), target, FlowLimits::default(), Arc::new(TunnelStats::default())).await;
+            inner.state.lock().unwrap().lk_served.retain(|c| c.stable_id() != conn.stable_id());
+        });
+    }
+
     /// Opens a signal stream to whoever hosts at call time, so a host change applies from
     /// the next tunnel connection.
     async fn open_signal(&self) -> Result<(SendStream, RecvStream)> {
@@ -1180,11 +1203,6 @@ enum Media {
     Private(Box<dyn MediaHost>),
 }
 
-/// Only a node that may host maps a port, and never without relays (tests stay hermetic).
-pub(crate) fn uses_upnp(can_host: bool, relay: RelayChoice) -> bool {
-    can_host && relay != RelayChoice::Disabled
-}
-
 fn take_ping(pings: &Pings, nonce: u64) -> Option<Duration> {
     let mut p = pings.lock().unwrap();
     let i = p.iter().position(|(n, _)| *n == nonce)?;
@@ -1241,6 +1259,8 @@ async fn accept_loop(inner: Arc<Inner>) {
             });
         } else if alpn == inner.net.sig_alpn() {
             inner.serve_signal(member, conn);
+        } else if alpn == inner.net.media_alpn() {
+            inner.serve_media(conn);
         } else if alpn == inner.net.rejoin_alpn() {
             let node = inner.clone();
             inner.spawn(node.serve_rejoin(member, conn));
@@ -1375,12 +1395,5 @@ mod tests {
         let latest = latest_reports(&reports, &online);
         assert_eq!(latest.len(), 1, "reports from offline reporters are dropped");
         assert_eq!(latest[&a], vec![report(c, 7), report(b, 20)]);
-    }
-
-    #[test]
-    fn upnp_only_for_host_capable_nodes_with_relays() {
-        assert!(uses_upnp(true, RelayChoice::N0Default));
-        assert!(!uses_upnp(false, RelayChoice::N0Default), "a member that never hosts never maps");
-        assert!(!uses_upnp(true, RelayChoice::Disabled), "tests stay hermetic");
     }
 }

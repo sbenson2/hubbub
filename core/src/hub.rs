@@ -25,7 +25,7 @@ use crate::ids::{CommunityId, MemberId};
 use crate::media_host::{LiveKitHost, LkPorts, MediaHost, NoMediaHost};
 use crate::media_shared::SharedMedia;
 use crate::net::{RelayChoice, Switch};
-use crate::node::{uses_upnp, Node, NodeConfig};
+use crate::node::{Node, NodeConfig};
 
 pub struct HubConfig {
     /// Whether this device may host media for its servers.
@@ -115,8 +115,7 @@ impl Hub {
         let profile = load_profile(root, &identity)?;
         let switch = Arc::new(Switch::bind(&identity, cfg.relay).await?);
         // One LiveKit per machine, working in `<root>/livekit/`.
-        let upnp = uses_upnp(cfg.can_host, cfg.relay);
-        let media = Arc::new(SharedMedia::new(media(root), upnp, LkPorts::default().rtc_udp));
+        let media = Arc::new(SharedMedia::new(media(root)));
         let servers: Arc<Mutex<BTreeMap<CommunityId, Server>>> = Arc::default();
         let by_cid = servers.clone();
         let nodes: join::NodeLookup = Arc::new(move |cid| by_cid.lock().unwrap().get(cid).map(|s| s.node.clone()));
