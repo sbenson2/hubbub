@@ -55,29 +55,27 @@ unsigned long long RootKey(std::wstring root) {
   return h | 1;  // never 0, so an unset property cannot match
 }
 
-// Registers hubbub:// for the current user on every launch, so the link
-// always points at the exe that ran last. Never touches HKLM.
-void RegisterUrlScheme() {
-  wchar_t exe[MAX_PATH];
-  if (::GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) return;
-  const std::wstring command = L"\"" + std::wstring(exe) + L"\" \"%1\"";
+// The installer glue lives in hubbub_app.dll (app/rust/src/install.rs), next to the Velopack
+// crate whose hooks it answers. It is loaded here, before Flutter starts, because Velopack runs a
+// hook by launching this exe with --veloapp-* and expects it to act and exit within seconds.
+// Missing library or symbol (a stripped dev bundle) means no installer glue, never a failed start.
+void CallInstallerGlue(const char* symbol) {
+  HMODULE lib = ::LoadLibraryW(L"hubbub_app.dll");
+  if (!lib) return;
+  auto fn = reinterpret_cast<void (*)()>(::GetProcAddress(lib, symbol));
+  if (fn) fn();
+}
 
-  auto set = [](const wchar_t* path, const wchar_t* name,
-                const std::wstring& value) {
-    HKEY key;
-    if (::RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, nullptr, 0,
-                          KEY_SET_VALUE, nullptr, &key, nullptr) !=
-        ERROR_SUCCESS) {
-      return;
-    }
-    ::RegSetValueExW(key, name, 0, REG_SZ,
-                     reinterpret_cast<const BYTE*>(value.c_str()),
-                     static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
-    ::RegCloseKey(key);
-  };
-  set(L"Software\\Classes\\hubbub", nullptr, L"URL:hubbub");
-  set(L"Software\\Classes\\hubbub", L"URL Protocol", L"");
-  set(L"Software\\Classes\\hubbub\\shell\\open\\command", nullptr, command);
+// True when the command line carries `flag`.
+bool HasArg(const wchar_t* flag) {
+  int argc = 0;
+  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  bool found = false;
+  for (int i = 1; argv && i < argc; ++i) {
+    if (_wcsicmp(argv[i], flag) == 0) found = true;
+  }
+  if (argv) ::LocalFree(argv);
+  return found;
 }
 
 // Window property holding the owner's RootKey, set once its window exists.
@@ -138,18 +136,6 @@ bool SendToInstance(unsigned long long key) {
   return true;
 }
 
-// True when the command line asks for `--quit`.
-bool WantsQuit() {
-  int argc = 0;
-  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
-  bool quit = false;
-  for (int i = 1; argv && i < argc; ++i) {
-    if (_wcsicmp(argv[i], L"--quit") == 0) quit = true;
-  }
-  if (argv) ::LocalFree(argv);
-  return quit;
-}
-
 // `hubbub.exe --quit`: ask the running instance for this root to do the tray Quit (clean
 // shutdown, then exit) and wait for it to be gone. Nothing is shown. Succeeds either way.
 void QuitInstance(unsigned long long key) {
@@ -169,11 +155,15 @@ void QuitInstance(unsigned long long key) {
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // First thing: a Velopack hook (install, update, uninstall) runs here and exits the process;
+  // an ordinary launch registers hubbub:// for the path it runs from (never touching HKLM).
+  CallInstallerGlue("hubbub_startup");
+
   const std::wstring root = DataRoot();
   const std::wstring title = WindowTitle(root);
   const unsigned long long key = RootKey(root);
 
-  if (WantsQuit()) {
+  if (HasArg(L"--quit")) {
     QuitInstance(key);
     return EXIT_SUCCESS;
   }
@@ -195,6 +185,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     }
     return EXIT_FAILURE;
   }
+
+  // The one running instance applies an update that was downloaded but never installed (the
+  // last session ended without a clean quit); this relaunches the new version and exits.
+  CallInstallerGlue("hubbub_apply_pending");
 
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.

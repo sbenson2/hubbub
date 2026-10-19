@@ -29,6 +29,8 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  bool start_hidden_ = false;
+
   // The project to run.
   flutter::DartProject project_;
 

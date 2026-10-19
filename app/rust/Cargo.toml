@@ -13,6 +13,14 @@ hubbub-core = { path = "../../core" }
 anyhow = "1.0.104"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync"] }
 sysinfo = "0.39.6"
+# Installer hooks and self-update (MIT). Client only; the packaging side is the vpk tool.
+velopack = "=1.3.39-g8d2844f"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

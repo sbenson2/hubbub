@@ -7,6 +7,7 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/hubbub.dart';
+import 'api/install.dart';
 
 import 'dart:async';
 import 'dart:convert';
