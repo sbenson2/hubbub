@@ -6,6 +6,8 @@
 #include <cwctype>
 #include <string>
 
+#include <shellapi.h>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -136,6 +138,33 @@ bool SendToInstance(unsigned long long key) {
   return true;
 }
 
+// True when the command line asks for `--quit`.
+bool WantsQuit() {
+  int argc = 0;
+  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  bool quit = false;
+  for (int i = 1; argv && i < argc; ++i) {
+    if (_wcsicmp(argv[i], L"--quit") == 0) quit = true;
+  }
+  if (argv) ::LocalFree(argv);
+  return quit;
+}
+
+// `hubbub.exe --quit`: ask the running instance for this root to do the tray Quit (clean
+// shutdown, then exit) and wait for it to be gone. Nothing is shown. Succeeds either way.
+void QuitInstance(unsigned long long key) {
+  HWND hwnd = FindInstance(key);
+  if (!hwnd) return;
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(hwnd, &pid);
+  HANDLE h = ::OpenProcess(SYNCHRONIZE, FALSE, pid);
+  ::PostMessageW(hwnd, kQuitMessage, 0, 0);
+  if (h) {
+    ::WaitForSingleObject(h, 20000);
+    ::CloseHandle(h);
+  }
+}
+
 }  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
@@ -143,6 +172,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   const std::wstring root = DataRoot();
   const std::wstring title = WindowTitle(root);
   const unsigned long long key = RootKey(root);
+
+  if (WantsQuit()) {
+    QuitInstance(key);
+    return EXIT_SUCCESS;
+  }
 
   RegisterUrlScheme();
 

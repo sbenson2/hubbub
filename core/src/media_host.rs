@@ -175,7 +175,99 @@ fn spawn_server(bin: &std::path::Path, cfg: &std::path::Path) -> std::io::Result
         c.arg("--config").arg(cfg);
         c
     };
-    cmd.kill_on_drop(true).spawn()
+    let child = cmd.kill_on_drop(true).spawn()?;
+    #[cfg(windows)]
+    kill_job::adopt(&child);
+    Ok(child)
+}
+
+/// Windows has no parent-death signal, so livekit-server would outlive a hubbub.exe that is
+/// stopped, crashes, or is killed while its window sits hidden in the tray. A Job Object with
+/// `KILL_ON_JOB_CLOSE` fixes that: Windows closes the job's handle when the process dies, however
+/// it dies, and that kills every process in the job.
+#[cfg(windows)]
+mod kill_job {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// An owned job handle; closing it kills the job's processes.
+    pub struct Job(HANDLE);
+
+    // A job handle is a plain kernel handle, usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        pub fn new() -> Option<Job> {
+            unsafe {
+                let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if h.is_null() {
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    CloseHandle(h);
+                    return None;
+                }
+                Some(Job(h))
+            }
+        }
+
+        /// Puts the child in the job. False if Windows refused.
+        pub fn assign(&self, child: &tokio::process::Child) -> bool {
+            match child.raw_handle() {
+                Some(p) => unsafe { AssignProcessToJobObject(self.0, p as HANDLE) != 0 },
+                None => false,
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// The process-wide job: never dropped, so it closes only when this process ends.
+    pub fn adopt(child: &tokio::process::Child) {
+        static JOB: OnceLock<Option<Job>> = OnceLock::new();
+        if let Some(job) = JOB.get_or_init(Job::new) {
+            if !job.assign(child) {
+                eprintln!("livekit-server could not join the kill-on-exit job");
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        #[tokio::test]
+        async fn closing_the_job_kills_its_child() {
+            let mut child = tokio::process::Command::new("ping").args(["-n", "60", "127.0.0.1"]).spawn().unwrap();
+            let job = Job::new().expect("job");
+            assert!(job.assign(&child), "assign");
+            assert!(child.try_wait().unwrap().is_none(), "child runs while the job is open");
+            drop(job);
+            let end = Instant::now() + Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                assert!(Instant::now() < end, "child survived the job handle closing");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 // Windows starts livekit directly, so a hard-killed app leaves it running; the next

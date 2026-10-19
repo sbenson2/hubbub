@@ -341,6 +341,7 @@ class FakeAppShell implements AppShell {
   final calls = <String>[];
   bool visible = true;
   void Function()? _close, _open, _quit;
+  Future<void> Function()? _session;
 
   @override
   set onCloseRequested(void Function() cb) => _close = cb;
@@ -349,6 +350,10 @@ class FakeAppShell implements AppShell {
   @override
   set onTrayQuit(void Function() cb) => _quit = cb;
 
+  @override
+  set onSessionEnd(Future<void> Function() cb) => _session = cb;
+
+  Future<void> endSession() => _session!();
   void closeWindow() => _close!();
   void trayOpen() => _open!();
   void trayQuit() => _quit!();

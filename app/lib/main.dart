@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -68,7 +69,6 @@ Future<void> main() async {
     runApp(StartFailed(error: '$e'));
     return;
   }
-  _installExitHooks(hub);
   final navigator = GlobalKey<NavigatorState>();
   final shell = PluginAppShell();
   final lifecycle = TrayLifecycle(
@@ -77,6 +77,7 @@ Future<void> main() async {
     notice: HideNoticeStore.file('$root${Platform.pathSeparator}shell.json'),
     showNotice: () => showHideNotice(navigator),
   );
+  _installExitHooks(lifecycle);
   await lifecycle.start();
   runApp(HubbubApp(
       hub: hub,
@@ -88,9 +89,9 @@ Future<void> main() async {
 
 /// The once-only "still running" notice (the tray package has no balloon), shown just before the
 /// window first hides.
-Future<void> showHideNotice(GlobalKey<NavigatorState> navigator) async {
+Future<bool> showHideNotice(GlobalKey<NavigatorState> navigator) async {
   final context = navigator.currentContext;
-  if (context == null) return;
+  if (context == null) return false;
   await showDialog<void>(
     context: context,
     builder: (_) => AlertDialog(
@@ -102,21 +103,19 @@ Future<void> showHideNotice(GlobalKey<NavigatorState> navigator) async {
       ],
     ),
   );
+  return true;
 }
 
-/// Stops every server (and the livekit-server child) before the process ends: destructors
-/// do not run on exit, so without this the media server is orphaned.
-void _installExitHooks(HubController hub) {
-  AppLifecycleListener(onExitRequested: () async {
-    await hub.shutdown();
-    return AppExitResponse.exit;
-  });
+/// Routes every exit request through the lifecycle. The engine asks to exit when the window's X
+/// is pressed: with a tray that must only hide the window (the hub keeps running), so the request is
+/// cancelled; without one it shuts every server (and the livekit-server child) down first, because
+/// destructors do not run on exit. Signals shut down and exit.
+void _installExitHooks(TrayLifecycle lifecycle) {
+  AppLifecycleListener(onExitRequested: () async =>
+      await lifecycle.exitRequested() ? AppExitResponse.exit : AppExitResponse.cancel);
   for (final signal in [ProcessSignal.sigint, if (!Platform.isWindows) ProcessSignal.sigterm]) {
     try {
-      signal.watch().listen((_) async {
-        await hub.shutdown();
-        exit(0);
-      });
+      signal.watch().listen((_) => unawaited(lifecycle.quit()));
     } on SignalException {
       // Not supported on this platform.
     }

@@ -25,7 +25,10 @@ void main() {
       shell: shell,
       shutdown: hub.shutdown,
       notice: notice,
-      showNotice: () async => notices++,
+      showNotice: () async {
+        notices++;
+        return true;
+      },
     );
     await l.start();
     return l;
@@ -105,6 +108,47 @@ void main() {
     });
   });
 
+  group('exit requests', () {
+    test('with a tray hide the window and are cancelled, with no shutdown', () async {
+      final l = await lifecycle();
+      final allowed = await l.exitRequested();
+      expect(allowed, isFalse);
+      expect(shell.visible, isFalse);
+      expect(api.calls, isNot(contains('shutdown')));
+      expect(shell.calls, isNot(contains('exit')));
+    });
+
+    test('without a tray shut down and are allowed', () async {
+      final l = await lifecycle(tray: false);
+      final allowed = await l.exitRequested();
+      expect(allowed, isTrue);
+      expect(api.calls, ['shutdown']);
+    });
+
+    test('a close then Quit shuts down exactly once', () async {
+      final l = await lifecycle();
+      shell.closeWindow();
+      await l.exitRequested(); // the engine's own close notice for the same X
+      await settle();
+      shell.trayQuit();
+      await settle();
+      expect(api.calls.where((c) => c == 'shutdown'), hasLength(1));
+      expect(shell.calls.where((c) => c == 'exit'), hasLength(1));
+    });
+  });
+
+  group('session end', () {
+    test('shuts down without exiting, and a later Quit does not shut down again', () async {
+      await lifecycle();
+      await shell.endSession();
+      expect(api.calls, ['shutdown']);
+      expect(shell.calls, isNot(contains('exit')));
+      shell.trayQuit();
+      await settle();
+      expect(api.calls.where((c) => c == 'shutdown'), hasLength(1));
+    });
+  });
+
   group('first hide notice', () {
     test('shows once, before the window hides', () async {
       await lifecycle();
@@ -132,6 +176,31 @@ void main() {
       shell.closeWindow();
       await settleIo();
       expect(notices, 1);
+    });
+
+    test('two quick closes show it once', () async {
+      await lifecycle();
+      shell.closeWindow();
+      shell.closeWindow();
+      await settle();
+      expect(notices, 1);
+    });
+
+    test('stays unshown, and is offered again, when it could not be shown', () async {
+      shell = FakeAppShell();
+      var tries = 0;
+      final l = TrayLifecycle(
+          shell: shell, shutdown: hub.shutdown, notice: notice, showNotice: () async => ++tries > 1);
+      await l.start();
+      shell.closeWindow();
+      await settle();
+      shell.trayOpen();
+      shell.closeWindow();
+      await settle();
+      shell.trayOpen();
+      shell.closeWindow();
+      await settle();
+      expect(tries, 2); // not shown the first time, shown the second, never a third
     });
 
     test('is not shown when the window quits instead of hiding', () async {

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -15,8 +16,13 @@ class PluginAppShell with TrayListener, WindowListener implements AppShell {
   /// Per platform: `.ico` on Windows, `.png` elsewhere. Bundled via the `assets/tray/` entry.
   static String get _icon => Platform.isWindows ? 'assets/tray/app_icon.ico' : 'assets/tray/icon.png';
 
+  /// The runner (windows/runner/flutter_window.cpp) calls `sessionEnd` when Windows logs off or
+  /// shuts down, and `quit` when `hubbub.exe --quit` reaches this instance.
+  static const _native = MethodChannel('dev.hubbub/session');
+
   bool _hasTray = false;
   void Function() _close = () {}, _open = () {}, _quit = () {};
+  Future<void> Function() _session = () async {};
 
   @override
   bool get hasTray => _hasTray;
@@ -26,9 +32,20 @@ class PluginAppShell with TrayListener, WindowListener implements AppShell {
   set onTrayOpen(void Function() cb) => _open = cb;
   @override
   set onTrayQuit(void Function() cb) => _quit = cb;
+  @override
+  set onSessionEnd(Future<void> Function() cb) => _session = cb;
 
   @override
   Future<void> start() async {
+    _native.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'sessionEnd':
+          await _session();
+        case 'quit':
+          _quit();
+      }
+      return null;
+    });
     await windowManager.ensureInitialized();
     _hasTray = await _createTray();
     // Take the close button either way: with a tray it hides, without one the lifecycle quits.
@@ -84,7 +101,15 @@ class PluginAppShell with TrayListener, WindowListener implements AppShell {
   }
 
   @override
-  Future<void> exitApp() async => exit(0);
+  Future<void> exitApp() async {
+    // exit() runs no window destructors, which would leave a ghost icon in the notification area.
+    if (_hasTray) {
+      try {
+        await trayManager.destroy();
+      } catch (_) {}
+    }
+    exit(0);
+  }
 
   // WindowListener
   @override

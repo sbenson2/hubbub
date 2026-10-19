@@ -19,8 +19,12 @@ abstract class AppShell {
   /// Called when the tray icon is clicked or its "Open Hubbub" is chosen.
   set onTrayOpen(void Function() cb);
 
-  /// Called when the tray menu's "Quit Hubbub" is chosen.
+  /// Called when the tray menu's "Quit Hubbub" (or `hubbub.exe --quit`) asks to quit.
   set onTrayQuit(void Function() cb);
+
+  /// Called when the OS ends the session (Windows logoff or shutdown): the process is about to
+  /// be killed, so only a quick clean shutdown is wanted, no exit.
+  set onSessionEnd(Future<void> Function() cb);
 
   /// Creates the tray icon (if the platform can show one) and takes over the window's close button.
   Future<void> start();
@@ -82,34 +86,66 @@ class TrayLifecycle {
   final HideNoticeStore notice;
 
   /// Tells the user, once, that Hubbub keeps running in the tray. Awaited before the window hides.
-  final Future<void> Function()? showNotice;
+  /// Returns false when it could not be shown (then it is offered again next time).
+  final Future<bool> Function()? showNotice;
 
   Future<void> start() async {
     shell.onCloseRequested = () => unawaited(_close());
     shell.onTrayOpen = () => unawaited(shell.showWindow());
     shell.onTrayQuit = () => unawaited(quit());
+    shell.onSessionEnd = endSession;
     await shell.start();
   }
 
-  Future<void> _close() async {
+  Future<void>? _closing;
+
+  /// One close at a time: a second request while the first runs (the engine's and the window
+  /// package's notice of the same X) joins it.
+  Future<void> _close() {
     if (!shell.hasTray) return quit(); // nothing to bring the window back or quit from
-    if (!await notice.shown) {
-      await notice.markShown();
-      await showNotice?.call();
-    }
-    await shell.hideWindow();
+    return _closing ??= () async {
+      try {
+        if (!await notice.shown) {
+          if (await (showNotice?.call() ?? Future.value(false))) await notice.markShown();
+        }
+        await shell.hideWindow();
+      } finally {
+        _closing = null;
+      }
+    }();
   }
 
-  Future<void>? _quitting;
+  /// The engine asks to exit (the window's X, Alt+F4, taskbar close). With a tray that only
+  /// hides the window and the exit is cancelled; without one it shuts down and may proceed.
+  Future<bool> exitRequested() async {
+    if (shell.hasTray) {
+      await _close();
+      return false;
+    }
+    await _shutDown();
+    return true;
+  }
 
-  /// Shuts down once; a second request while it runs joins the first. The process ends even if
-  /// the shutdown fails: the user asked to quit.
-  Future<void> quit() => _quitting ??= () async {
+  /// Windows is ending the session: shut down cleanly, quickly, and leave the exit to the OS.
+  Future<void> endSession() => _shutDown();
+
+  Future<void>? _shuttingDown;
+
+  /// The one shutdown: every path (Quit, signals, session end, exit without a tray) joins it, so
+  /// the hub stops exactly once. A failure is logged; the user still wants out.
+  Future<void> _shutDown() => _shuttingDown ??= () async {
         try {
           await shutdown();
         } catch (e) {
           debugPrint('shutdown failed: $e');
         }
+      }();
+
+  Future<void>? _quitting;
+
+  /// Shuts down once, then ends the process.
+  Future<void> quit() => _quitting ??= () async {
+        await _shutDown();
         await shell.exitApp();
       }();
 }

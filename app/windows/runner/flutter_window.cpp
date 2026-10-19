@@ -25,6 +25,10 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  session_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "dev.hubbub/session",
+          &flutter::StandardMethodCodec::GetInstance());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -41,6 +45,7 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   if (flutter_controller_) {
+    session_channel_ = nullptr;
     flutter_controller_ = nullptr;
   }
 
@@ -51,6 +56,35 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Windows logoff or shutdown sends WM_ENDSESSION, not WM_CLOSE, and the window may sit hidden
+  // for days, so this is how the app usually ends. Give Dart a few seconds to shut the hub down
+  // (Resign, stop livekit-server); the OS kills the process soon after we return.
+  if (message == WM_ENDSESSION && wparam && session_channel_) {
+    bool done = false;
+    session_channel_->InvokeMethod(
+        "sessionEnd", nullptr,
+        std::make_unique<flutter::MethodResultFunctions<flutter::EncodableValue>>(
+            [&done](const flutter::EncodableValue*) { done = true; },
+            [&done](const std::string&, const std::string&,
+                    const flutter::EncodableValue*) { done = true; },
+            [&done]() { done = true; }));
+    const ULONGLONG deadline = ::GetTickCount64() + 4000;
+    ::MSG msg;
+    while (!done && ::GetTickCount64() < deadline) {
+      if (::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        ::TranslateMessage(&msg);
+        ::DispatchMessage(&msg);
+      } else {
+        ::MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+      }
+    }
+    return 0;
+  }
+  if (message == kQuitMessage && session_channel_) {
+    session_channel_->InvokeMethod("quit", nullptr);
+    return 0;
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
