@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hubbub/hub_controller.dart';
 import 'package:hubbub/node_controller.dart';
 import 'package:hubbub/room_adapter.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
@@ -116,6 +117,34 @@ void main() {
     room.emitSignal(RoomSignal.disconnected);
     await tester.pumpAndSettle();
     expect(node.voiceCalls, ['lobby false false', '- false false']);
+  });
+
+
+  testWidgets('a_failed_join_clears_voice_on_the_server_it_targeted_not_the_one_on_screen', (tester) async {
+    arrange();
+    final me = member('aaaa', 'Shawn');
+    final other = FakeNode(events: StreamController<AppNodeEvent>.broadcast(), me: me, roster: [me], name: 'Other');
+    addTearDown(other.dispose);
+    final gate = Completer<void>();
+    node.credentialsGate = gate;
+    final api = FakeHub()..add('one', 'Game Night', node)..add('two', 'Other', other);
+    final hub = HubController(api)..refresh();
+    hub.select('one');
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(theme: hubbubTheme(), home: HomePage(hub: hub, room: room, loadConfig: () => throw StateError('started'))));
+    events.add(AppNodeEvent.hostChanged(host: me.id, term: BigInt.one, isMe: true));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('lobby'));
+    await tester.pump();
+    hub.select('two');
+    await tester.pump();
+    gate.completeError(StateError('no credentials'));
+    await tester.pumpAndSettle();
+    expect(node.voiceCalls, ['- false false'], reason: 'the server the join targeted');
+    expect(other.voiceCalls, isEmpty, reason: 'the server on screen was never joined');
   });
 
   testWidgets('a_failed_rejoin_clears_voice_but_a_good_rejoin_says_nothing', (tester) async {

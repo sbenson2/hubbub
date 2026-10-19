@@ -83,6 +83,9 @@ class FakeNode extends NodeController {
   final FakeTextService text;
   final credentialRequests = <String>[];
 
+  /// When set, `credentials` waits for it, then throws if it completed with an error.
+  Completer<void>? credentialsGate;
+
   /// Every `setVoice` call, as `channel muted deafened` (`-` for no channel).
   final voiceCalls = <String>[];
   @override
@@ -115,6 +118,7 @@ class FakeNode extends NodeController {
   @override
   Future<AppVoiceCredentials> credentials(String room) async {
     credentialRequests.add(room);
+    await credentialsGate?.future;
     return AppVoiceCredentials(
       url: 'ws://127.0.0.1:7880',
       token: 'token',

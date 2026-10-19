@@ -726,10 +726,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (_joining != null) return;
     setState(() => _joining = (_key, channel));
     var connecting = false;
+    // The server this join targets; `_node` may point elsewhere by the time it fails.
+    final node = _node;
+    final key = _key;
     try {
       if (_call != null) await _leave();
-      final node = _node;
-      final key = _key;
       final c = await node.credentials(channel);
       _requireIce(c);
       await _devices.applyForJoin();
@@ -750,7 +751,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       _toast('Could not join $channel: $e');
       // Nothing said we were in it, but make sure no stale "in voice" is left on the server.
-      _node.setVoice(null);
+      // A live call (on whichever server) has said its own state; leave that alone.
+      if (_call == null) node.setVoice(null);
     } finally {
       // Anything that failed after connect started must not leave a live room behind while
       // the UI shows no call.
