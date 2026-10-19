@@ -71,6 +71,19 @@ void main() {
     expect(find.text('Voice Connected'), findsNothing);
   });
 
+  testWidgets('a_host_change_during_a_call_reconnects_with_credentials_from_the_new_host', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    // We were host and in the call; another member takes over at a higher term.
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pumpAndSettle();
+
+    expect(node.credentialRequests, ['lobby', 'lobby']);
+    expect(room.calls, ['connect', 'mic:true', 'deafened:false']);
+    expect(find.text('Voice Connected'), findsOneWidget);
+  });
+
   testWidgets('deafen_mutes_the_mic_and_undeafen_restores_both', (tester) async {
     await pumpShell(tester);
     await joinLobby(tester);

@@ -248,11 +248,45 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (_call != null && !live.contains(_call!.key)) unawaited(_leave());
   }
 
-  void _refresh() => setState(() {
-        _prune();
-        _attach();
-        _openFirstChannel();
-      });
+  void _refresh() {
+    setState(() {
+      _prune();
+      _attach();
+      _openFirstChannel();
+    });
+    _followHost();
+  }
+
+  /// The call's media room lives on the server's host. When the host changes (including when
+  /// we were the host), the old room is gone, so join the same channel on the new host.
+  void _followHost() {
+    final call = _call;
+    if (call == null || _joining != null || _rejoining) return;
+    final host = call.node.host;
+    if (host == null || (host == call.host && call.node.term == call.term)) return;
+    unawaited(_rejoin(call));
+  }
+
+  bool _rejoining = false;
+
+  Future<void> _rejoin(_Call call) async {
+    _rejoining = true;
+    try {
+      final c = await call.node.credentials(call.channel);
+      if (!mounted || _call != call) return;
+      await widget.room.connect(c.url, c.token, c.e2EeKey);
+      await widget.room.setMicrophoneEnabled(!_muted);
+      await widget.room.setDeafened(_deafened);
+      if (mounted && _call == call) {
+        setState(() => _call = _Call(call.key, call.channel, call.node, c.host, c.term.toInt()));
+      }
+    } catch (e) {
+      _toast('Could not rejoin ${call.channel}: $e');
+      if (mounted && _call == call) setState(() => _call = null);
+    } finally {
+      _rejoining = false;
+    }
+  }
 
   /// Once the community is known, opens its first text channel.
   void _openFirstChannel() {
@@ -266,7 +300,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _onSignal(RoomSignal s) {
     // One line per signal for the automated multi-machine check; samples are too chatty.
     if (s is! RoomStats && s is! RoomVideoRx) debugPrint('hubbub: ${_describe(s)}');
-    if (s is RoomDisconnected) setState(() => _call = null);
+    if (s is! RoomDisconnected || _rejoining) return;
+    final call = _call;
+    final host = call?.node.host;
+    // The room died because the host changed: follow it rather than dropping the call.
+    if (call != null && host != null && (host != call.host || call.node.term != call.term)) {
+      unawaited(_rejoin(call));
+    } else {
+      setState(() => _call = null);
+    }
   }
 
   static String _describe(RoomSignal s) => switch (s) {
@@ -318,7 +360,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
-      if (mounted) setState(() => _call = _Call(key, channel, node));
+      if (mounted) setState(() => _call = _Call(key, channel, node, c.host, c.term.toInt()));
     } catch (e) {
       _toast('Could not join $channel: $e');
     } finally {
@@ -609,9 +651,13 @@ class _EmptyState extends StatelessWidget {
 
 /// The voice call in progress: its server's key, its channel, and the server's controller.
 class _Call {
-  const _Call(this.key, this.channel, this.node);
+  const _Call(this.key, this.channel, this.node, this.host, this.term);
 
   final String key;
   final String channel;
   final NodeController node;
+
+  /// The host and term whose media room this call is in.
+  final String host;
+  final int term;
 }
