@@ -15,12 +15,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_definitions(-DRTC_DESKTOP_DEVICE)
 
-# Hubbub patch: RNNoise (BSD-3, third_party/rnnoise at the repo root) for the
-# capture post-processor. Resolve the plugin's real path first: Flutter reaches
-# it through a .plugin_symlinks entry and ".." must not be applied to that link.
-get_filename_component(HUBBUB_PLUGIN_REAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
-get_filename_component(HUBBUB_RNNOISE_DIR "${HUBBUB_PLUGIN_REAL_DIR}/../../rnnoise" ABSOLUTE)
-add_subdirectory("${HUBBUB_RNNOISE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rnnoise")
+# Hubbub patch: RNNoise (BSD-3, third_party/rnnoise inside this plugin) for the capture
+# post-processor.
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rnnoise" "${CMAKE_CURRENT_BINARY_DIR}/rnnoise")
 
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_data_channel.cc"

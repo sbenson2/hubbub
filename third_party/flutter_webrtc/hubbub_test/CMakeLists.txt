@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(hubbub_test CXX C)
 set(CMAKE_CXX_STANDARD 17)
-get_filename_component(HUBBUB_RNNOISE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rnnoise" ABSOLUTE)
+get_filename_component(HUBBUB_RNNOISE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rnnoise" ABSOLUTE)
 add_subdirectory("${HUBBUB_RNNOISE_DIR}" rnnoise EXCLUDE_FROM_ALL)
 set(LIBWEBRTC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc")
 
