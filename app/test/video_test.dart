@@ -19,7 +19,8 @@ void main() {
   late FakeShareSources shares;
   late List<bool> fullscreen;
 
-  Future<void> pumpShell(WidgetTester tester, {DevicePrefs prefs = const DevicePrefs()}) async {
+  Future<void> pumpShell(WidgetTester tester,
+      {DevicePrefs prefs = const DevicePrefs(), bool screenShare = true}) async {
     shares = FakeShareSources();
     fullscreen = [];
     events = StreamController<AppNodeEvent>.broadcast();
@@ -42,6 +43,8 @@ void main() {
         room: room,
         deviceStore: DevicePrefsStore.memory(prefs),
         shareSources: shares.load,
+        shareStillExists: shares.exists,
+        screenShareAvailable: screenShare,
         setFullscreen: (on) async => fullscreen.add(on),
         loadConfig: () => throw StateError('a started node needs no config'),
       ),
@@ -99,7 +102,7 @@ void main() {
 
       events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
       await tester.pumpAndSettle();
-      expect(room.calls, ['connect', 'mic:true', 'deafened:false', 'camera:true']);
+      expect(room.calls, ['disconnect', 'connect', 'mic:true', 'deafened:false', 'camera:true']);
       expect(find.byTooltip('Turn Off Camera'), findsOneWidget);
     });
   });
@@ -197,7 +200,7 @@ void main() {
 
       events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
       await tester.pumpAndSettle();
-      expect(room.calls, ['connect', 'mic:true', 'deafened:false', 'screen:true:screen:0:0']);
+      expect(room.calls, ['disconnect', 'connect', 'mic:true', 'deafened:false', 'screen:true:screen:0:0']);
       expect(find.byTooltip('Stop Streaming'), findsOneWidget);
     });
   });
@@ -425,6 +428,41 @@ void main() {
       await tester.pumpAndSettle();
       expect(room.calls, ['screen:false']);
       expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('a_share_ends_when_its_window_goes_away', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Applications'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Doom Eternal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Go Live'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget, reason: 'the window is still there');
+
+      shares.sources = [for (final s in shares.sources) if (s.id != 'window:42:0') s];
+      room.calls.clear();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:false']);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+      expect(find.textContaining('shared window closed'), findsOneWidget);
+    });
+
+    testWidgets('where_screen_capture_is_unavailable_the_button_says_so_and_opens_no_picker', (tester) async {
+      await pumpShell(tester, screenShare: false);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      expect(find.text("Screen sharing isn't supported on this desktop yet"), findsOneWidget);
+      expect(find.text('Go Live'), findsNothing);
+      expect(shares.loads, 0);
     });
 
     testWidgets('the_overlay_shows_the_focused_stream_not_the_latest_sample', (tester) async {

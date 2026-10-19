@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
@@ -621,7 +622,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
     // when the capture with audio is refused, share the picture alone.
     List<LocalTrack> tracks;
     try {
-      tracks = await LocalVideoTrack.createScreenShareTracksWithAudio(capture);
+      tracks = shareAudioSupported(isLinux: Platform.isLinux)
+          ? await LocalVideoTrack.createScreenShareTracksWithAudio(capture)
+          : [await LocalVideoTrack.createScreenShareTrack(capture)];
     } catch (e) {
       debugPrint('hubbub: screen capture with audio failed ($e), trying video only');
       tracks = [await LocalVideoTrack.createScreenShareTrack(capture)];
@@ -636,16 +639,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
           stop: t.stop,
         ),
     ], unpublish: local.removePublishedTrack);
-    // Closing the shared window ends the capture track: tell the UI the share is over.
-    // (`onEnded` is a single callback; LiveKit's own is kept and called first.)
-    for (final t in tracks.whereType<LocalVideoTrack>()) {
-      final mst = t.mediaStreamTrack;
-      final theirs = mst.onEnded;
-      mst.onEnded = () {
-        theirs?.call();
-        _signals.add(RoomSignal.shareEnded);
-      };
-    }
+    // (The desktop plugin never raises the track's `onEnded`, so the UI watches whether the
+    // shared window still exists instead; see HomePage._watchShare.)
   }
 
   @override

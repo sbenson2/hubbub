@@ -63,3 +63,13 @@ VideoPublishOptions screenPublishOptionsFor() => const VideoPublishOptions(
 /// Codecs for which livekit_client 2.13.1 sets up no frame cryptor, on the sender
 /// (`e2ee_manager.dart:51-54`) or the receiver (`:88-90`): published, they go unencrypted.
 const frameCryptorSkipsCodecs = <String>{'av1'};
+
+/// Whether this session can capture a screen or window. The plugin captures through X11/GDI
+/// only; under Wayland that gives a black picture, so it is refused up front.
+bool screenShareSupported({required bool isLinux, required Map<String, String> env}) =>
+    !(isLinux && (env['XDG_SESSION_TYPE'] == 'wayland' || (env['WAYLAND_DISPLAY'] ?? '').isNotEmpty));
+
+/// Whether a share carries sound. On Windows it is the app's own audio (process loopback,
+/// which leaves Hubbub out); on Linux it is the whole PulseAudio monitor, which includes the
+/// call itself and would echo it back to the watchers, so a Linux share is picture only.
+bool shareAudioSupported({required bool isLinux}) => !isLinux;

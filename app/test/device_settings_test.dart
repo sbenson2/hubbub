@@ -164,6 +164,28 @@ void main() {
           findsOneWidget);
     });
 
+    testWidgets('default_follows_a_device_list_change_and_a_named_device_does_not', (tester) async {
+      await pumpShell(tester);
+      room.plugDevices(room.devices); // the first apply records what is in use
+      await tester.pumpAndSettle();
+      room.deviceCalls.clear();
+      room.plugDevices([...room.devices, const MediaDeviceInfo('m3', 'USB Headset', DeviceKind.audioInput)]);
+      await tester.pumpAndSettle();
+      expect(room.deviceCalls, ['input:default'], reason: 'Default is re-applied for the kind that changed');
+
+      room.deviceCalls.clear();
+      room.plugDevices(room.devices); // nothing changed
+      await tester.pumpAndSettle();
+      expect(room.deviceCalls, isEmpty);
+
+      await openVoiceVideo(tester);
+      await pick(tester, 'device-input', 'Headset Mic');
+      room.deviceCalls.clear();
+      room.plugDevices([...room.devices, const MediaDeviceInfo('m4', 'Webcam Mic', DeviceKind.audioInput)]);
+      await tester.pumpAndSettle();
+      expect(room.deviceCalls, isEmpty, reason: 'a named, present device stays put');
+    });
+
     testWidgets('a_failed_output_switch_reverts_the_dropdown_and_says_so', (tester) async {
       await pumpShell(tester);
       await openVoiceVideo(tester);

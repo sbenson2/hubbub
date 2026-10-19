@@ -2,8 +2,6 @@
 //   flutter test integration_test/audio_levels_test.dart -d windows   (or -d linux)
 // It proves the patched plugin's levels events reach Dart while the platform thread keeps
 // answering method calls (a re-entrant task runner used to deadlock it on the first event).
-import 'dart:async';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:integration_test/integration_test.dart';

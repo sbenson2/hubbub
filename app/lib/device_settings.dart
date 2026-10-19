@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'atomic_file.dart';
 import 'room_adapter.dart';
 
 /// A remembered device. The id can change across reboots on some OSes, so the label is kept
@@ -78,7 +79,7 @@ class DevicePrefsStore {
       return;
     }
     try {
-      await File(path).writeAsString(jsonEncode(p.toJson()));
+      await writeFileAtomic(path, jsonEncode(p.toJson()));
     } catch (e) {
       debugPrint('could not save device choices: $e');
     }
@@ -173,6 +174,7 @@ class DeviceSettings extends ChangeNotifier {
   }
 
   Future<void> _refresh({required bool apply}) async {
+    final before = {for (final k in DeviceKind.values) k: _idsOf(k)};
     try {
       _all = await _room.listDevices();
     } catch (e) {
@@ -184,10 +186,18 @@ class DeviceSettings extends ChangeNotifier {
     if (apply) {
       // A saved device that came back, or a chosen one that left, changes what is in use.
       for (final k in DeviceKind.values) {
-        await _push(k, force: false);
+        // Default is "the first device the OS lists" and desktop WebRTC does not follow the OS
+        // default by itself: when the list changed (a headset unplugged or added), open
+        // Default again so the mic and speaker move with it.
+        final followsDefault = k != DeviceKind.videoInput &&
+            selected(k) == null &&
+            !setEquals(before[k], _idsOf(k));
+        await _push(k, force: followsDefault);
       }
     }
   }
+
+  Set<String> _idsOf(DeviceKind k) => {for (final d in devices(k)) d.id};
 
   /// Null when the adapter took the choice, else the failure.
   Future<Object?> _push(DeviceKind k, {required bool force}) async {

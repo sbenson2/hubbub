@@ -80,7 +80,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(node.credentialRequests, ['lobby', 'lobby']);
-    expect(room.calls, ['connect', 'mic:true', 'deafened:false']);
+    expect(room.calls, ['disconnect', 'connect', 'mic:true', 'deafened:false']);
     expect(find.text('Voice Connected'), findsOneWidget);
   });
 
@@ -144,10 +144,60 @@ void main() {
 
     room.connectError = StateError('no route');
     events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pump(const Duration(seconds: 3)); // past the one retry
     await tester.pumpAndSettle();
 
     expect(room.calls, contains('disconnect'));
     expect(find.text('Voice Connected'), findsNothing);
+  });
+
+  testWidgets('a_join_that_fails_after_connect_disconnects_the_room', (tester) async {
+    await pumpShell(tester);
+    room.micError = StateError('capture refused');
+
+    await tester.tap(find.text('lobby'));
+    await tester.pumpAndSettle();
+
+    expect(room.calls, ['connect', 'mic:true', 'disconnect']);
+    expect(room.connected, isFalse);
+    expect(find.text('Voice Connected'), findsNothing);
+  });
+
+  testWidgets('a_rejoin_drops_the_old_room_before_applying_devices_and_retries_once', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.connectFailures = 1;
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+
+    expect(room.calls.first, 'disconnect', reason: 'before any device is applied to the old room');
+    expect(room.calls.where((c) => c == 'connect').length, 2, reason: 'one retry');
+    expect(find.text('Voice Connected'), findsOneWidget);
+  });
+
+  testWidgets('a_disconnect_with_no_host_change_says_so_and_ends_the_call', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.emitSignal(RoomSignal.disconnected);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Click it to rejoin'), findsOneWidget);
+    expect(find.text('Voice Connected'), findsNothing);
+  });
+
+  testWidgets('a_failed_unmute_in_a_call_is_reported_and_the_button_reverts', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.micError = StateError('capture refused');
+    await tester.tap(find.byTooltip('Mute').first);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('capture refused'), findsOneWidget);
+    expect(find.byTooltip('Mute'), findsWidgets, reason: 'the mic is still on');
   });
 
   testWidgets('deafen_mutes_the_mic_and_undeafen_restores_both', (tester) async {

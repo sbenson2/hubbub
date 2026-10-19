@@ -4,6 +4,7 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'app_shell.dart';
 import 'audio_settings.dart';
@@ -69,6 +70,13 @@ Future<void> main(List<String> args) async {
   try {
     await hub.open(root, canHost: bundledLiveKit() != null, livekitBin: bundledLiveKit());
   } catch (e) {
+    // A start at login hides the window, and there is no tray yet: show the error instead of
+    // leaving an invisible process. Closing the window then ends it.
+    try {
+      await windowManager.ensureInitialized();
+      await windowManager.show();
+      await windowManager.focus();
+    } catch (_) {}
     runApp(StartFailed(error: '$e'));
     return;
   }

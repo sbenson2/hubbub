@@ -36,6 +36,15 @@ Future<List<ShareSource>> desktopShareSources() async {
   ];
 }
 
+/// Whether the screen or window [id] still exists. Asks for no thumbnails, so it is cheap
+/// enough to repeat while a share runs. Throws when the platform cannot list sources.
+typedef ShareSourceCheck = Future<bool> Function(String id);
+
+Future<bool> desktopSourceExists(String id) async {
+  final all = await rtc.desktopCapturer.getSources(types: [rtc.SourceType.Screen, rtc.SourceType.Window]);
+  return all.any((s) => s.id == id);
+}
+
 /// Full-screen for the app window (a focused stream's Full Screen button).
 Future<void> setWindowFullscreen(bool on) async {
   try {

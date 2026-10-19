@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'atomic_file.dart';
 import 'capture_options.dart';
 import 'room_adapter.dart';
 
@@ -92,7 +93,7 @@ class AudioPrefsStore {
       return;
     }
     try {
-      await File(path).writeAsString(jsonEncode(p.toJson()));
+      await writeFileAtomic(path, jsonEncode(p.toJson()));
     } catch (e) {
       debugPrint('could not save audio levels: $e');
     }

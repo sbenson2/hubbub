@@ -255,17 +255,36 @@ class FakeRoom implements RoomAdapter {
     inputAtConnect = inputId;
     await connectGate?.future;
     if (connectError != null) throw connectError!;
+    if (connectFailures > 0) {
+      connectFailures--;
+      throw StateError('not up yet');
+    }
+    connected = true;
     _participants.add(onConnect);
   }
+
+  /// The next this-many connects fail, then connects work again.
+  int connectFailures = 0;
+
+  /// Whether a room is up. As in the real adapter, a disconnect with no room says nothing.
+  bool connected = false;
+
+  /// Makes the microphone call fail, as a refused capture or a publisher timeout does.
+  Object? micError;
 
   @override
   Future<void> disconnect() async {
     calls.add('disconnect');
+    if (!connected) return;
+    connected = false;
     _participants.add(const []);
   }
 
   @override
-  Future<void> setMicrophoneEnabled(bool on) async => calls.add('mic:$on');
+  Future<void> setMicrophoneEnabled(bool on) async {
+    calls.add('mic:$on');
+    if (micError != null) throw micError!;
+  }
   @override
   Future<void> setDeafened(bool on) async => calls.add('deafened:$on');
   @override
@@ -290,6 +309,11 @@ class FakeShareSources {
   ];
   Object? error;
   int loads = 0;
+
+  Future<bool> exists(String id) async {
+    if (error != null) throw error!;
+    return sources.any((s) => s.id == id);
+  }
 
   Future<List<ShareSource>> load() async {
     loads++;

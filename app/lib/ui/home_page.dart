@@ -15,6 +15,7 @@ import '../room_adapter.dart';
 import '../share_sources.dart';
 import '../src/rust/api/hubbub.dart';
 import '../text_controller.dart';
+import '../video_options.dart';
 import 'audio_menus.dart';
 import 'avatar.dart';
 import 'call_stage.dart';
@@ -56,6 +57,8 @@ class HomePage extends StatefulWidget {
     this.updates,
     this.windowsSettings,
     this.shareSources = desktopShareSources,
+    this.shareStillExists = desktopSourceExists,
+    this.screenShareAvailable,
     this.setFullscreen = setWindowFullscreen,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
@@ -69,6 +72,12 @@ class HomePage extends StatefulWidget {
 
   /// What the Share Your Screen picker lists; tests give a fixed list.
   final ShareSourceLoader shareSources;
+
+  /// Whether the shared screen or window is still there (it ends the share when it is not).
+  final ShareSourceCheck shareStillExists;
+
+  /// Whether this session can share a screen at all; null decides from the platform.
+  final bool? screenShareAvailable;
 
   /// Puts the whole window in (or takes it out of) full screen for a focused stream.
   final Future<void> Function(bool) setFullscreen;
@@ -150,6 +159,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _lastSid = <String, String>{};
   final _seenSharing = <String>{};
   Timer? _watchGrace;
+  Timer? _shareWatch;
 
   /// The tile shown large (a [StageItem.key]), if any.
   String? _focus;
@@ -300,6 +310,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _audio.dispose();
     _inCall.dispose();
     _watchGrace?.cancel();
+    _shareWatch?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _links?.dispose();
     _hub.removeListener(_refresh);
@@ -377,10 +388,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
       _requireIce(c);
+      // The old room is gone: drop it first, so the device choices below are not applied to
+      // (and capture restarted on) a room that is about to die anyway.
+      await widget.room.disconnect();
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted || _call != call) return;
-      await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
+      try {
+        await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
+      } catch (_) {
+        // The new host's media server may be a moment late: one more try before giving up.
+        await Future<void>.delayed(const Duration(seconds: 2));
+        if (!mounted || _call != call) return;
+        await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
+      }
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
       if (mounted && _call == call) await _republishVideo();
@@ -548,6 +569,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _shareBusy = true;
     try {
       if (_sharing) return await _stopShare();
+      final available = widget.screenShareAvailable ??
+          screenShareSupported(isLinux: Platform.isLinux, env: Platform.environment);
+      if (!available) return _toast(shareUnsupported);
       final source = await showSharePicker(context, widget.shareSources);
       if (source == null || !mounted || _call == null) return;
       setState(() {
@@ -556,6 +580,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
       try {
         await widget.room.setScreenShareEnabled(true, sourceId: source);
+        _watchShare(source);
       } catch (e) {
         _toast(defaultTargetPlatform == TargetPlatform.linux
             ? shareUnsupported
@@ -567,7 +592,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// The desktop plugin never says when a captured window closes, so look for it: when the
+  /// shared screen or window is gone, the share is over.
+  void _watchShare(String source) {
+    _shareWatch?.cancel();
+    var checking = false;
+    _shareWatch = Timer.periodic(const Duration(seconds: 3), (t) async {
+      if (!mounted || !_sharing || _shareSource != source) return t.cancel();
+      if (checking) return;
+      checking = true;
+      try {
+        if (!await widget.shareStillExists(source) && mounted && _sharing && _shareSource == source) {
+          _toast('The shared window closed, so the stream ended.');
+          t.cancel();
+          await _stopShare();
+        }
+      } catch (_) {
+        // Listing failed this time: keep sharing and look again.
+      } finally {
+        checking = false;
+      }
+    });
+  }
+
   Future<void> _stopShare() async {
+    _shareWatch?.cancel();
     setState(() {
       _sharing = false;
       _shareSource = null;
@@ -604,7 +653,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // The room died because the host changed: follow it rather than dropping the call.
     if (call != null && host != null && (host != call.host || call.node.term != call.term)) {
       unawaited(_rejoin(call));
-    } else {
+    } else if (call != null) {
+      // The connection dropped and no host change explains it: say so; the user can rejoin
+      // from the channel list.
+      _toast('Disconnected from ${call.channel}. Click it to rejoin.');
       setState(() => _call = null);
     }
   }
@@ -660,6 +712,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _join(String channel) async {
     if (_joining != null) return;
     setState(() => _joining = (_key, channel));
+    var connecting = false;
     try {
       if (_call != null) await _leave();
       final node = _node;
@@ -669,13 +722,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted) return;
+      connecting = true;
       await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
-      if (mounted) setState(() => _call = _Call(key, channel, node, c.host, c.term.toInt()));
+      // The server may have been left while connecting: no call to a removed node.
+      if (!mounted || !_hub.communities.any((x) => x.cid == key)) {
+        connecting = false;
+        await widget.room.disconnect();
+        return;
+      }
+      connecting = false;
+      setState(() => _call = _Call(key, channel, node, c.host, c.term.toInt()));
     } catch (e) {
       _toast('Could not join $channel: $e');
     } finally {
+      // Anything that failed after connect started must not leave a live room behind while
+      // the UI shows no call.
+      if (connecting) {
+        try {
+          await widget.room.disconnect();
+        } catch (_) {}
+      }
       if (mounted) setState(() => _joining = null);
       if (mounted) _followHost();
     }
@@ -706,8 +774,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
     // Out of a call these settings apply on the next join.
     if (_call == null) return;
-    if (deafChanged) await widget.room.setDeafened(deafened);
-    if (muteChanged || deafChanged) await widget.room.setMicrophoneEnabled(!muted);
+    try {
+      if (deafChanged) await widget.room.setDeafened(deafened);
+      if (muteChanged || deafChanged) await widget.room.setMicrophoneEnabled(!muted);
+    } catch (e) {
+      // The room did not take it: show what is really on.
+      _toast('Could not ${muted ? 'mute' : 'unmute'}: $e');
+      if (mounted) {
+        setState(() {
+          _muted = !muteChanged ? _muted : !muted;
+          _deafened = !deafChanged ? _deafened : !deafened;
+        });
+      }
+    }
   }
 
   String _nameOf(String id, [NodeController? node]) {

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'atomic_file.dart';
 import 'links.dart';
 
 /// The window and tray, behind one seam so the close/quit logic runs in widget tests without a
@@ -64,7 +65,7 @@ class HideNoticeStore {
       return;
     }
     try {
-      await File(path).writeAsString(jsonEncode({'hideNoticeShown': true}));
+      await writeFileAtomic(path, jsonEncode({'hideNoticeShown': true}));
     } catch (e) {
       debugPrint('could not save the tray notice flag: $e');
     }
