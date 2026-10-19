@@ -39,7 +39,7 @@ void main() {
     });
 
     test('publish_has_720p30_and_360p15_layers_and_keeps_its_resolution', () {
-      final o = screenPublishOptionsFor(av1: true);
+      final o = screenPublishOptionsFor();
       expect(o.screenShareEncoding?.maxFramerate, 60);
       expect(o.screenShareEncoding?.maxBitrate, 6000000);
       expect(o.simulcast, isTrue);
@@ -52,21 +52,25 @@ void main() {
       expect(o.degradationPreference, DegradationPreference.maintainResolution);
     });
 
-    test('prefers_av1_with_an_h264_backup_and_falls_back_to_h264_without_av1', () {
-      final av1 = screenPublishOptionsFor(av1: true);
-      expect(av1.videoCodec, 'av1');
-      expect(av1.backupVideoCodec.enabled, isTrue);
-      expect(av1.backupVideoCodec.codec, 'h264');
-
-      final h264 = screenPublishOptionsFor(av1: false);
-      expect(h264.videoCodec, 'h264');
-      expect(h264.backupVideoCodec.enabled, isFalse);
+    test('the_share_is_h264_only_with_no_backup_codec', () {
+      // AV1 would skip the frame cryptor (livekit_client 2.13.1 e2ee_manager.dart:51-54, :88-90)
+      // and a backup codec's sender gets none, so the share would reach the SFU unencrypted.
+      final o = screenPublishOptionsFor();
+      expect(o.videoCodec, 'h264');
+      expect(o.backupVideoCodec.enabled, isFalse);
+      expect(o.screenShareSimulcastLayers.length, 2);
     });
 
-    test('av1_is_used_only_when_the_sender_lists_it', () {
-      expect(canSendAv1(['video/VP8', 'video/H264', 'video/AV1']), isTrue);
-      expect(canSendAv1(['video/VP8', 'video/H264']), isFalse);
-      expect(canSendAv1(const []), isFalse);
+    test('every_published_video_codec_is_one_the_frame_cryptor_covers', () {
+      for (final o in [cameraPublishOptions, screenPublishOptionsFor()]) {
+        expect(frameCryptorSkipsCodecs, contains('av1'));
+        expect(frameCryptorSkipsCodecs.contains(o.videoCodec.toLowerCase()), isFalse,
+            reason: '${o.name}: ${o.videoCodec} would be sent unencrypted');
+        if (o.backupVideoCodec.enabled) {
+          expect(frameCryptorSkipsCodecs.contains(o.backupVideoCodec.codec.toLowerCase()), isFalse,
+              reason: '${o.name}: backup ${o.backupVideoCodec.codec} would be sent unencrypted');
+        }
+      }
     });
   });
 }

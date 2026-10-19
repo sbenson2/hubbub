@@ -113,7 +113,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _seenSharing.clear();
       _watchGrace?.cancel();
       _focus = null;
-      _rx = null;
+      _rx.clear();
     }
     _inCall.value = c != null;
   }
@@ -136,6 +136,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// this room. A watch whose stream is gone is forgotten, so a later share needs a new click.
   final _watching = <String>{};
   final _requested = <String>{};
+  final _lastSid = <String, String>{};
   final _seenSharing = <String>{};
   Timer? _watchGrace;
 
@@ -144,7 +145,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// The stream stats panel, and the latest received sample for the watched stream.
   bool _showStats = false;
-  VideoRxSample? _rx;
+  final _rx = <String, VideoRxSample>{};
+  bool _cameraBusy = false;
+  bool _shareBusy = false;
   bool _mutedBeforeDeafen = false;
   bool _memberList = true;
   bool _starting = false;
@@ -408,6 +411,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _toggleCamera() async {
+    if (_cameraBusy) return;
+    _cameraBusy = true;
     final on = !_cameraOn;
     setState(() => _cameraOn = on);
     try {
@@ -415,6 +420,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       _toast('Could not turn the camera ${on ? 'on' : 'off'}: $e');
       if (mounted) setState(() => _cameraOn = !on);
+    } finally {
+      _cameraBusy = false;
     }
   }
 
@@ -433,6 +440,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _seenSharing.add(m.id);
       _focus = 'stream:${m.id}';
     });
+    _lastSid[m.id] = sid;
     if (_requested.add(sid)) await widget.room.subscribeVideo(m.id, sid, true);
   }
 
@@ -442,7 +450,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _watching.remove(id);
       _seenSharing.remove(id);
       if (_focus == 'stream:$id') _focus = null;
-      if (_watching.isEmpty) _rx = null;
+      _rx.remove(id);
     });
     if (sid != null) {
       _requested.remove(sid);
@@ -457,11 +465,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final sid = people.where((p) => p.id == id).firstOrNull?.share?.sid;
       if (sid != null) {
         _seenSharing.add(id);
+        _lastSid[id] = sid;
         if (_requested.add(sid)) unawaited(widget.room.subscribeVideo(id, sid, true));
       } else if (_seenSharing.contains(id) && !_rejoining && _call != null) {
         setState(() {
           _watching.remove(id);
           _seenSharing.remove(id);
+          _rx.remove(id);
+          _requested.removeWhere((r) => r == _lastSid[id]);
           if (_focus == 'stream:$id') _focus = null;
         });
       }
@@ -503,38 +514,56 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
     await Navigator.of(context).push(PageRouteBuilder<void>(
       opaque: true,
-      pageBuilder: (_, _, _) => _FullscreenStream(feed: feed, mirror: !item.stream && item.member.isMe),
+      pageBuilder: (_, _, _) => _FullscreenStream(
+        feed: feed,
+        mirror: !item.stream && item.member.isMe,
+        updates: widget.room.participants,
+        // The picture to show now: a rejoin gives it a new track, and the stream may end.
+        current: (people) {
+          for (final p in people) {
+            if (p.id == item.member.id) return item.stream ? p.share : p.camera;
+          }
+          return null;
+        },
+      ),
     ));
     await widget.setFullscreen(false);
   }
 
   /// Stop Streaming, or open the picker and Go Live on what it returns.
   Future<void> _toggleShare() async {
-    if (_sharing) {
+    if (_shareBusy) return;
+    _shareBusy = true;
+    try {
+      if (_sharing) return await _stopShare();
+      final source = await showSharePicker(context, widget.shareSources);
+      if (source == null || !mounted || _call == null) return;
       setState(() {
-        _sharing = false;
-        _shareSource = null;
+        _sharing = true;
+        _shareSource = source;
       });
       try {
-        await widget.room.setScreenShareEnabled(false);
+        await widget.room.setScreenShareEnabled(true, sourceId: source);
       } catch (e) {
-        _toast('Could not stop the stream: $e');
+        _toast(defaultTargetPlatform == TargetPlatform.linux
+            ? shareUnsupported
+            : 'Could not start the stream: $e');
+        if (mounted) setState(() => _sharing = false);
       }
-      return;
+    } finally {
+      _shareBusy = false;
     }
-    final source = await showSharePicker(context, widget.shareSources);
-    if (source == null || !mounted || _call == null) return;
+  }
+
+  Future<void> _stopShare() async {
     setState(() {
-      _sharing = true;
-      _shareSource = source;
+      _sharing = false;
+      _shareSource = null;
     });
     try {
-      await widget.room.setScreenShareEnabled(true, sourceId: source);
+      await widget.room.setScreenShareEnabled(false);
     } catch (e) {
-      _toast(defaultTargetPlatform == TargetPlatform.linux
-          ? shareUnsupported
-          : 'Could not start the stream: $e');
-      if (mounted) setState(() => _sharing = false);
+      _toast('Could not stop the stream: $e');
     }
   }
 
@@ -550,10 +579,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _onSignal(RoomSignal s) {
     // One line per signal for the automated multi-machine check; samples are too chatty.
     if (s is! RoomStats && s is! RoomVideoRx) debugPrint('hubbub: ${_describe(s)}');
+    if (s is ShareEnded && _sharing) unawaited(_stopShare());
     if (s is RoomVideoRx) {
       // Every sample (every 2 s while a stream is watched) goes to the journal.
       debugPrint('hubbub: ${formatVideoRx(s.sample)}');
-      if (mounted) setState(() => _rx = s.sample);
+      final from = s.sample.participantId;
+      if (mounted && from != null) setState(() => _rx[from] = s.sample);
     }
     if (s is! RoomDisconnected || _rejoining) return;
     final call = _call;
@@ -570,6 +601,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         RoomDisconnected() => 'disconnected',
         FirstRemoteAudio() => 'firstRemoteAudio',
         RoomStats() => 'stats',
+        ShareEnded() => 'shareEnded',
         RoomVideoRx() => 'videoRx',
       };
 
@@ -866,7 +898,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onFullscreen: _openFullscreen,
           showStats: _showStats,
           onToggleStats: () => setState(() => _showStats = !_showStats),
-          rx: _rx,
+          rx: _focus?.startsWith('stream:') ?? false ? _rx[_focus!.substring(7)] : null,
         ),
       );
     }
@@ -951,12 +983,47 @@ class _Call {
   final int term;
 }
 
-/// A stream (or camera) filling the window; Esc or the button goes back.
-class _FullscreenStream extends StatelessWidget {
-  const _FullscreenStream({required this.feed, required this.mirror});
+/// A stream (or camera) filling the window; Esc or the button goes back, and so does the
+/// picture ending.
+class _FullscreenStream extends StatefulWidget {
+  const _FullscreenStream({
+    required this.feed,
+    required this.mirror,
+    required this.updates,
+    required this.current,
+  });
 
   final VideoFeed feed;
   final bool mirror;
+  final Stream<List<RoomParticipant>> updates;
+  final VideoFeed? Function(List<RoomParticipant>) current;
+
+  @override
+  State<_FullscreenStream> createState() => _FullscreenStreamState();
+}
+
+class _FullscreenStreamState extends State<_FullscreenStream> {
+  late VideoFeed _feed = widget.feed;
+  StreamSubscription<List<RoomParticipant>>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = widget.updates.listen((people) {
+      final f = widget.current(people);
+      if (f == null) {
+        if (mounted) Navigator.of(context).maybePop();
+      } else if (mounted) {
+        setState(() => _feed = f);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => CallbackShortcuts(
@@ -967,7 +1034,7 @@ class _FullscreenStream extends StatelessWidget {
             key: const ValueKey('fullscreen'),
             color: Colors.black,
             child: Stack(children: [
-              Positioned.fill(child: VideoView(feed: feed, contain: true, mirror: mirror)),
+              Positioned.fill(child: VideoView(feed: _feed, contain: true, mirror: widget.mirror)),
               Positioned(
                 top: 12,
                 right: 12,

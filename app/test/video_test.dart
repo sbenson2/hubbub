@@ -405,4 +405,65 @@ void main() {
       expect(lines, contains('hubbub: video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400'));
     });
   });
+
+  group('fix round 1', () {
+    const stream = VideoFeed('TR_s');
+
+    testWidgets('a_share_ended_by_the_capture_runs_the_stop_streaming_path', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Screen 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Go Live'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+      room.calls.clear();
+
+      room.emitSignal(RoomSignal.shareEnded);
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:false']);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('the_overlay_shows_the_focused_stream_not_the_latest_sample', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoRx(
+          VideoRxSample(participantId: 'bbbb', width: 1920, height: 1080, framesPerSecond: 60, kbps: 5000)));
+      room.emitSignal(const RoomVideoRx(
+          VideoRxSample(participantId: 'cccc', width: 640, height: 360, framesPerSecond: 15, kbps: 500)));
+      await tester.pumpAndSettle();
+      expect(find.text('1920x1080'), findsOneWidget);
+      expect(find.text('640x360'), findsNothing);
+    });
+
+    testWidgets('a_watch_that_is_dropped_clears_its_stats', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoRx(
+          VideoRxSample(participantId: 'bbbb', width: 1920, height: 1080, framesPerSecond: 60, kbps: 5000)));
+      callWith(tester); // the stream ends
+      await tester.pumpAndSettle();
+      callWith(tester, bobShare: const VideoFeed('TR_s2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.text('1920x1080'), findsNothing);
+      expect(find.text('Waiting for video…'), findsOneWidget);
+    });
+  });
 }

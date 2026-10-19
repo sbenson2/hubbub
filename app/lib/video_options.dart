@@ -38,15 +38,16 @@ ScreenShareCaptureOptions screenCaptureOptionsFor(String? sourceId) => ScreenSha
 
 /// Screen share publishing: the 1080p60 layer plus 720p30 and 360p15 for viewers who cannot
 /// take it. The resolution is kept when bandwidth drops (text must stay readable), so it is
-/// the frame rate that gives way. AV1 is preferred with an H.264 backup for viewers that
-/// cannot decode it; without AV1 on this machine the share is plain H.264.
-VideoPublishOptions screenPublishOptionsFor({required bool av1}) => VideoPublishOptions(
+/// the frame rate that gives way. H.264 only and no backup codec: calls are end-to-end
+/// encrypted and the frame cryptor skips AV1 (and the backup codec's sender gets none), which
+/// would send the picture to the SFU in the clear. AV1 also forces SVC, which drops the layers.
+VideoPublishOptions screenPublishOptionsFor() => const VideoPublishOptions(
       name: VideoPublishOptions.defaultScreenShareName,
-      videoCodec: av1 ? 'av1' : 'h264',
-      backupVideoCodec: av1 ? const BackupVideoCodec(codec: 'h264') : const BackupVideoCodec(enabled: false),
-      screenShareEncoding: const VideoEncoding(maxFramerate: 60, maxBitrate: 6000000),
+      videoCodec: 'h264',
+      backupVideoCodec: BackupVideoCodec(enabled: false),
+      screenShareEncoding: VideoEncoding(maxFramerate: 60, maxBitrate: 6000000),
       simulcast: true,
-      screenShareSimulcastLayers: const [
+      screenShareSimulcastLayers: [
         VideoParameters(
           dimensions: VideoDimensions(1280, 720),
           encoding: VideoEncoding(maxFramerate: 30, maxBitrate: 2500000),
@@ -59,5 +60,6 @@ VideoPublishOptions screenPublishOptionsFor({required bool av1}) => VideoPublish
       degradationPreference: DegradationPreference.maintainResolution,
     );
 
-/// Whether the platform's video sender lists AV1 (mime types from `getRtpSenderCapabilities`).
-bool canSendAv1(Iterable<String> mimeTypes) => mimeTypes.any((m) => m.toLowerCase() == 'video/av1');
+/// Codecs for which livekit_client 2.13.1 sets up no frame cryptor, on the sender
+/// (`e2ee_manager.dart:51-54`) or the receiver (`:88-90`): published, they go unencrypted.
+const frameCryptorSkipsCodecs = <String>{'av1'};

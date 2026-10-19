@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
 
 import 'capture_options.dart';
+import 'publish_guard.dart';
 import 'video_options.dart';
 
 /// Connection quality sample taken from the WebRTC stats.
@@ -39,10 +40,16 @@ sealed class RoomSignal {
   const RoomSignal();
   static const disconnected = RoomDisconnected();
   static const firstRemoteAudio = FirstRemoteAudio();
+  static const shareEnded = ShareEnded();
 }
 
 class RoomDisconnected extends RoomSignal {
   const RoomDisconnected();
+}
+
+/// The captured screen or window went away (its window closed): the share is over.
+class ShareEnded extends RoomSignal {
+  const ShareEnded();
 }
 
 class FirstRemoteAudio extends RoomSignal {
@@ -413,8 +420,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     if (source == TrackSource.screenShareVideo) return;
     if (source == TrackSource.screenShareAudio) {
       // Joins a stream that is already being watched.
-      final watched = pub.participant.getTrackPublicationBySource(TrackSource.screenShareVideo)?.subscribed ?? false;
-      if (watched) unawaited(pub.subscribe());
+      if (_watchedShares.contains(pub.participant.identity)) unawaited(pub.subscribe());
       return;
     }
     if (pub.kind == TrackType.AUDIO || source == TrackSource.camera) unawaited(pub.subscribe());
@@ -439,6 +445,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _statsTimer = null;
     await _listener?.dispose();
     _listener = null;
+    _watchedShares.clear();
     final room = _room;
     _room = null;
     if (room != null) {
@@ -488,7 +495,12 @@ class LiveKitRoomAdapter implements RoomAdapter {
     if (!on) return;
     final device = await _resolve(_cameraId, 'videoinput');
     final track = await LocalVideoTrack.createCameraTrack(cameraCaptureOptionsFor(device?.deviceId));
-    await local.publishVideoTrack(track, publishOptions: cameraPublishOptions);
+    await publishAllOrNone([
+      PublishStep(
+        publish: () async => (await local.publishVideoTrack(track, publishOptions: cameraPublishOptions)).sid,
+        stop: track.stop,
+      ),
+    ], unpublish: local.removePublishedTrack);
   }
 
   @override
@@ -510,23 +522,25 @@ class LiveKitRoomAdapter implements RoomAdapter {
       debugPrint('hubbub: screen capture with audio failed ($e), trying video only');
       tracks = [await LocalVideoTrack.createScreenShareTrack(capture)];
     }
-    final publish = screenPublishOptionsFor(av1: await _canSendAv1());
-    for (final t in tracks) {
-      if (t is LocalVideoTrack) {
-        await local.publishVideoTrack(t, publishOptions: publish);
-      } else if (t is LocalAudioTrack) {
-        await local.publishAudioTrack(t);
-      }
-    }
-  }
-
-  Future<bool> _canSendAv1() async {
-    try {
-      final caps = await rtc.getRtpSenderCapabilities('video');
-      return canSendAv1([for (final c in caps.codecs ?? const <rtc.RTCRtpCodecCapability>[]) c.mimeType]);
-    } catch (e) {
-      debugPrint('hubbub: codec capabilities unavailable: $e');
-      return false;
+    final publish = screenPublishOptionsFor();
+    await publishAllOrNone([
+      for (final t in tracks)
+        PublishStep(
+          publish: () async => t is LocalVideoTrack
+              ? (await local.publishVideoTrack(t, publishOptions: publish)).sid
+              : (await local.publishAudioTrack(t as LocalAudioTrack)).sid,
+          stop: t.stop,
+        ),
+    ], unpublish: local.removePublishedTrack);
+    // Closing the shared window ends the capture track: tell the UI the share is over.
+    // (`onEnded` is a single callback; LiveKit's own is kept and called first.)
+    for (final t in tracks.whereType<LocalVideoTrack>()) {
+      final mst = t.mediaStreamTrack;
+      final theirs = mst.onEnded;
+      mst.onEnded = () {
+        theirs?.call();
+        _signals.add(RoomSignal.shareEnded);
+      };
     }
   }
 
@@ -534,13 +548,22 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Future<void> subscribeVideo(String participantId, String trackSid, bool on) async {
     final p = _room?.remoteParticipants[participantId];
     final pub = p?.trackPublications[trackSid];
-    if (pub == null) return;
+    if (p == null || pub == null) return;
+    // A share's sound goes with its picture: same click, and it follows a late-arriving track.
+    final isShare = pub.source == TrackSource.screenShareVideo;
+    if (isShare) on ? _watchedShares.add(participantId) : _watchedShares.remove(participantId);
+    final audio = isShare ? p.getTrackPublicationBySource(TrackSource.screenShareAudio) : null;
     if (on) {
       await pub.subscribe();
+      await audio?.subscribe();
     } else {
       await pub.unsubscribe();
+      await audio?.unsubscribe();
     }
   }
+
+  /// Participants whose share the UI is watching (their share audio is subscribed too).
+  final _watchedShares = <String>{};
 
   @override
   Future<void> setVideoQuality(String participantId, String trackSid, {required bool high}) async {
@@ -605,7 +628,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     try {
       double? jitter;
       int? lost;
-      VideoRxSample? video;
+      final videos = <VideoRxSample>[];
       final live = <String>{};
       for (final p in room.remoteParticipants.values) {
         for (final pub in p.audioTrackPublications) {
@@ -636,18 +659,20 @@ class LiveKitRoomAdapter implements RoomAdapter {
             }
             _rxPrev[share.sid] = (bytes, now);
           }
-          video ??= VideoRxSample(
+          videos.add(VideoRxSample(
             participantId: p.identity,
             width: st.frameWidth?.toInt(),
             height: st.frameHeight?.toInt(),
             framesPerSecond: st.framesPerSecond?.toDouble(),
             kbps: kbps,
-          );
+          ));
         }
       }
       _rxPrev.removeWhere((sid, _) => !live.contains(sid));
       _signals.add(RoomStats(StatsSample(audioJitterMs: jitter, audioPacketsLost: lost)));
-      if (video != null) _signals.add(RoomVideoRx(video));
+      for (final v in videos) {
+        _signals.add(RoomVideoRx(v));
+      }
     } catch (e) {
       debugPrint('stats sample failed: $e');
     }
