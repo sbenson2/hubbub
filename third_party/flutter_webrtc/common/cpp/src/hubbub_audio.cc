@@ -59,6 +59,7 @@ RationalResampler::RationalResampler(int in_rate, int out_rate) {
 }
 
 void RationalResampler::Prime() {
+  if (buf_.capacity() < 16384) buf_.reserve(16384);
   buf_.assign(half_, 0.f);
   start_ = 0;
   total_ = half_;
@@ -106,18 +107,10 @@ void CapturePipeline::Initialize(int sample_rate, int channels) {
   window_pos_ = 0;
   pre_peak_ = post_peak_ = 0;
   blocks_ = clipped_blocks_ = 0;
-  applied_gain_ = gain_.load();
-  ResetDenoise();
-  denoise_active_ = false;
-}
-
-void CapturePipeline::ResetDenoise() {
-  if (st_) rnnoise_destroy(st_);
-  st_ = rnnoise_create(nullptr);
-  chunker_.Clear();
-  fifo_.clear();
-  speech_sum_ = 0;
-  speech_n_ = 0;
+  applied_gain_ = s_->gain.load();
+  // Allocate everything RNNoise needs now, so that switching it on or off in
+  // Process does not allocate.
+  if (!st_) st_ = rnnoise_create(nullptr);
   if (rate_ != kRnnoiseRate) {
     up_ = std::make_unique<RationalResampler>(rate_, kRnnoiseRate);
     down_ = std::make_unique<RationalResampler>(kRnnoiseRate, rate_);
@@ -125,12 +118,33 @@ void CapturePipeline::ResetDenoise() {
     up_.reset();
     down_.reset();
   }
+  constexpr size_t kReserve = 8192;
+  scratch_.reserve(kReserve);
+  out48_.reserve(kReserve);
+  wet_.reserve(kReserve);
+  fifo_.reserve(kReserve);
+  chunker_.Reserve(kReserve);
+  ResetDenoise();
+  denoise_active_ = false;
+  mix_ = 0.f;
 }
 
-// Runs RNNoise on |samples| in place. Output is delayed by the resampler's
-// group delay (about 1 ms at 16/32 kHz); when too little is ready yet (the
-// first block) the front of the block is zero filled.
-void CapturePipeline::RunDenoise(float* samples, size_t n) {
+// Allocation free: re-initialises the existing state and resampler history.
+void CapturePipeline::ResetDenoise() {
+  if (st_) rnnoise_init(st_, nullptr);
+  chunker_.Clear();
+  fifo_.clear();
+  speech_sum_ = 0;
+  speech_n_ = 0;
+  if (up_) up_->Reset();
+  if (down_) down_->Reset();
+}
+
+// Runs RNNoise on |samples| in place. The output is delayed by the resampler
+// group delay plus one RNNoise frame (10 ms, see HUBBUB_PATCHES.md). When too
+// little is ready yet (the first blocks) the front of the block is zero filled
+// and that count is returned.
+size_t CapturePipeline::RunDenoise(float* samples, size_t n) {
   const float* in48 = samples;
   size_t n48 = n;
   if (up_) {
@@ -157,6 +171,7 @@ void CapturePipeline::RunDenoise(float* samples, size_t n) {
   std::fill(samples, samples + pad, 0.f);
   std::copy(fifo_.begin(), fifo_.begin() + have, samples + pad);
   fifo_.erase(fifo_.begin(), fifo_.begin() + have);
+  return pad;
 }
 
 void CapturePipeline::Process(float* x, size_t n) {
@@ -164,21 +179,41 @@ void CapturePipeline::Process(float* x, size_t n) {
   float pre = 0;
   for (size_t i = 0; i < n; ++i) pre = std::max(pre, std::fabs(x[i]));
 
-  bool want = rnnoise_.load();
+  // RNNoise on or off. Both directions cross-fade over one block, and the
+  // first blocks after switching on stay dry until RNNoise has real output, so
+  // toggling neither clicks nor drops audio.
+  bool want = s_->rnnoise.load(std::memory_order_relaxed);
   if (want && !denoise_active_) {
     ResetDenoise();
     denoise_active_ = true;
-  } else if (!want && denoise_active_) {
+    mix_ = 0.f;
+  } else if (!want && denoise_active_ && mix_ == 0.f) {
     denoise_active_ = false;
-    fifo_.clear();
   }
-  if (denoise_active_) RunDenoise(x, n);
+  if (denoise_active_) {
+    wet_.assign(x, x + n);
+    size_t pad = RunDenoise(wet_.data(), n);
+    float target = want ? 1.f : 0.f;
+    if (want && mix_ == 0.f && pad > 0) {
+      // not primed yet: x stays dry
+    } else if (mix_ == target) {
+      if (mix_ == 1.f) std::copy(wet_.begin(), wet_.end(), x);
+    } else {
+      float step = (target - mix_) / (float)n;
+      float m = mix_;
+      for (size_t i = 0; i < n; ++i) {
+        m += step;
+        x[i] = x[i] * (1.f - m) + wet_[i] * m;
+      }
+      mix_ = target;
+      if (!want) denoise_active_ = false;
+    }
+  }
 
-  float target = gain_.load();
-  if (target == 1.f && applied_gain_ == 1.f) {
-    for (size_t i = 0; i < n; ++i)
-      x[i] = std::max(-kFullScale, std::min(kMaxOut, x[i]));
-  } else {
+  // Input gain with the soft limiter, always (the limiter is the identity below
+  // its knee), ramped across the block when the gain moved.
+  float target = s_->gain.load(std::memory_order_relaxed);
+  {
     float g = applied_gain_;
     float step = (target - applied_gain_) / (float)std::max<size_t>(1, n);
     for (size_t i = 0; i < n; ++i) {
@@ -198,13 +233,14 @@ void CapturePipeline::Process(float* x, size_t n) {
   window_pos_ += n;
   if (window_pos_ >= window_len_) {
     window_pos_ -= window_len_;
-    if (cb_) {
+    if (cb_ || slot_) {
       Levels l;
       l.pre = std::min(1.f, pre_peak_ / kFullScale);
       l.post = std::min(1.f, post_peak_ / kFullScale);
       l.clip = blocks_ > 0 ? (float)clipped_blocks_ / (float)blocks_ : 0.f;
       l.speech = (denoise_active_ && speech_n_ > 0) ? speech_sum_ / speech_n_ : -1.f;
-      cb_(l);
+      if (slot_) slot_->Store(l);
+      if (cb_) cb_(l);
     }
     pre_peak_ = post_peak_ = 0;
     blocks_ = clipped_blocks_ = 0;

@@ -1,10 +1,32 @@
 // Hubbub patch: libwebrtc adapter for the capture pipeline. Registered with
 // RTCAudioProcessing::SetCapturePostProcessing; runs after AEC/NS/AGC.
+//
+// Threads: libwebrtc calls Initialize/Process/Reset/Release from its capture
+// thread. The setters and getters are called from the platform thread. They
+// only touch atomics (settings_, the counters, levels_); pipes_ belongs to the
+// audio thread alone.
+//
+// Buffer layout, as measured with hubbub_test/apm_probe against the prebuilt
+// libwebrtc m150 (see HUBBUB_PATCHES.md):
+//   Windows  Initialize(16000, 1); Process(bands=1, frames=160, size=160).
+//   Linux    Initialize(48000, 1); Process(bands=3, frames=480, size=480).
+// |num_frames| is the full-band 10 ms frame count (rate / 100) even when
+// |num_bands| is 3, and the buffer then holds the merged full-band signal (a
+// 10 kHz test tone arrives intact), so a block is processed as full band
+// whatever |num_bands| says. Several channels are taken from Initialize and
+// assumed to follow one another (planar, |num_frames| apart). A block that
+// does not look like that is passed through untouched, counted in skipped()
+// and logged (first one per Initialize); it is never skipped silently.
 #ifndef HUBBUB_CAPTURE_PROCESSOR_H_
 #define HUBBUB_CAPTURE_PROCESSOR_H_
 
 #include <atomic>
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <memory>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "hubbub_audio.h"
@@ -12,72 +34,170 @@
 
 namespace hubbub {
 
+// One line on stderr, for the owner's live run. (The same facts also reach the
+// app through the levels event, see flutter_webrtc_base.cc.)
+inline std::atomic<bool>& LogEnabled() {
+  static std::atomic<bool> on{true};  // tests switch it off for loops
+  return on;
+}
+inline void LogLine(const char* fmt, ...) {
+  if (!LogEnabled().load()) return;
+  char line[320];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(line, sizeof line, fmt, ap);
+  va_end(ap);
+  std::fprintf(stderr, "hubbub: %s\n", line);
+  std::fflush(stderr);
+}
+
 class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing {
  public:
-  using LevelsCallback = CapturePipeline::LevelsCallback;
+  enum SkipReason {
+    kNotSkipped = 0,
+    kNoPipelines,    // before Initialize or after Release
+    kBadFrames,      // num_frames is not the full-band frame count
+    kSplitBands,     // num_frames * num_bands is the full-band count: bands apart
+    kBadArguments,   // null buffer or non-positive frames
+  };
 
-  void SetRnnoiseEnabled(bool on) {
-    rnnoise_ = on;
-    for (auto& p : pipes_) p->SetRnnoiseEnabled(on);
+  ~CaptureProcessor() override { Shutdown(); }
+
+  // Settings: any thread, atomics only.
+  void SetRnnoiseEnabled(bool on) { settings_.rnnoise.store(on); }
+  // False (and no change) for NaN and infinity.
+  bool SetGain(float g) { return settings_.SetGain(g); }
+  bool rnnoise() const { return settings_.rnnoise.load(); }
+  float gain() const { return settings_.gain.load(); }
+
+  // Latest levels, written by the audio thread, polled by the publisher.
+  const LevelsSlot& levels() const { return levels_; }
+
+  // Status, for hubbubGetStatus and the levels event.
+  int rate() const { return rate_.load(); }
+  int channels() const { return channels_.load(); }
+  long calls() const { return calls_.load(); }
+  long processed() const { return processed_.load(); }
+  long skipped() const { return skipped_.load(); }
+  int last_bands() const { return bands_.load(); }
+  int last_frames() const { return frames_.load(); }
+  int last_size() const { return size_.load(); }
+  int last_skip_reason() const { return skip_reason_.load(); }
+  // Counts of Initialize calls, so a publisher can tell the layout changed.
+  int inits() const { return inits_.load(); }
+  std::string Layout() const {
+    char b[128];
+    std::snprintf(b, sizeof b, "rate=%d ch=%d bands=%d frames=%d size=%d", rate(),
+                  channels(), last_bands(), last_frames(), last_size());
+    return b;
   }
-  void SetGain(float g) {
-    gain_ = g;
-    for (auto& p : pipes_) p->SetGain(g);
+  static const char* SkipName(int r) {
+    switch (r) {
+      case kNoPipelines: return "no pipelines";
+      case kBadFrames: return "unexpected frame count";
+      case kSplitBands: return "split bands";
+      case kBadArguments: return "bad arguments";
+      default: return "none";
+    }
   }
-  void SetLevelsCallback(LevelsCallback cb) { cb_ = std::move(cb); }
 
-  int rate() const { return rate_; }
-  int channels() const { return channels_; }
-  long calls() const { return calls_; }
-  int last_bands() const { return bands_; }
-  int last_frames() const { return frames_; }
-  bool rnnoise() const { return rnnoise_; }
-  float gain() const { return gain_; }
+  // After this returns Process does nothing and no call is still inside, so
+  // the object can be destroyed even if the library does not wait for an
+  // in-flight Process when it is unregistered. Call before unregistering.
+  void Shutdown() {
+    shutdown_.store(true);
+    for (int i = 0; i < 1000 && busy_.load() > 0; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
 
-  // CustomProcessing. The APM calls Initialize and Process from its capture
-  // thread; the setters above may race with it, which is why the pipeline
-  // keeps its settings in atomics.
+  // CustomProcessing (audio thread).
   void Initialize(int sample_rate_hz, int num_channels) override {
-    rate_ = sample_rate_hz;
-    channels_ = num_channels < 1 ? 1 : num_channels;
+    if (shutdown_.load()) return;
+    Busy busy(busy_);
+    if (shutdown_.load()) return;
+    int rate = sample_rate_hz > 0 ? sample_rate_hz : 48000;
+    int ch = num_channels < 1 ? 1 : num_channels;
+    rate_.store(rate);
+    channels_.store(ch);
+    inits_.fetch_add(1);
+    logged_skip_ = false;
+    logged_mismatch_ = false;
+    LogLine("apm init rate=%d ch=%d", sample_rate_hz, num_channels);
     pipes_.clear();
-    for (int c = 0; c < channels_; ++c) {
+    for (int c = 0; c < ch; ++c) {
       auto p = std::make_unique<CapturePipeline>();
-      p->Initialize(sample_rate_hz, 1);
-      p->SetRnnoiseEnabled(rnnoise_);
-      p->SetGain(gain_);
+      p->UseSettings(&settings_);
+      p->Initialize(rate, 1);
       // only channel 0 publishes the meter
-      if (c == 0) p->SetLevelsCallback(cb_);
+      if (c == 0) p->UseLevelsSlot(&levels_);
       pipes_.push_back(std::move(p));
     }
   }
+
   void Process(int num_bands, int num_frames, int buffer_size,
                float* buffer) override {
-    ++calls_;
-    bands_ = num_bands;
-    frames_ = num_frames;
-    if (pipes_.empty() || num_bands != 1 || num_frames <= 0) return;
-    // Mono is the layout seen on Windows (frames == buffer_size). Several
-    // channels are assumed to be stored one after another (planar).
-    int ch = buffer_size / num_frames;
-    if (ch < 1) return;
-    if (ch > (int)pipes_.size()) ch = (int)pipes_.size();
+    Busy busy(busy_);
+    if (shutdown_.load()) return;
+    calls_.fetch_add(1, std::memory_order_relaxed);
+    bands_.store(num_bands, std::memory_order_relaxed);
+    frames_.store(num_frames, std::memory_order_relaxed);
+    size_.store(buffer_size, std::memory_order_relaxed);
+    if (!buffer || num_frames <= 0) return Skip(kBadArguments, num_bands, num_frames, buffer_size);
+    if (pipes_.empty()) return Skip(kNoPipelines, num_bands, num_frames, buffer_size);
+    const int full = rate_.load(std::memory_order_relaxed) / 100;
+    if (num_frames != full) {
+      // bands stored apart cannot be handled through one pointer
+      return Skip(num_bands > 1 && num_frames * num_bands == full ? kSplitBands
+                                                                   : kBadFrames,
+                  num_bands, num_frames, buffer_size);
+    }
+    // The channel count is Initialize's. If buffer_size says otherwise, say so
+    // once, and still follow Initialize.
+    const int ch = (int)pipes_.size();
+    if (buffer_size < ch * num_frames && !logged_mismatch_) {
+      logged_mismatch_ = true;
+      LogLine("apm layout: buffer_size=%d holds fewer than ch=%d x frames=%d; using Initialize's channel count",
+              buffer_size, ch, num_frames);
+    }
     for (int c = 0; c < ch; ++c)
-      pipes_[c]->Process(buffer + (size_t)c * num_frames, num_frames);
+      pipes_[c]->Process(buffer + (size_t)c * num_frames, (size_t)num_frames);
+    processed_.fetch_add(1, std::memory_order_relaxed);
   }
+
   void Reset(int new_rate) override {
-    if (new_rate != rate_) Initialize(new_rate, channels_);
+    if (new_rate != rate_.load()) Initialize(new_rate, channels_.load());
   }
-  void Release() override { pipes_.clear(); }
+  void Release() override {
+    Busy busy(busy_);
+    pipes_.clear();
+  }
 
  private:
-  std::vector<std::unique_ptr<CapturePipeline>> pipes_;
-  LevelsCallback cb_;
-  std::atomic<bool> rnnoise_{false};
-  std::atomic<float> gain_{1.f};
-  int rate_ = 0, channels_ = 1;
-  std::atomic<long> calls_{0};
-  std::atomic<int> bands_{0}, frames_{0};
+  struct Busy {
+    explicit Busy(std::atomic<int>& b) : b_(b) { b_.fetch_add(1); }
+    ~Busy() { b_.fetch_sub(1); }
+    std::atomic<int>& b_;
+  };
+
+  void Skip(SkipReason why, int bands, int frames, int size) {
+    skipped_.fetch_add(1, std::memory_order_relaxed);
+    skip_reason_.store(why, std::memory_order_relaxed);
+    if (!logged_skip_) {
+      logged_skip_ = true;
+      LogLine("apm skipping blocks (%s): rate=%d ch=%d bands=%d frames=%d size=%d", SkipName(why),
+              rate_.load(), channels_.load(), bands, frames, size);
+    }
+  }
+
+  CaptureSettings settings_;
+  LevelsSlot levels_;
+  std::vector<std::unique_ptr<CapturePipeline>> pipes_;  // audio thread only
+  bool logged_skip_ = false, logged_mismatch_ = false;   // audio thread only
+  std::atomic<bool> shutdown_{false};
+  std::atomic<int> busy_{0};
+  std::atomic<int> rate_{0}, channels_{1};
+  std::atomic<int> bands_{0}, frames_{0}, size_{0}, skip_reason_{0}, inits_{0};
+  std::atomic<long> calls_{0}, processed_{0}, skipped_{0};
 };
 
 }  // namespace hubbub

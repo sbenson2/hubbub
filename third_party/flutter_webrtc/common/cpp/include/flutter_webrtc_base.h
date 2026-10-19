@@ -4,10 +4,12 @@
 #include "flutter_common.h"
 
 #include <string.h>
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
 
 #include "libwebrtc.h"
 
@@ -130,6 +132,15 @@ class FlutterWebRTCBase {
   scoped_refptr<RTCAudioProcessing> audio_processing_;
   // Hubbub patch: registered with audio_processing_ as capture post-processor.
   std::unique_ptr<hubbub::CaptureProcessor> hubbub_processor_;
+  // Hubbub patch: polls the processor's lock-free levels slot about 20 times a
+  // second and has the platform thread publish them on the event channel, so
+  // the audio thread never builds a map or calls the channel.
+  std::thread hubbub_publisher_;
+  std::atomic<bool> hubbub_stop_{false};
+  // Tasks queued on the platform thread check this before touching |this|.
+  std::shared_ptr<std::atomic<bool>> hubbub_alive_ =
+      std::make_shared<std::atomic<bool>>(true);
+  void HubbubPublishLoop();
   RTCConfiguration configuration_;
 
   std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cmath>
+#include <memory>
 #include <thread>
 #include <vector>
 #include <string>
@@ -44,9 +45,20 @@ class Sink : public AudioTrackSink {
 
 std::atomic<int> g_zero{0};
 
+// Amplitude (in the buffer's own units) of a pure tone at |hz| in |n| samples
+// at |rate|, by a Goertzel filter.
+double ToneAmp(const float* x, int n, int rate, double hz) {
+  double w = 2.0 * 3.14159265358979 * hz / rate, c = 2.0 * std::cos(w), s1 = 0, s2 = 0;
+  for (int i = 0; i < n; ++i) { double s0 = x[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+  double re = s1 - s2 * std::cos(w), im = s2 * std::sin(w);
+  return 2.0 * std::sqrt(re * re + im * im) / n;
+}
+
 class Probe : public RTCAudioProcessing::CustomProcessing {
  public:
+  int rate_ = 0, ch_ = 0;
   void Initialize(int rate, int ch) override {
+    rate_ = rate; ch_ = ch;
     std::printf("hubbub: probe Initialize rate=%d channels=%d\n", rate, ch);
   }
   void Process(int bands, int frames, int size, float* buf) override {
@@ -54,8 +66,15 @@ class Probe : public RTCAudioProcessing::CustomProcessing {
     if (n <= 3 || n % 100 == 0) {
       float peak = 0;
       for (int i = 0; i < size; ++i) peak = std::fmax(peak, std::fabs(buf[i]));
-      std::printf("hubbub: probe Process #%ld bands=%d frames=%d size=%d peak=%g\n",
-                  n, bands, frames, size, peak);
+      std::printf("hubbub: probe Process #%ld bands=%d frames=%d size=%d peak=%g rate=%d ch=%d\n",
+                  n, bands, frames, size, peak, rate_, ch_);
+      if (rate_ >= 32000 && frames > 0)
+        std::printf("hubbub: probe   tone amplitude in ch0 (first %d samples): 1kHz=%.0f 10kHz=%.0f%s\n", frames,
+                    ToneAmp(buf, frames, rate_, 1000), ToneAmp(buf, frames, rate_, 10000),
+                    size >= 2 * frames ? "" : " (buffer holds one channel)");
+      if (size >= 2 * frames && frames > 0)
+        std::printf("hubbub: probe   second channel at buf+frames: 1kHz=%.0f 10kHz=%.0f\n",
+                    ToneAmp(buf + frames, frames, rate_, 1000), ToneAmp(buf + frames, frames, rate_, 10000));
     }
     if (g_zero.load())
       for (int i = 0; i < size; ++i) buf[i] = 0.f;
@@ -117,30 +136,42 @@ int main(int argc, char** argv) {
   auto adev = factory->GetAudioDevice();
   std::printf("hubbub: probe recording devices=%d playout devices=%d\n",
               (int)adev->RecordingDevices(), (int)adev->PlayoutDevices());
+  for (int i = 0; i < adev->RecordingDevices(); ++i) {
+    char nm[256] = {0}, gid[256] = {0};
+    adev->RecordingDeviceName((uint16_t)i, nm, gid);
+    std::printf("hubbub: probe recording device %d: %s\n", i, nm);
+  }
   auto apm = factory->GetAudioProcessing();
   Probe probe;
   hubbub::CaptureProcessor real;
   bool use_real = argc > 1 && std::string(argv[1]) == "real";
+  // "teardown": swap in a new processor while capture runs, make the old one
+  // inert (Shutdown) and destroy it, five times in a row.
+  bool teardown = argc > 1 && std::string(argv[1]) == "teardown";
+  bool nullcall = argc > 1 && std::string(argv[1]) == "unregister-null";
+  std::unique_ptr<hubbub::CaptureProcessor> td;
+  long td_calls = 0;
+  int td_cycles = 0;
   if (use_real) {
     real.SetRnnoiseEnabled(true);
     real.SetGain(1.5f);
-    real.SetLevelsCallback([](const hubbub::Levels& l) {
-      static int n = 0;
-      if (++n % 20 == 1)
-        std::printf("hubbub: probe levels pre=%.3f post=%.3f speech=%.2f\n", l.pre, l.post, l.speech);
-    });
     apm->SetCapturePostProcessing(&real);
+  } else if (teardown) {
+    td = std::make_unique<hubbub::CaptureProcessor>();
+    td->SetRnnoiseEnabled(true);
+    td->SetGain(1.5f);
+    apm->SetCapturePostProcessing(td.get());
   } else {
     apm->SetCapturePostProcessing(&probe);
   }
   std::printf("hubbub: probe registered (zero=%d)\n", (int)zero);
 
   RTCAudioOptions opts;
+  if (std::getenv("PROBE_NOAPM")) { opts.echo_cancellation = false; opts.auto_gain_control = false; opts.noise_suppression = false; }
   auto src = factory->CreateAudioSource("mic", RTCAudioSource::kMicrophone, opts);
   auto track = factory->CreateAudioTrack(src, "audio0");
   Sink sink;
   track->AddSink(&sink);
-
   RTCConfiguration cfg;
   if (argc > 2) { cfg.disable_ipv6 = true; cfg.disable_link_local_networks = true; cfg.candidate_network_policy = CandidateNetworkPolicy::kCandidateNetworkPolicyAll; cfg.ice_servers[0].uri = string("stun:stun.l.google.com:19302"); }
   Obs oa, ob;
@@ -163,8 +194,33 @@ int main(int argc, char** argv) {
   std::vector<string> sids{string("s0")};
   b->AddTrack(ctrack, vector<string>(sids));
   g_track = track;
+  // Creating peer connections resets the recording device to the default one,
+  // so the choice is made right before the offer.
+  if (const char* d = std::getenv("PROBE_DEV")) adev->SetRecordingDevice((uint16_t)std::atoi(d));
+  // PROBE_DEVNAME=hubmic selects the recording device whose name contains it
+  // (the virtual tone source made by pulse_tone.c).
+  if (const char* want = std::getenv("PROBE_DEVNAME")) {
+    for (int i = 0; i < adev->RecordingDevices(); ++i) {
+      char nm[256] = {0}, gid[256] = {0};
+      adev->RecordingDeviceName((uint16_t)i, nm, gid);
+      if (std::string(nm).find(want) != std::string::npos) {
+        std::printf("hubbub: probe selecting recording device %d\n", i);
+        std::printf("hubbub: probe SetRecordingDevice -> %d\n", (int)adev->SetRecordingDevice((uint16_t)i));
+      }
+    }
+  }
+
   b->CreateOffer(
-      [](const string sdp, const string type) {
+      [](const string sdp0, const string type) {
+        string sdp = sdp0;
+        if (std::getenv("PROBE_STEREO")) {
+          // ask the answerer to send stereo Opus: A's encoder (and so the APM) goes to 2 channels
+          std::string t = sdp0.std_string();
+          const std::string key = "useinbandfec=1";
+          size_t at = t.find(key);
+          if (at != std::string::npos) t.insert(at + key.size(), ";stereo=1;sprop-stereo=1");
+          sdp = string(t.c_str());
+        }
         g_b->SetLocalDescription(sdp, type, [] {}, [](const char* e) {
           std::printf("hubbub: probe B setLocal fail %s\n", e);
         });
@@ -174,6 +230,7 @@ int main(int argc, char** argv) {
           g_a->AddTrack(g_track, vector<string>(ids));
           g_a->CreateAnswer(
               [](const string sdp2, const string type2) {
+                if (std::getenv("PROBE_SDP")) std::printf("hubbub: probe answer sdp:\n%s\n", sdp2.c_string());
                 g_a->SetLocalDescription(sdp2, type2, [] { std::printf("hubbub: probe A local set\n"); }, [](const char* e) {
                   std::printf("hubbub: probe A setLocal fail %s\n", e);
                 });
@@ -190,7 +247,34 @@ int main(int argc, char** argv) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (i % 10 == 9)
       std::printf("hubbub: probe t=%.1fs calls=%ld\n", (i + 1) / 10.0,
-                  g_calls.load());
+                  use_real ? real.calls() : teardown ? td_calls + (td ? td->calls() : 0) : g_calls.load());
+    if (use_real && i % 20 == 19) {
+      hubbub::Levels l;
+      real.levels().Load(&l);
+      std::printf("hubbub: probe levels pre=%.3f post=%.3f speech=%.2f clip=%.2f | %s processed=%ld skipped=%ld\n",
+                  l.pre, l.post, l.speech, l.clip, real.Layout().c_str(), real.processed(), real.skipped());
+    }
+    if (nullcall && i == 14) {
+      // Documents a libwebrtc m150 wrapper bug: unregistering with nullptr
+      // crashes (access violation on Windows, SIGSEGV on Linux). The plugin
+      // never does this.
+      std::printf("hubbub: probe SetCapturePostProcessing(nullptr) ...\n");
+      apm->SetCapturePostProcessing(nullptr);
+      std::printf("hubbub: probe SetCapturePostProcessing(nullptr) returned\n");
+    }
+    if (teardown && i % 15 == 14) {
+      // Replace the registered processor while capture runs (Process may be in
+      // flight on the audio thread), then make the old one inert and destroy it.
+      auto next = std::make_unique<hubbub::CaptureProcessor>();
+      next->SetRnnoiseEnabled(true);
+      next->SetGain(1.5f);
+      apm->SetCapturePostProcessing(next.get());
+      td->Shutdown();
+      td_calls += td->calls();
+      std::printf("hubbub: probe teardown cycle %d: old processor calls=%ld processed=%ld skipped=%ld\n", ++td_cycles,
+                  td->calls(), td->processed(), td->skipped());
+      td = std::move(next);  // destroys the old one
+    }
   }
   {
     a->GetStats(
@@ -205,12 +289,17 @@ int main(int argc, char** argv) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
   if (use_real)
-    std::printf("hubbub: probe real processor calls=%ld rate=%d channels=%d bands=%d frames=%d\n", real.calls(), real.rate(), real.channels(), real.last_bands(), real.last_frames());
+    std::printf("hubbub: probe real processor calls=%ld %s processed=%ld skipped=%ld\n", real.calls(), real.Layout().c_str(), real.processed(), real.skipped());
+  if (teardown) {
+    td->Shutdown();
+    td_calls += td->calls();
+    std::printf("hubbub: probe teardown done: %d cycles, %ld calls in all, no crash\n", td_cycles, td_calls);
+  }
   std::printf("hubbub: probe local sink calls=%ld peak=%d\n", g_sink_calls.load(), g_sink_peak.load());
-  std::printf("hubbub: probe RESULT calls=%ld\n", use_real ? real.calls() : g_calls.load());
-  apm->SetCapturePostProcessing(nullptr);
+  std::printf("hubbub: probe RESULT calls=%ld\n", use_real ? real.calls() : teardown ? td_calls : g_calls.load());
+  // (no SetCapturePostProcessing(nullptr) here: it crashes, see "unregister-null")
   a->Close();
   b->Close();
   std::fflush(stdout);
-  std::_Exit((use_real ? real.calls() : g_calls.load()) > 0 ? 0 : 2);
+  std::_Exit((use_real ? real.calls() : teardown ? td_calls : g_calls.load()) > 0 ? 0 : 2);
 }

@@ -72,6 +72,24 @@ void main() {
       expect((got[0].pre, got[0].post, got[0].speech, got[0].clip), (0.5, 1.0, 0.75, 0.2));
       expect((got[1].pre, got[1].post, got[1].speech, got[1].clip), (0.0, 0.0, -1.0, 0.0));
     });
+
+    test('layout_events_decode_to_a_log_line_and_junk_is_dropped', () async {
+      final got = <String>[];
+      final sub = rtc.HubbubAudio.layout.listen(got.add);
+      addTearDown(sub.cancel);
+      for (var i = 0; i < 50 && eventSink == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      final sink = eventSink!;
+      sink.success(<String, Object?>{'event': 'hubbubLevels', 'pre': 0.5});
+      sink.success(<String, Object?>{
+        'event': 'hubbubLayout',
+        'text': 'rate=48000 ch=1 bands=3 frames=480 size=480 processed=10 skipped=0'
+      });
+      sink.success(<String, Object?>{'event': 'hubbubLayout', 'text': 7});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(got, ['rate=48000 ch=1 bands=3 frames=480 size=480 processed=10 skipped=0']);
+    });
   });
 
   group('adapter', () {

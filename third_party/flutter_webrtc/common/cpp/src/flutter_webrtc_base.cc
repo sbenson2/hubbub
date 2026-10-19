@@ -3,10 +3,13 @@
 #include "flutter_data_channel.h"
 #include "flutter_peerconnection.h"
 
+#include <chrono>
+#include <string>
 #include <vector>
 
 #include "helper.h"
 #include "rtc_field_trials.h"
+#include "task_runner.h"
 
 namespace flutter_webrtc_plugin {
 
@@ -41,9 +44,19 @@ FlutterWebRTCBase::FlutterWebRTCBase(BinaryMessenger* messenger,
 }
 
 FlutterWebRTCBase::~FlutterWebRTCBase() {
-  if (audio_processing_ && hubbub_processor_) {
-    // Hubbub patch: unregister before the processor goes away.
-    audio_processing_->SetCapturePostProcessing(nullptr);
+  // Hubbub patch: stop the publisher, then make the processor inert (Shutdown
+  // also waits for a Process call that is still running). It is NOT unregistered:
+  // the prebuilt libwebrtc (m150) crashes in SetCapturePostProcessing(nullptr)
+  // (access violation on Windows, SIGSEGV on Linux; hubbub_test/apm_probe
+  // unregister-null), and it keeps the raw pointer, so the inert processor is
+  // left alive on purpose until the process ends (a few KB plus the RNNoise
+  // state).
+  hubbub_alive_->store(false);
+  hubbub_stop_.store(true);
+  if (hubbub_publisher_.joinable()) hubbub_publisher_.join();
+  if (hubbub_processor_) {
+    hubbub_processor_->Shutdown();
+    (void)hubbub_processor_.release();
   }
   if (webrtc_initialized_) {
     LibWebRTC::Terminate();
@@ -93,24 +106,72 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
   // does RNNoise, input gain with a soft limiter and the peak meter. It starts
   // as a pass-through (no RNNoise, gain 1.0) until Dart configures it.
   hubbub_processor_ = std::make_unique<hubbub::CaptureProcessor>();
-  hubbub_processor_->SetLevelsCallback([this](const hubbub::Levels& l) {
-    EventChannelProxy* channel = event_channel();
-    if (!channel) return;
-    EncodableMap info;
-    info[EncodableValue("event")] = "hubbubLevels";
-    info[EncodableValue("pre")] = (double)l.pre;
-    info[EncodableValue("post")] = (double)l.post;
-    info[EncodableValue("speech")] = (double)l.speech;
-    info[EncodableValue("clip")] = (double)l.clip;
-    channel->Success(EncodableValue(info), false);
-  });
   audio_processing_->SetCapturePostProcessing(hubbub_processor_.get());
+  if (task_runner_) hubbub_publisher_ = std::thread([this] { HubbubPublishLoop(); });
 
   audio_device_->OnDeviceChange([&] {
     EncodableMap info;
     info[EncodableValue("event")] = "onDeviceChange";
     event_channel()->Success(EncodableValue(info), false);
   });
+}
+
+// Hubbub patch. Runs on its own thread: reads the latest levels (a seqlock, no
+// lock shared with the audio thread) and queues the publishing on the platform
+// thread, which is the only thread that may use the event channel proxy.
+void FlutterWebRTCBase::HubbubPublishLoop() {
+  hubbub::CaptureProcessor* proc = hubbub_processor_.get();
+  std::shared_ptr<std::atomic<bool>> alive = hubbub_alive_;
+  uint32_t last_version = 0;
+  std::string last_layout;
+  int last_inits = 0;
+  bool last_skipping = false;
+  int ticks = 0;
+  while (!hubbub_stop_.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (hubbub_stop_.load()) break;
+    hubbub::Levels l;
+    uint32_t version = proc->levels().Load(&l);
+    if (version != 0 && version != last_version) {
+      last_version = version;
+      task_runner_->EnqueueTask([this, alive, l]() {
+        if (!alive->load()) return;
+        EventChannelProxy* channel = event_channel();
+        if (!channel) return;
+        EncodableMap info;
+        info[EncodableValue("event")] = "hubbubLevels";
+        info[EncodableValue("pre")] = (double)l.pre;
+        info[EncodableValue("post")] = (double)l.post;
+        info[EncodableValue("speech")] = (double)l.speech;
+        info[EncodableValue("clip")] = (double)l.clip;
+        channel->Success(EncodableValue(info), false);
+      });
+    }
+    // The layout the processor was given, on change and every 5 s, so that a
+    // late listener still sees it (and sees skipped blocks, which would
+    // otherwise leave no trace when no levels are produced).
+    std::string layout = proc->Layout();
+    bool skipping = proc->skipped() > 0;
+    if (layout != last_layout || proc->inits() != last_inits ||
+        skipping != last_skipping || ++ticks >= 100) {
+      ticks = 0;
+      last_layout = layout;
+      last_inits = proc->inits();
+      last_skipping = skipping;
+      std::string text = layout + " processed=" + std::to_string(proc->processed()) +
+                         " skipped=" + std::to_string(proc->skipped());
+      if (skipping) text += std::string(" (") + hubbub::CaptureProcessor::SkipName(proc->last_skip_reason()) + ")";
+      task_runner_->EnqueueTask([this, alive, text]() {
+        if (!alive->load()) return;
+        EventChannelProxy* channel = event_channel();
+        if (!channel) return;
+        EncodableMap info;
+        info[EncodableValue("event")] = "hubbubLayout";
+        info[EncodableValue("text")] = text;
+        channel->Success(EncodableValue(info), false);
+      });
+    }
+  }
 }
 
 EventChannelProxy* FlutterWebRTCBase::event_channel() {

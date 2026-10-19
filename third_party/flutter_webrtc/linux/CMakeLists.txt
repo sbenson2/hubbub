@@ -59,7 +59,7 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
 )
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter rnnoise)
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter rnnoise pthread)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
 # GCC 14+ (and notably GCC 16) tightened transitive header inclusion, so the

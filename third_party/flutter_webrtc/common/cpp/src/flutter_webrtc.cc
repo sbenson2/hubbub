@@ -1,4 +1,6 @@
 #include "flutter_webrtc.h"
+
+#include <cmath>
 #include "flutter_data_channel.h"
 
 #include "flutter_webrtc/flutter_web_r_t_c_plugin.h"
@@ -559,11 +561,15 @@ void FlutterWebRTC::HandleMethodCall(
     }
     const EncodableMap params = GetValue<EncodableMap>(*args);
     const std::optional<double> gain = maybeFindDouble(params, "gain");
-    if (!gain.has_value() || gain.value() < 0 || gain.value() > 2) {
+    if (!gain.has_value() || !std::isfinite(gain.value()) || gain.value() < 0 ||
+        gain.value() > 2) {
       result->Error("Bad Arguments", "hubbubSetInputGain() gain must be 0..2");
       return;
     }
-    hubbub_processor_->SetGain((float)gain.value());
+    if (!hubbub_processor_->SetGain((float)gain.value())) {
+      result->Error("Bad Arguments", "hubbubSetInputGain() gain must be a finite number");
+      return;
+    }
     result->Success();
   } else if (method_call.method_name().compare("hubbubGetStatus") == 0) {
     // Hubbub patch: what the processor has seen, for the app's log.
@@ -577,6 +583,12 @@ void FlutterWebRTC::HandleMethodCall(
     info[EncodableValue("channels")] = hubbub_processor_->channels();
     info[EncodableValue("bands")] = hubbub_processor_->last_bands();
     info[EncodableValue("frames")] = hubbub_processor_->last_frames();
+    info[EncodableValue("size")] = hubbub_processor_->last_size();
+    info[EncodableValue("processed")] = (int64_t)hubbub_processor_->processed();
+    // blocks passed through untouched because their layout was not understood
+    info[EncodableValue("skipped")] = (int64_t)hubbub_processor_->skipped();
+    info[EncodableValue("skipReason")] =
+        std::string(hubbub::CaptureProcessor::SkipName(hubbub_processor_->last_skip_reason()));
     info[EncodableValue("rnnoise")] = hubbub_processor_->rnnoise();
     info[EncodableValue("gain")] = (double)hubbub_processor_->gain();
     result->Success(EncodableValue(info));

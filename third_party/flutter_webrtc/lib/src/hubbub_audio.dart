@@ -74,6 +74,18 @@ class HubbubAudio {
   static Future<Map<dynamic, dynamic>?> status() =>
       WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>('hubbubGetStatus');
 
+  /// One line describing the audio layout the processor was given (rate, channels, bands,
+  /// frames) and how many blocks it processed or had to skip. Sent when the layout changes and
+  /// every 5 seconds, so the app can log what the real capture path looks like.
+  static Stream<String> get layout => FlutterWebRTCEventChannel.instance.handleEvents.stream
+      .where((e) => e.containsKey('hubbubLayout'))
+      .map((e) {
+        final m = e['hubbubLayout'];
+        return m is Map && m['text'] is String ? m['text'] as String : null;
+      })
+      .where((t) => t != null)
+      .cast<String>();
+
   /// Peak levels while the microphone is capturing.
   static Stream<HubbubLevels> get levels => FlutterWebRTCEventChannel.instance.handleEvents.stream
       .where((e) => e.containsKey('hubbubLevels'))

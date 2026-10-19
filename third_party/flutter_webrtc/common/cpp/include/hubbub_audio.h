@@ -5,7 +5,9 @@
 #define HUBBUB_AUDIO_H_
 
 #include <atomic>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -37,6 +39,7 @@ class FrameRechunker {
   }
   size_t Pending() const { return buf_.size(); }
   void Clear() { buf_.clear(); }
+  void Reserve(size_t n) { buf_.reserve(n); }
 
  private:
   size_t frame_;
@@ -69,9 +72,57 @@ struct Levels {
   float clip = 0;     // fraction of blocks in the window with pre peak >= 0.98
 };
 
+// What the user chose: shared by the pipelines and written by any thread, read
+// by the audio thread once at the start of every block. Plain atomics, so the
+// setters never touch pipeline internals.
+struct CaptureSettings {
+  std::atomic<bool> rnnoise{false};
+  std::atomic<float> gain{1.f};  // factor 0..2
+  // NaN and infinity are refused (false); other values are clamped to 0..2.
+  bool SetGain(float g) {
+    if (!std::isfinite(g)) return false;
+    gain.store(g < 0.f ? 0.f : g > 2.f ? 2.f : g, std::memory_order_relaxed);
+    return true;
+  }
+};
+
+// Latest levels, written by the audio thread (a seqlock with atomic fields, no
+// lock, no allocation) and polled by another thread. One writer.
+class LevelsSlot {
+ public:
+  LevelsSlot() { v_[2].store(-1.f); }
+  // Sequentially consistent operations throughout: a few stores 20 times a
+  // second cost nothing, and it avoids reasoning about fences.
+  void Store(const Levels& l) {
+    uint32_t s = seq_.load();
+    seq_.store(s + 1);  // odd: write in progress
+    v_[0].store(l.pre);
+    v_[1].store(l.post);
+    v_[2].store(l.speech);
+    v_[3].store(l.clip);
+    seq_.store(s + 2);
+  }
+  // Copies the latest levels and returns which write they came from (0 = none yet).
+  uint32_t Load(Levels* l) const {
+    for (;;) {
+      uint32_t s1 = seq_.load();
+      if (s1 & 1) continue;
+      l->pre = v_[0].load();
+      l->post = v_[1].load();
+      l->speech = v_[2].load();
+      l->clip = v_[3].load();
+      if (seq_.load() == s1) return s1;
+    }
+  }
+
+ private:
+  std::atomic<uint32_t> seq_{0};
+  std::atomic<float> v_[4]{};  // pre, post, speech, clip
+};
+
 // In-place mono processor: RNNoise (any rate, resampled to 48 kHz), then input
 // gain with a soft limiter, then peak metering. Settings may be changed from
-// any thread; Process runs on the audio thread.
+// any thread (they are atomics); Initialize and Process run on the audio thread.
 class CapturePipeline {
  public:
   using LevelsCallback = std::function<void(const Levels&)>;
@@ -79,29 +130,38 @@ class CapturePipeline {
   ~CapturePipeline();
   void Initialize(int sample_rate, int channels);
   void Process(float* samples, size_t n);
-  void SetRnnoiseEnabled(bool on) { rnnoise_.store(on); }
-  void SetGain(float g) { gain_.store(g < 0 ? 0 : g > 2 ? 2 : g); }
-  float Gain() const { return gain_.load(); }
-  bool RnnoiseEnabled() const { return rnnoise_.load(); }
-  // Called about 20 times a second from the audio thread.
+  // Own settings, for standalone use and tests. A processor with several
+  // pipelines points them all at one shared CaptureSettings instead.
+  void SetRnnoiseEnabled(bool on) { own_.rnnoise.store(on); }
+  void SetGain(float g) { own_.SetGain(g); }
+  float Gain() const { return s_->gain.load(); }
+  bool RnnoiseEnabled() const { return s_->rnnoise.load(); }
+  void UseSettings(const CaptureSettings* s) { s_ = s ? s : &own_; }
+  // Called about 20 times a second from the audio thread (tests only; the
+  // adapter uses UseLevelsSlot so nothing allocates on the audio thread).
   void SetLevelsCallback(LevelsCallback cb) { cb_ = std::move(cb); }
+  void UseLevelsSlot(LevelsSlot* slot) { slot_ = slot; }
 
  private:
   void ResetDenoise();
-  void RunDenoise(float* samples, size_t n);
+  // Returns how many samples at the front were zero filled (RNNoise not primed).
+  size_t RunDenoise(float* samples, size_t n);
 
-  std::atomic<bool> rnnoise_{false};
-  std::atomic<float> gain_{1.f};
+  CaptureSettings own_;
+  const CaptureSettings* s_ = &own_;
   LevelsCallback cb_;
+  LevelsSlot* slot_ = nullptr;
   int rate_ = 48000;
   float applied_gain_ = 1.f;
 
-  // RNNoise state
+  // RNNoise state. Everything is allocated in Initialize, so turning RNNoise
+  // on or off on the audio thread allocates nothing.
   DenoiseState* st_ = nullptr;
   bool denoise_active_ = false;
+  float mix_ = 0.f;  // 0 = dry, 1 = RNNoise output; moves over one block
   std::unique_ptr<RationalResampler> up_, down_;
   FrameRechunker chunker_{480};
-  std::vector<float> scratch_, out48_, native_out_;
+  std::vector<float> scratch_, out48_, wet_;
   std::vector<float> fifo_;  // processed samples at the native rate
   float speech_sum_ = 0;
   int speech_n_ = 0;

@@ -235,6 +235,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
       if (rtc.HubbubAudio.supported) {
         _peakSub ??= rtc.HubbubAudio.levels.listen((l) => _levels.add(MicLevels(
             pre: l.pre, post: l.post, speech: l.speech, clip: l.clip)));
+        // What the capture path really looks like (rate, channels, bands, frames, skipped
+        // blocks), for the log.
+        _layoutSub ??= rtc.HubbubAudio.layout.listen((t) => debugPrint('hubbub: apm $t'));
       } else {
         _levelTimer ??=
             Timer.periodic(const Duration(milliseconds: 100), (_) => unawaited(_sampleLevel()));
@@ -243,11 +246,14 @@ class LiveKitRoomAdapter implements RoomAdapter {
     onCancel: () {
       _peakSub?.cancel();
       _peakSub = null;
+      _layoutSub?.cancel();
+      _layoutSub = null;
       _levelTimer?.cancel();
       _levelTimer = null;
     },
   );
   StreamSubscription<rtc.HubbubLevels>? _peakSub;
+  StreamSubscription<String>? _layoutSub;
   Timer? _levelTimer;
   bool _levelBusy = false;
 
@@ -529,6 +535,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _levelTimer = null;
     await _peakSub?.cancel();
     _peakSub = null;
+    await _layoutSub?.cancel();
+    _layoutSub = null;
     await _levels.close();
     await disconnect();
     await _signals.close();
