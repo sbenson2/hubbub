@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
 
 import 'capture_options.dart';
+import 'video_options.dart';
 
 /// Connection quality sample taken from the WebRTC stats.
 class StatsSample {
@@ -46,6 +47,14 @@ class RoomVideoRx extends RoomSignal {
   final VideoRxSample sample;
 }
 
+/// One published video track on a participant. [track] is null until there is something to
+/// render: a remote screen share before you click Watch, and always in tests.
+class VideoFeed {
+  const VideoFeed(this.sid, {this.track});
+  final String sid;
+  final VideoTrack? track;
+}
+
 class RoomParticipant {
   const RoomParticipant({
     required this.id,
@@ -53,6 +62,8 @@ class RoomParticipant {
     required this.speaking,
     required this.isLocal,
     this.muted = false,
+    this.camera,
+    this.share,
   });
   final String id;
   final String name;
@@ -61,6 +72,12 @@ class RoomParticipant {
 
   /// No live microphone track.
   final bool muted;
+
+  /// Their camera, when it is on.
+  final VideoFeed? camera;
+
+  /// Their screen share, when they are streaming.
+  final VideoFeed? share;
 }
 
 /// Largest volume the UI offers (Discord's 200%), as a multiplier of the source level.
@@ -95,6 +112,10 @@ abstract class RoomAdapter {
   Future<void> setCameraEnabled(bool on);
   Future<void> setScreenShareEnabled(bool on, {String? sourceId});
   Future<void> subscribeVideo(String participantId, String trackSid, bool on);
+
+  /// Picks the simulcast layer for a subscribed video track: the 360p15 layer ([high] false,
+  /// grid tiles) or the best one ([high] true, a focused tile).
+  Future<void> setVideoQuality(String participantId, String trackSid, {required bool high});
   Stream<RoomSignal> get signals;
   Stream<List<RoomParticipant>> get participants;
 
@@ -327,12 +348,17 @@ class LiveKitRoomAdapter implements RoomAdapter {
         _signals.add(RoomSignal.disconnected);
         _emitParticipants();
       })
-      ..on<TrackPublishedEvent>((e) {
-        // Audio is always wanted; video waits for an explicit subscribeVideo.
-        if (e.publication.kind == TrackType.AUDIO) e.publication.subscribe();
-      })
+      ..on<TrackPublishedEvent>((e) => _autoSubscribe(e.publication))
       ..on<TrackSubscribedEvent>((e) {
         final track = e.track;
+        if (track is VideoTrack) {
+          // Grid tiles take the 360p15 layer; a focused tile asks for more.
+          if (e.publication.source == TrackSource.camera) {
+            unawaited(e.publication.setVideoQuality(
+                _highVideo.contains(e.publication.sid) ? VideoQuality.HIGH : VideoQuality.LOW));
+          }
+          _emitParticipants();
+        }
         if (track is RemoteAudioTrack) {
           if (_deafened) _setPlayback(track, false);
           unawaited(_applyVolumes(only: e.participant.identity));
@@ -342,6 +368,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
           _signals.add(RoomSignal.firstRemoteAudio);
         }
       })
+      ..on<TrackUnsubscribedEvent>((_) => _emitParticipants())
       ..on<ParticipantConnectedEvent>((_) => _emitParticipants())
       ..on<ParticipantDisconnectedEvent>((_) => _emitParticipants())
       ..on<ActiveSpeakersChangedEvent>((_) => _emitParticipants())
@@ -359,15 +386,30 @@ class LiveKitRoomAdapter implements RoomAdapter {
     );
     // Tracks published before we joined do not raise TrackPublishedEvent.
     for (final p in room.remoteParticipants.values) {
-      for (final pub in p.audioTrackPublications) {
-        pub.subscribe();
-      }
+      p.trackPublications.values.forEach(_autoSubscribe);
     }
     await _applyOutput();
     await _applyVolumes();
     _emitParticipants();
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sampleStats());
   }
+
+  /// What is received without asking: voice, and cameras (at the low layer, see above). A
+  /// screen share, and its audio, wait for the person to click Watch ([subscribeVideo]).
+  void _autoSubscribe(RemoteTrackPublication pub) {
+    final source = pub.source;
+    if (source == TrackSource.screenShareVideo) return;
+    if (source == TrackSource.screenShareAudio) {
+      // Joins a stream that is already being watched.
+      final watched = pub.participant.getTrackPublicationBySource(TrackSource.screenShareVideo)?.subscribed ?? false;
+      if (watched) unawaited(pub.subscribe());
+      return;
+    }
+    if (pub.kind == TrackType.AUDIO || source == TrackSource.camera) unawaited(pub.subscribe());
+  }
+
+  /// Camera tracks (by sid) the UI has asked to see at full quality.
+  final _highVideo = <String>{};
 
   /// Ends the app's use of the adapter: stops the meter's polling and closes its stream.
   Future<void> dispose() async {
@@ -426,10 +468,15 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> setCameraEnabled(bool on) async {
-    await _room?.localParticipant?.setCameraEnabled(
-      on,
-      cameraCaptureOptions: _cameraId == null ? null : CameraCaptureOptions(deviceId: _cameraId),
-    );
+    final local = _room?.localParticipant;
+    if (local == null) return;
+    // Off unpublishes (and stops the capture), so the next On opens the camera chosen by then.
+    final old = local.getTrackPublicationBySource(TrackSource.camera);
+    if (old != null) await local.removePublishedTrack(old.sid);
+    if (!on) return;
+    final device = await _resolve(_cameraId, 'videoinput');
+    final track = await LocalVideoTrack.createCameraTrack(cameraCaptureOptionsFor(device?.deviceId));
+    await local.publishVideoTrack(track, publishOptions: cameraPublishOptions);
   }
 
   @override
@@ -453,6 +500,29 @@ class LiveKitRoomAdapter implements RoomAdapter {
     }
   }
 
+  @override
+  Future<void> setVideoQuality(String participantId, String trackSid, {required bool high}) async {
+    high ? _highVideo.add(trackSid) : _highVideo.remove(trackSid);
+    final pub = _room?.remoteParticipants[participantId]?.trackPublications[trackSid];
+    if (pub is RemoteTrackPublication) {
+      await pub.setVideoQuality(high ? VideoQuality.HIGH : VideoQuality.LOW);
+    }
+  }
+
+  /// No live microphone (a screen share's audio track does not count).
+  static bool _micMuted(Participant p) => p.getTrackPublicationBySource(TrackSource.microphone)?.muted ?? true;
+
+  /// [source]'s video on [p], when there is something to show: a camera needs its track (so
+  /// a tile never shows a black box), a share shows as soon as it is announced.
+  static VideoFeed? _feed(Participant p, TrackSource source) {
+    final pub = p.getTrackPublicationBySource(source);
+    if (pub == null) return null;
+    final track = pub.track;
+    final video = track is VideoTrack ? track : null;
+    if (source == TrackSource.camera && (video == null || pub.muted)) return null;
+    return VideoFeed(pub.sid, track: video);
+  }
+
   void _emitParticipants() {
     final room = _room;
     final list = <RoomParticipant>[];
@@ -463,7 +533,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
         name: local.name.isEmpty ? local.identity : local.name,
         speaking: local.isSpeaking,
         isLocal: true,
-        muted: local.isMuted,
+        muted: _micMuted(local),
+        camera: _feed(local, TrackSource.camera),
+        share: _feed(local, TrackSource.screenShareVideo),
       ));
       for (final p in room.remoteParticipants.values) {
         list.add(RoomParticipant(
@@ -471,7 +543,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
           name: p.name.isEmpty ? p.identity : p.name,
           speaking: p.isSpeaking,
           isLocal: false,
-          muted: p.isMuted,
+          muted: _micMuted(p),
+          camera: _feed(p, TrackSource.camera),
+          share: _feed(p, TrackSource.screenShareVideo),
         ));
       }
     }

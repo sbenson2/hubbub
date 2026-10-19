@@ -91,6 +91,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   _Call? get _call => _callValue;
   set _call(_Call? c) {
     _callValue = c;
+    // Camera and share belong to the call: a new call starts with both off.
+    if (c == null) _cameraOn = _sharing = false;
     _inCall.value = c != null;
   }
 
@@ -101,6 +103,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   (String, String)? _joining;
   bool _muted = false;
   bool _deafened = false;
+  bool _cameraOn = false;
+  bool _sharing = false;
   bool _mutedBeforeDeafen = false;
   bool _memberList = true;
   bool _starting = false;
@@ -310,6 +314,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
+      if (mounted && _call == call) await _republishVideo();
       if (mounted && _call == call) {
         setState(() => _call = _Call(call.key, call.channel, call.node, c.host, c.term.toInt()));
       }
@@ -326,6 +331,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) _followHost();
     }
   }
+
+  /// A new room starts with nothing published: put back the camera that was on. A failure
+  /// here must not end the call, so it turns the control off and says so.
+  Future<void> _republishVideo() async {
+    if (_cameraOn) {
+      try {
+        await widget.room.setCameraEnabled(true);
+      } catch (e) {
+        _toast('Could not turn the camera back on: $e');
+        if (mounted) setState(() => _cameraOn = false);
+      }
+    }
+  }
+
+  Future<void> _toggleCamera() async {
+    final on = !_cameraOn;
+    setState(() => _cameraOn = on);
+    try {
+      await widget.room.setCameraEnabled(on);
+    } catch (e) {
+      _toast('Could not turn the camera ${on ? 'on' : 'off'}: $e');
+      if (mounted) setState(() => _cameraOn = !on);
+    }
+  }
+
+  Future<void> _toggleShare() async {}
 
   /// Once the community is known, opens its first text channel.
   void _openFirstChannel() {
@@ -458,6 +489,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             deafened: p.isLocal && _deafened,
             hosting: p.id == (_call?.node ?? _node).host,
             isMe: p.isLocal,
+            camera: p.camera,
+            share: p.share,
           ),
       ];
 
@@ -632,7 +665,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         connected: here,
         connecting: _joining == (_key, v.name),
         muted: _muted,
+        cameraOn: _cameraOn,
+        sharing: _sharing,
         onToggleMute: _toggleMute,
+        onToggleCamera: _toggleCamera,
+        onToggleShare: _toggleShare,
         onLeave: _leave,
         onJoin: () => _join(v.name),
       );

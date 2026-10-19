@@ -18,7 +18,11 @@ class VoiceChannelView extends StatelessWidget {
     required this.connected,
     required this.connecting,
     required this.muted,
+    required this.cameraOn,
+    required this.sharing,
     required this.onToggleMute,
+    required this.onToggleCamera,
+    required this.onToggleShare,
     required this.onLeave,
     required this.onJoin,
   });
@@ -30,7 +34,11 @@ class VoiceChannelView extends StatelessWidget {
   final bool connected;
   final bool connecting;
   final bool muted;
+  final bool cameraOn;
+  final bool sharing;
   final VoidCallback onToggleMute;
+  final VoidCallback onToggleCamera;
+  final VoidCallback onToggleShare;
   final VoidCallback onLeave;
   final VoidCallback onJoin;
 
@@ -65,7 +73,24 @@ class VoiceChannelView extends StatelessWidget {
                           : const Icon(Icons.mic_rounded, size: 24, color: HubColors.white),
                     ),
                     const SizedBox(width: 16),
-                    // T10 adds the camera and screen share buttons here.
+                    _CallButton(
+                      tooltip: cameraOn ? 'Turn Off Camera' : 'Turn On Camera',
+                      onPressed: onToggleCamera,
+                      color: cameraOn ? HubColors.white : const Color(0xFF2B2D31),
+                      child: cameraOn
+                          ? const Icon(Icons.videocam_rounded, size: 24, color: Color(0xFF2B2D31))
+                          : const Icon(Icons.videocam_off_rounded, size: 24, color: HubColors.white),
+                    ),
+                    const SizedBox(width: 16),
+                    _CallButton(
+                      tooltip: sharing ? 'Stop Streaming' : 'Share Your Screen',
+                      onPressed: onToggleShare,
+                      color: sharing ? HubColors.white : const Color(0xFF2B2D31),
+                      child: sharing
+                          ? const Icon(Icons.stop_screen_share_rounded, size: 24, color: Color(0xFF2B2D31))
+                          : const Icon(Icons.screen_share_rounded, size: 24, color: HubColors.white),
+                    ),
+                    const SizedBox(width: 16),
                     _CallButton(
                       tooltip: 'Disconnect',
                       onPressed: onLeave,

@@ -241,10 +241,13 @@ class FakeRoom implements RoomAdapter {
   Future<void> setCameraEnabled(bool on) async => calls.add('camera:$on');
   @override
   Future<void> setScreenShareEnabled(bool on, {String? sourceId}) async =>
-      calls.add('screen:$on');
+      calls.add(on ? 'screen:true:${sourceId ?? ''}' : 'screen:false');
   @override
   Future<void> subscribeVideo(String participantId, String trackSid, bool on) async =>
-      calls.add('video:$participantId:$on');
+      calls.add('video:$participantId:$trackSid:$on');
+  @override
+  Future<void> setVideoQuality(String participantId, String trackSid, {required bool high}) async =>
+      calls.add('quality:$participantId:$trackSid:${high ? 'high' : 'low'}');
 }
 
 /// An in-memory hub: servers are [FakeNode]s the test registers; create, join and leave

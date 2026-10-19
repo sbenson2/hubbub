@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../room_adapter.dart';
 import 'audio_menus.dart';
 import 'avatar.dart';
 import 'theme.dart';
@@ -39,11 +40,15 @@ class VoiceMember {
     this.deafened = false,
     this.hosting = false,
     this.isMe = false,
+    this.camera,
+    this.share,
   });
 
   final String id;
   final String name;
   final bool speaking;
+  final VideoFeed? camera;
+  final VideoFeed? share;
   final bool muted;
   final bool deafened;
   final bool hosting;

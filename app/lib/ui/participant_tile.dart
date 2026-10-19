@@ -4,6 +4,7 @@ import 'audio_menus.dart';
 import 'avatar.dart';
 import 'channel_sidebar.dart';
 import 'theme.dart';
+import 'video_view.dart';
 
 /// One person on the call stage: a 16:9 tile with their avatar, name and mic state.
 class ParticipantTile extends StatelessWidget {
@@ -29,9 +30,17 @@ class ParticipantTile extends StatelessWidget {
               )
             : null,
         child: Stack(children: [
-          Center(
-            child: Avatar(id: m.id, name: m.name, size: avatar, background: HubColors.tile),
-          ),
+          if (m.camera != null)
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: VideoView(feed: m.camera!, mirror: m.isMe),
+              ),
+            )
+          else
+            Center(
+              child: Avatar(id: m.id, name: m.name, size: avatar, background: HubColors.tile),
+            ),
           Positioned(
             left: 8,
             bottom: 8,
