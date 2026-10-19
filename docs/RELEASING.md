@@ -4,11 +4,14 @@ Prerequisites: `vpk` (`dotnet tool install -g vpk`), the Flutter SDK, and `tools
 already run so `livekit-server.exe` is bundled. The update feed URL in `app/lib/install.dart`
 (`kUpdateFeed`) must be the real `.../releases/latest/download` of the public releases repo.
 
+Friends update at different times, so builds that talk to each other differ. Before changing a wire
+message, read the compatibility rule above `CtlMsg` in `core/src/proto.rs`.
+
 ## Windows, per release
 
 1. Bump `version:` in `app/pubspec.yaml` (`0.1.1+2`; the part before `+` is the release version and
    must go up). Commit.
-2. `cd app` then `C:\src\flutter\bin\flutter.bat build windows --release`.
+2. `cd app` then `flutter build windows --release` (with the Flutter SDK's `bin` on your PATH).
 3. `powershell -File tools\package-windows.ps1` from the repo root. It writes `dist\windows`.
    **Keep `dist\windows` between releases.** vpk reads the earlier full packages and
    `releases.win.json` there to build the delta; a fresh empty folder gives a full package only.
@@ -24,8 +27,8 @@ already run so `livekit-server.exe` is bundled. The update feed URL in `app/lib/
 several versions behind reads the feed, then fetches the packages it names from that same place.
 So each new release should also carry the earlier `*-full.nupkg` and `*-delta.nupkg` files that
 `releases.win.json` still lists: re-upload them from `dist\windows` to the new release. If a listed
-package is missing, that client's update fails and it retries every 6 hours (it stays on its version
-and never breaks); a copy that cannot get deltas needs the full package of the newest version, so
+package is missing, that client's update may fail (we have not tested this), and it would try again
+later; a copy that cannot get deltas needs the full package of the newest version, so
 at least always upload the newest `-full.nupkg`.
 
 ## Linux (manual download, no self-update yet)

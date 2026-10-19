@@ -12,11 +12,13 @@ User Settings, Windows Settings. It updates itself: when a new version is ready 
 "Update ready" with a Restart button. It never restarts during a call.
 
 To remove it, use Settings, Apps, Hubbub, Uninstall. Your servers and name stay in
-`%APPDATA%\dev.hubbub` until you delete that folder.
+`%APPDATA%\dev.hubbub\hubbub` until you delete that folder.
 
-Hubbub listens for connections from other devices, so Windows Firewall may ask whether to let it
-talk on your network. Choose Allow: it lets devices on your network reach you directly. (We have not
+Windows Firewall may ask whether to let Hubbub talk on your network. Choose Allow. (We have not
 tested what happens if you decline.)
+
+If nobody hears you, check Settings, Privacy & security, Microphone: **Let desktop apps access your
+microphone** must be on. When it is off, Hubbub joins the call and sends silence, without an error.
 
 If you cannot see "Run anyway" (Windows 11 with Smart App Control on, or a managed PC), the installer
 is blocked by the system and cannot be run until Hubbub is signed.
@@ -24,5 +26,10 @@ is blocked by the system and cannot be run until Hubbub is signed.
 ## Linux
 
 Download **HubbubLinux.AppImage**, make it executable (`chmod +x HubbubLinux.AppImage`) and run it.
+It needs FUSE to run an AppImage (Fedora: `sudo dnf install fuse fuse-libs`; Ubuntu: `libfuse2`) and the
+appindicator library for the tray icon (Fedora: `libayatana-appindicator-gtk3`; Ubuntu:
+`libayatana-appindicator3-1`); without the library Hubbub does not start. On GNOME the tray icon also
+needs the AppIndicator shell extension. Screen sharing is not available on Wayland; on Linux a screen
+share carries the picture only, no sound.
 Linux does not update itself yet: to update, download the new AppImage from the latest release and
 replace the old one.

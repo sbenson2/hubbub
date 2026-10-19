@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Packages the Linux release bundle into a self-updating Velopack AppImage.
+# Packages the Linux release bundle into a Velopack AppImage. Linux does not update itself:
+# updates are manual downloads from the release page.
 #   tools/package-linux.sh [bundle-dir] [out-dir]
 # bundle-dir defaults to ~/dev/hubbub/app/build/linux/x64/release/bundle (the WSL build; build it with
 # `flutter build linux --release` in WSL first, with vendor/livekit/linux-amd64/livekit-server present).
 # Output (default dist/linux, git-ignored): Hubbub.AppImage (also copied to HubbubLinux.AppImage), Hubbub-<ver>-linux-full.nupkg,
-# a delta when an earlier release is in the folder, and releases.linux.json (the update feed).
+# a delta when an earlier release is in the folder, and releases.linux.json (not used by the app:
+# there is no Linux update feed).
 # vpk: a Linux `vpk` (dotnet tool) if there is one, otherwise the Windows one, which cross-packs
 # Linux releases (`vpk [linux] pack`); the bundle is staged on the Windows drive for that.
 set -euo pipefail
