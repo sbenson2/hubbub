@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/audio_settings.dart';
+import 'package:hubbub/capture_options.dart';
 import 'package:hubbub/device_settings.dart';
 import 'package:hubbub/room_adapter.dart';
 import 'package:hubbub/src/rust/api/hubbub.dart';
@@ -340,42 +341,47 @@ void main() {
       expect(find.byKey(const Key('mic-level')), findsNothing);
     });
 
-    testWidgets('in_a_call_the_adapters_level_stream_drives_the_bar', (tester) async {
+    testWidgets('in_a_call_the_post_gain_peak_drives_the_bar', (tester) async {
       await pumpShell(tester);
       await join(tester);
       await openVoice(tester);
       expect(find.text('Join a voice channel to test your mic'), findsNothing);
-      room.emitLevel(0.04);
+      room.emitPeak(0.04);
       await tester.pump();
       final low = fill(tester);
-      room.emitLevel(0.5);
+      room.emitPeak(0.5, post: 0.25);
       await tester.pump();
       expect(fill(tester), greaterThan(low));
-      expect(fill(tester), meterFill(0.5));
+      expect(fill(tester), meterFill(0.25), reason: 'what is sent, after the input volume');
       expect(find.byKey(const Key('mic-clipping')), findsNothing);
     });
 
-    testWidgets('a_sustained_full_scale_level_shows_the_red_clipping_state', (tester) async {
+    testWidgets('a_pre_gain_peak_at_full_scale_over_500ms_shows_the_red_clipping_state',
+        (tester) async {
       await pumpShell(tester);
       await join(tester);
       await openVoice(tester);
-      for (var i = 0; i < 3; i++) {
-        room.emitLevel(1);
+      // quiet windows with no clipped blocks: fine, even with a big boost after the gain
+      for (var i = 0; i < 12; i++) {
+        room.emitPeak(0.4, post: 1, clip: 0);
         await tester.pump();
       }
-      expect(find.byKey(const Key('mic-clipping')), findsNothing, reason: 'a short peak is fine');
-      for (var i = 0; i < 6; i++) {
-        room.emitLevel(1);
-        await tester.pump();
-      }
+      expect(find.byKey(const Key('mic-clipping')), findsNothing,
+          reason: 'only the pre-gain peak counts, not what the boost makes of it');
+      room.emitPeak(1, clip: 0.2); // one 10 ms block in the window reached 0.98
+      await tester.pump();
+      await tester.pump(); // the report lands just after the frame it was sent in
       expect(find.byKey(const Key('mic-clipping')), findsOneWidget);
       expect(find.textContaining('clipping'), findsOneWidget);
-      room.emitLevel(0.2);
+      for (var i = 0; i < 10; i++) {
+        room.emitPeak(0.2);
+        await tester.pump();
+      }
       await tester.pump();
-      expect(find.byKey(const Key('mic-clipping')), findsNothing);
+      expect(find.byKey(const Key('mic-clipping')), findsNothing, reason: '500 ms later it clears');
     });
 
-    testWidgets('the_level_is_logged_once_a_second_for_tuning', (tester) async {
+    testWidgets('the_peaks_are_logged_once_a_second_for_tuning', (tester) async {
       final lines = <String>[];
       final old = debugPrint;
       debugPrint = (m, {wrapWidth}) => lines.add(m ?? '');
@@ -384,20 +390,109 @@ void main() {
         await join(tester);
         await openVoice(tester);
         for (var i = 0; i < 25; i++) {
-          room.emitLevel(0.42);
+          room.emitPeak(0.5, post: 0.42, clip: 0.0, speech: 0.9);
           await tester.pump();
         }
       } finally {
         debugPrint = old;
       }
-      expect(lines.where((l) => l == 'hubbub: micLevel 0.42').length, 3,
-          reason: lines.join('|')); // samples 1, 11, 21
+      final mic = lines.where((l) => l.startsWith('hubbub: micLevel ')).toList();
+      expect(mic.length, 2, reason: lines.join('|')); // reports 1 and 21 of twenty a second
+      expect(mic.first, 'hubbub: micLevel 0.42 pre=0.5 post=0.42 clip=0.0 speech=0.9');
     });
 
-    test('the_detector_needs_a_run_of_near_full_scale_samples', () {
-      final d = ClipDetector();
-      final seen = [for (final l in [1.0, 1.0, 0.3, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1]) d.add(l)];
-      expect(seen, [false, false, false, false, false, false, false, false, true, false]);
+    test('the_clip_rule_is_more_than_one_percent_of_blocks_over_500ms', () {
+      final w = ClipWindow();
+      // reports every 50 ms; one clipped 10 ms block in a report is 0.2 of its 5 blocks, which
+      // is 2% of the 500 ms
+      expect([for (var i = 0; i < 9; i++) w.add(0)], everyElement(isFalse));
+      expect(w.add(0.2), isTrue);
+      for (var i = 0; i < 9; i++) {
+        expect(w.add(0), isTrue, reason: 'stays on while that window is inside the 500 ms');
+      }
+      expect(w.add(0), isFalse, reason: 'the clipped window has aged out');
+      // exactly 1% is not more than 1%
+      final x = ClipWindow();
+      expect([for (var i = 0; i < 10; i++) x.add(i == 0 ? 0.1 : 0)].last, isFalse);
+    });
+  });
+
+  group('input volume and noise suppression', () {
+    Future<void> openVoice(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('User Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Voice & Video'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the_settings_page_has_an_input_volume_slider_next_to_the_input_device',
+        (tester) async {
+      await pumpShell(tester);
+      await openVoice(tester);
+      expect(find.text('INPUT VOLUME'), findsOneWidget);
+      final slider = find.byKey(const Key('settings-input-volume'));
+      expect(slider, findsOneWidget);
+      expect(find.descendant(of: slider, matching: find.byType(Slider)), findsOneWidget);
+      expect(find.text('100%'), findsWidgets);
+      await setSlider(tester, slider, 0.25); // 50% of the 0 to 200% range
+      expect(room.inputGain, closeTo(0.5, 0.06));
+      expect((await audioStore.load()).inputGain, closeTo(0.5, 0.06), reason: 'saved on release');
+    });
+
+    testWidgets('noise_suppression_offers_none_standard_and_rnnoise_defaulting_to_rnnoise',
+        (tester) async {
+      await pumpShell(tester);
+      await openVoice(tester);
+      expect(find.text('NOISE SUPPRESSION'), findsOneWidget);
+      for (final n in NoiseSuppression.values) {
+        expect(find.byKey(Key('ns-${n.name}')), findsOneWidget);
+      }
+      expect(find.text('None'), findsOneWidget);
+      expect(find.text('Standard'), findsOneWidget);
+      expect(find.text('Hubbub (RNNoise)'), findsOneWidget);
+      Finder on(NoiseSuppression n) => find.descendant(
+          of: find.byKey(Key('ns-${n.name}')), matching: find.byIcon(Icons.radio_button_checked));
+      expect(on(NoiseSuppression.rnnoise), findsOneWidget);
+      expect(on(NoiseSuppression.standard), findsNothing);
+      room.micCalls.clear();
+      await tester.tap(find.byKey(const Key('ns-standard')));
+      await tester.pumpAndSettle();
+      expect(room.micCalls, ['ns:standard']);
+      expect(on(NoiseSuppression.standard), findsOneWidget);
+      expect(on(NoiseSuppression.rnnoise), findsNothing);
+      expect((await audioStore.load()).noiseSuppression, NoiseSuppression.standard);
+    });
+
+    testWidgets('saved_choices_are_shown_and_given_to_the_room_at_start', (tester) async {
+      await pumpShell(tester,
+          audio: const AudioPrefs(inputGain: 0.5, noiseSuppression: NoiseSuppression.none));
+      expect(room.inputGain, 0.5);
+      expect(room.noiseSuppression, NoiseSuppression.none);
+      await openVoice(tester);
+      expect(
+          find.descendant(
+              of: find.byKey(const Key('ns-none')), matching: find.byIcon(Icons.radio_button_checked)),
+          findsOneWidget);
+      final slider = tester.widget<Slider>(find.descendant(
+          of: find.byKey(const Key('settings-input-volume')), matching: find.byType(Slider)));
+      expect(slider.value, 0.5);
+    });
+
+    testWidgets('the_mic_right_click_menu_also_has_the_input_volume_slider', (tester) async {
+      await pumpShell(tester);
+      await rightClick(tester, inPanel('Mute'));
+      expect(find.text('INPUT VOLUME'), findsOneWidget);
+      expect(find.text('OUTPUT VOLUME'), findsNothing);
+      await setSlider(tester, find.byKey(const Key('menu-input-volume')), 0.75);
+      expect(room.inputGain, closeTo(1.5, 0.06));
+      expect((await audioStore.load()).inputGain, closeTo(1.5, 0.06));
+    });
+
+    testWidgets('the_headphones_menu_keeps_only_the_output_volume', (tester) async {
+      await pumpShell(tester);
+      await rightClick(tester, inPanel('Deafen'));
+      expect(find.text('OUTPUT VOLUME'), findsOneWidget);
+      expect(find.text('INPUT VOLUME'), findsNothing);
     });
   });
 }

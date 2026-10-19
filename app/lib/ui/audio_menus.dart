@@ -16,13 +16,16 @@ class AudioScope extends InheritedNotifier<AudioSettings> {
       context.dependOnInheritedWidgetOfExactType<AudioScope>()?.notifier;
 }
 
-/// Right click on the mic: the input device, then Voice Settings.
+/// Right click on the mic: the input device, the input volume, then Voice Settings.
 Future<void> showMicMenu(BuildContext context, Offset at,
-        {required DeviceSettings devices, required VoidCallback onVoiceSettings}) =>
+        {required DeviceSettings devices,
+        AudioSettings? audio,
+        required VoidCallback onVoiceSettings}) =>
     showHubMenu(context, at, (menu) => _DeviceMenu(
           kind: DeviceKind.audioInput,
           title: 'INPUT DEVICE',
           devices: devices,
+          audio: audio,
           onVoiceSettings: onVoiceSettings,
         ));
 
@@ -94,13 +97,23 @@ class _DeviceMenu extends StatelessWidget {
             ),
             if (audio != null) ...[
               const _Divider(),
-              MenuLabel('OUTPUT VOLUME', trailing: percent(audio!.master)),
-              VolumeSlider(
-                key: const Key('menu-output-volume'),
-                value: audio!.master,
-                onChanged: audio!.setMaster,
-                onChangeEnd: audio!.commit,
-              ),
+              if (kind == DeviceKind.audioInput) ...[
+                MenuLabel('INPUT VOLUME', trailing: percent(audio!.inputGain)),
+                VolumeSlider(
+                  key: const Key('menu-input-volume'),
+                  value: audio!.inputGain,
+                  onChanged: audio!.setInputGain,
+                  onChangeEnd: audio!.commit,
+                ),
+              ] else ...[
+                MenuLabel('OUTPUT VOLUME', trailing: percent(audio!.master)),
+                VolumeSlider(
+                  key: const Key('menu-output-volume'),
+                  value: audio!.master,
+                  onChanged: audio!.setMaster,
+                  onChangeEnd: audio!.commit,
+                ),
+              ],
             ],
             const _Divider(),
             MenuItem(

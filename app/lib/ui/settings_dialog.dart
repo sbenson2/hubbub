@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../audio_settings.dart';
+import '../capture_options.dart';
 import '../device_settings.dart';
 import '../install.dart';
 import '../room_adapter.dart';
@@ -268,10 +269,20 @@ class _VoiceVideo extends StatelessWidget {
                   _DevicePicker('INPUT DEVICE', const Key('device-input'), devices,
                       DeviceKind.audioInput),
                   const SizedBox(height: 16),
+                  Row(children: [
+                    const Expanded(child: Text('INPUT VOLUME', style: HubText.category)),
+                    Text(percent(audio.inputGain), style: HubText.category),
+                  ]),
+                  VolumeSlider(
+                    key: const Key('settings-input-volume'),
+                    value: audio.inputGain,
+                    onChanged: audio.setInputGain,
+                    onChangeEnd: audio.commit,
+                  ),
+                  const SizedBox(height: 8),
                   const Text('INPUT LEVEL', style: HubText.category),
                   const SizedBox(height: 8),
-                  MicMeter(levels: audio.inputLevel, inCall: inCall),
-                  // The input volume slider goes here (a later task adds it).
+                  MicMeter(levels: audio.micLevels, inCall: inCall),
                 ]),
               ),
               const SizedBox(width: 20),
@@ -294,8 +305,51 @@ class _VoiceVideo extends StatelessWidget {
               ),
             ]),
             const SizedBox(height: 24),
+            const Text('NOISE SUPPRESSION', style: HubText.category),
+            const SizedBox(height: 8),
+            for (final n in NoiseSuppression.values)
+              _NoiseChoice(n, audio.noiseSuppression == n, () => audio.setNoiseSuppression(n)),
+            const SizedBox(height: 24),
             _DevicePicker('CAMERA', const Key('device-camera'), devices, DeviceKind.videoInput),
           ],
+        ),
+      );
+}
+
+/// One Noise Suppression choice: a radio, its name, and what it does.
+class _NoiseChoice extends StatelessWidget {
+  const _NoiseChoice(this.choice, this.selected, this.onTap);
+  final NoiseSuppression choice;
+  final bool selected;
+  final VoidCallback onTap;
+
+  static const _about = {
+    NoiseSuppression.none: 'Only echo cancellation. Everything the mic hears is sent.',
+    NoiseSuppression.standard: 'WebRTC noise suppression. Good against steady hiss and hum.',
+    NoiseSuppression.rnnoise:
+        'Neural noise suppression. Also removes keyboard clicks, fans and background voices.',
+  };
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        key: Key('ns-${choice.name}'),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                size: 20, color: selected ? HubColors.accent : HubColors.interactive),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(choice.label, style: HubText.message),
+                Text(_about[choice]!,
+                    style: const TextStyle(
+                        fontFamily: hubFont, fontSize: 13, height: 1.3, color: HubColors.muted)),
+              ]),
+            ),
+          ]),
         ),
       );
 }

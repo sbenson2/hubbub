@@ -79,7 +79,7 @@ class UserPanel extends StatelessWidget {
           onSecondaryTap: devices == null || onVoiceSettings == null
               ? null
               : (at) => showMicMenu(context, at,
-                  devices: devices!, onVoiceSettings: onVoiceSettings!),
+                  devices: devices!, audio: audio, onVoiceSettings: onVoiceSettings!),
           child: muted
               ? const CrossedIcon(Icons.mic_rounded,
                   size: 20,

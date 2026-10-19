@@ -183,9 +183,34 @@ abstract class RoomAdapter {
   /// Stops (or resumes) your hearing of one person; they are not muted for anyone else.
   Future<void> setLocalMuteFor(String id, bool muted);
 
-  /// The level of your own microphone, 0 to 1, about ten times a second while someone listens
-  /// and you are in a call.
-  Stream<double> get inputLevel;
+  /// Your microphone gain, 0 to [maxVolume] (1 is unchanged), applied in the capture path
+  /// after noise suppression. Kept across calls.
+  Future<void> setInputGain(double v);
+
+  /// Which noise suppressor cleans your microphone. Live in a call (the capture restarts when
+  /// the WebRTC suppressor has to change), else kept for the next [connect].
+  Future<void> setNoiseSuppression(NoiseSuppression ns);
+
+  /// The peaks of your own microphone, about twenty times a second while someone listens and
+  /// you are in a call.
+  Stream<MicLevels> get micLevels;
+}
+
+/// Peaks of the microphone over about 50 ms, as the capture path measures them.
+class MicLevels {
+  const MicLevels({required this.pre, required this.post, this.speech = -1, this.clip = 0});
+
+  /// Peak (0 to 1) before noise suppression and gain: the true level the device delivered.
+  final double pre;
+
+  /// Peak (0 to 1) after gain and the limiter: what is sent.
+  final double post;
+
+  /// RNNoise speech probability, or -1 when RNNoise is off.
+  final double speech;
+
+  /// Share (0 to 1) of 10 ms blocks in the window whose [pre] peak was at least 0.98.
+  final double clip;
 }
 
 class LiveKitRoomAdapter implements RoomAdapter {
@@ -197,19 +222,32 @@ class LiveKitRoomAdapter implements RoomAdapter {
   bool _sawRemoteAudio = false;
   bool _deafened = false;
   String? _inputId;
+  NoiseSuppression _ns = NoiseSuppression.rnnoise;
   String? _outputId;
   String? _cameraId;
   double _master = 1;
   final _userVolume = <String, double>{};
   final _localMuted = <String>{};
-  late final _levels = StreamController<double>.broadcast(
-    onListen: () => _levelTimer ??=
-        Timer.periodic(const Duration(milliseconds: 100), (_) => unawaited(_sampleLevel())),
+  // The patched plugin publishes true peaks; where it is absent (macOS) the level comes from
+  // the sender stats instead.
+  late final StreamController<MicLevels> _levels = StreamController<MicLevels>.broadcast(
+    onListen: () {
+      if (rtc.HubbubAudio.supported) {
+        _peakSub ??= rtc.HubbubAudio.levels.listen((l) => _levels.add(MicLevels(
+            pre: l.pre, post: l.post, speech: l.speech, clip: l.clip)));
+      } else {
+        _levelTimer ??=
+            Timer.periodic(const Duration(milliseconds: 100), (_) => unawaited(_sampleLevel()));
+      }
+    },
     onCancel: () {
+      _peakSub?.cancel();
+      _peakSub = null;
       _levelTimer?.cancel();
       _levelTimer = null;
     },
   );
+  StreamSubscription<rtc.HubbubLevels>? _peakSub;
   Timer? _levelTimer;
   bool _levelBusy = false;
 
@@ -264,7 +302,39 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _inputId = id;
     final room = _room;
     if (room == null) return; // connect passes the id in its capture options
-    final opts = captureOptionsFor(id);
+    await _restartCapture(room);
+  }
+
+  @override
+  Future<void> setInputGain(double v) async {
+    if (!rtc.HubbubAudio.supported) return;
+    await rtc.HubbubAudio.setInputGain(v.clamp(0.0, maxVolume));
+  }
+
+  @override
+  Future<void> setNoiseSuppression(NoiseSuppression ns) async {
+    final before = effectiveNoiseSuppression(_ns);
+    _ns = ns;
+    if (rtc.HubbubAudio.supported) {
+      await rtc.HubbubAudio.setNoiseSuppression(switch (effectiveNoiseSuppression(ns)) {
+        NoiseSuppression.none => rtc.HubbubNoiseSuppression.off,
+        NoiseSuppression.standard => rtc.HubbubNoiseSuppression.webrtc,
+        NoiseSuppression.rnnoise => rtc.HubbubNoiseSuppression.rnnoise,
+      });
+    }
+    final room = _room;
+    // Only the standard suppressor is a capture constraint; moving to or from it restarts the
+    // running mic track, the other two change inside the post-processor.
+    final standard = effectiveNoiseSuppression(ns) == NoiseSuppression.standard;
+    if (room != null && (before == NoiseSuppression.standard) != standard) {
+      await _restartCapture(room);
+    }
+  }
+
+  /// Applies the current device and suppressor to the running mic track (a muted track only
+  /// records the options, the unmute restart uses them).
+  Future<void> _restartCapture(Room room) async {
+    final opts = captureOptionsFor(_inputId, noiseSuppression: _ns);
     for (final pub in room.localParticipant?.audioTrackPublications ?? const []) {
       final track = pub.track;
       if (track == null) continue;
@@ -335,7 +405,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
   }
 
   @override
-  Stream<double> get inputLevel => _levels.stream;
+  Stream<MicLevels> get micLevels => _levels.stream;
 
   /// Reads the local microphone's `audioLevel` (0 to 1) from the sender's stats.
   Future<void> _sampleLevel() async {
@@ -347,7 +417,10 @@ class LiveKitRoomAdapter implements RoomAdapter {
         for (final r in stats) {
           if (r.type == 'media-source' && r.values['kind'] == 'audio') {
             final level = r.values['audioLevel'];
-            if (level is num) _levels.add(level.toDouble().clamp(0.0, 1.0));
+            if (level is num) {
+              final l = level.toDouble().clamp(0.0, 1.0);
+              _levels.add(MicLevels(pre: l, post: l));
+            }
           }
         }
       }
@@ -377,7 +450,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       roomOptions: RoomOptions(
         adaptiveStream: true,
         dynacast: true,
-        defaultAudioCaptureOptions: captureOptionsFor(_inputId),
+        defaultAudioCaptureOptions: captureOptionsFor(_inputId, noiseSuppression: _ns),
         e2eeOptions: E2EEOptions(keyProvider: keyProvider),
       ),
     );
@@ -454,6 +527,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Future<void> dispose() async {
     _levelTimer?.cancel();
     _levelTimer = null;
+    await _peakSub?.cancel();
+    _peakSub = null;
     await _levels.close();
     await disconnect();
     await _signals.close();
@@ -479,7 +554,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
   @override
   Future<void> setMicrophoneEnabled(bool on) async {
     // Explicit options, so a track created after a live device change uses that device.
-    await _room?.localParticipant?.setMicrophoneEnabled(on, audioCaptureOptions: captureOptionsFor(_inputId));
+    await _room?.localParticipant?.setMicrophoneEnabled(on, audioCaptureOptions: captureOptionsFor(_inputId, noiseSuppression: _ns));
   }
 
   @override

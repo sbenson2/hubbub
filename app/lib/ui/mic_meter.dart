@@ -4,37 +4,38 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../room_adapter.dart' show MicLevels;
 import 'theme.dart';
 
 /// The bar length (0 to 1) for a mic level. Speech sits low on a linear scale, so the bar
 /// follows the square root, which is closer to how loud it sounds.
 double meterFill(double level) => math.sqrt(level.clamp(0.0, 1.0));
 
-/// Flags a mic that sits at full scale: that is a mic clipping at the source, which the far
-/// side hears as a buzz. A level of [near] or more for [run] samples in a row (about 0.6 s at
-/// ten samples a second) counts; a single loud peak does not.
-///
-/// PROVISIONAL: the level is the post-APM RMS `audioLevel`, and a clipping mic reads about 0.3
-/// to 0.8 there, so [near] is probably too high and this may never fire. The meter logs
-/// `hubbub: micLevel <value>` once a second so the threshold can be tuned from real journals.
-/// A true pre-APM peak comes with the later flutter_webrtc fork.
-class ClipDetector {
-  static const near = 0.9;
-  static const run = 6;
-  int _count = 0;
+/// Flags a mic that clips at the source, which the far side hears as a buzz. The capture path
+/// reports, about every 50 ms, the share of its 10 ms blocks whose pre-gain peak reached 0.98 of
+/// full scale ([MicLevels.clip]); the mic is clipping while more than 1% of the blocks over the
+/// last 500 ms (ten reports) did. The pre-gain peak is the device's own level, so a boost from
+/// the input volume slider never shows as clipping.
+class ClipWindow {
+  static const threshold = 0.01;
+  static const reports = 10;
+  final _recent = <double>[];
 
-  /// Feeds one sample; true while the mic is clipping.
-  bool add(double level) {
-    _count = level >= near ? _count + 1 : 0;
-    return _count >= run;
+  /// Feeds one report's clipped share; true while the mic is clipping.
+  bool add(double clip) {
+    _recent.add(clip);
+    if (_recent.length > reports) _recent.removeAt(0);
+    final mean = _recent.reduce((a, b) => a + b) / _recent.length;
+    return mean > threshold;
   }
 }
 
-/// Level meter under the input device: a bar, and a red clipping warning. Out of a call there
-/// is no peer connection to read a level from, so it says so instead of showing a fake one.
+/// Level meter under the input device: a bar of the peak that is sent (after the input volume),
+/// and a red clipping warning from the pre-gain peak. Out of a call nothing captures, so it says
+/// so instead of showing a fake level.
 class MicMeter extends StatelessWidget {
   const MicMeter({super.key, required this.levels, required this.inCall});
-  final Stream<double> levels;
+  final Stream<MicLevels> levels;
   final ValueListenable<bool> inCall;
 
   @override
@@ -50,15 +51,15 @@ class MicMeter extends StatelessWidget {
 
 class _LiveMeter extends StatefulWidget {
   const _LiveMeter({required this.levels});
-  final Stream<double> levels;
+  final Stream<MicLevels> levels;
 
   @override
   State<_LiveMeter> createState() => _LiveMeterState();
 }
 
 class _LiveMeterState extends State<_LiveMeter> {
-  final _clip = ClipDetector();
-  StreamSubscription<double>? _sub;
+  final _clip = ClipWindow();
+  StreamSubscription<MicLevels>? _sub;
   double _level = 0;
   bool _clipping = false;
   int _samples = 0;
@@ -68,10 +69,14 @@ class _LiveMeterState extends State<_LiveMeter> {
     super.initState();
     _sub = widget.levels.listen((l) {
       if (!mounted) return;
-      if (_samples++ % 10 == 0) debugPrint('hubbub: micLevel $l'); // about once a second
+      // about once a second at twenty reports a second; kept so real journals show the peaks
+      if (_samples++ % 20 == 0) {
+        debugPrint('hubbub: micLevel ${l.post} pre=${l.pre} post=${l.post} clip=${l.clip} '
+            'speech=${l.speech}');
+      }
       setState(() {
-        _level = l;
-        _clipping = _clip.add(l);
+        _level = l.post;
+        _clipping = _clip.add(l.clip);
       });
     });
   }

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/audio_settings.dart';
+import 'package:hubbub/capture_options.dart';
 import 'package:hubbub/room_adapter.dart';
 
 import 'support/fakes.dart';
@@ -36,7 +37,92 @@ void main() {
     });
   });
 
+  group('input processing prefs', () {
+    test('default_to_full_input_volume_and_rnnoise', () {
+      const p = AudioPrefs();
+      expect(p.inputGain, 1.0);
+      expect(p.noiseSuppression, NoiseSuppression.rnnoise);
+    });
+
+    test('round_trip_through_the_file_with_the_output_levels', () async {
+      final dir = Directory.systemTemp.createTempSync('audioprefs');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final store = AudioPrefsStore.file('${dir.path}/audio.json');
+      await store.save(const AudioPrefs(
+          master: 1.5, inputGain: 0.35, noiseSuppression: NoiseSuppression.standard));
+      final back = await AudioPrefsStore.file('${dir.path}/audio.json').load();
+      expect(back.inputGain, 0.35);
+      expect(back.noiseSuppression, NoiseSuppression.standard);
+      expect(back.master, 1.5);
+    });
+
+    test('an_old_file_without_them_loads_the_defaults_and_bad_values_are_clamped', () {
+      final old = AudioPrefs.fromJson({'master': 0.5});
+      expect((old.inputGain, old.noiseSuppression), (1.0, NoiseSuppression.rnnoise));
+      final bad = AudioPrefs.fromJson({'inputGain': 7, 'noiseSuppression': 'krisp'});
+      expect((bad.inputGain, bad.noiseSuppression), (2.0, NoiseSuppression.rnnoise));
+      expect(AudioPrefs.fromJson({'inputGain': -1}).inputGain, 0.0);
+    });
+  });
+
   group('audio settings', () {
+    test('the_input_volume_slider_reaches_the_room_and_is_saved_on_commit', () async {
+      final room = FakeRoom();
+      final store = AudioPrefsStore.memory();
+      final audio = AudioSettings(room, store);
+      await audio.start();
+      await audio.setInputGain(0.4);
+      expect(audio.inputGain, 0.4);
+      expect(room.inputGain, 0.4);
+      await audio.setInputGain(9);
+      await audio.commit();
+      expect(audio.inputGain, 2.0);
+      expect(room.inputGain, 2.0);
+      expect((await store.load()).inputGain, 2.0);
+    });
+
+    test('choosing_a_suppressor_tells_the_room_and_is_saved', () async {
+      final room = FakeRoom();
+      final store = AudioPrefsStore.memory();
+      final audio = AudioSettings(room, store);
+      await audio.start();
+      room.micCalls.clear();
+      await audio.setNoiseSuppression(NoiseSuppression.standard);
+      expect(room.micCalls, ['ns:standard']);
+      expect(audio.noiseSuppression, NoiseSuppression.standard);
+      expect((await store.load()).noiseSuppression, NoiseSuppression.standard);
+    });
+
+    test('a_start_and_every_join_hand_the_saved_input_levels_to_the_room', () async {
+      final room = FakeRoom();
+      final store = AudioPrefsStore.memory(const AudioPrefs(
+          inputGain: 0.25, noiseSuppression: NoiseSuppression.none));
+      final audio = AudioSettings(room, store);
+      await audio.start();
+      expect(room.inputGain, 0.25);
+      expect(room.noiseSuppression, NoiseSuppression.none);
+      room.inputGain = 1; // a fresh media stack knows nothing
+      room.noiseSuppression = NoiseSuppression.rnnoise;
+      await audio.applyForJoin();
+      expect(room.inputGain, 0.25);
+      expect(room.noiseSuppression, NoiseSuppression.none);
+    });
+
+    test('an_input_volume_drag_is_throttled_and_the_last_value_always_arrives', () async {
+      final room = FakeRoom();
+      final audio = AudioSettings(room, AudioPrefsStore.memory());
+      await audio.start();
+      room.micCalls.clear();
+      for (var i = 1; i <= 10; i++) {
+        await audio.setInputGain(i / 10);
+      }
+      expect(room.micCalls.length, lessThan(5));
+      await audio.commit();
+      expect(room.inputGain, 1.0);
+    });
+  });
+
+  group('audio settings (output)', () {
     late FakeRoom room;
     late AudioPrefsStore store;
     late AudioSettings audio;

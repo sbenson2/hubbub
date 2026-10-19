@@ -5,16 +5,49 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'capture_options.dart';
 import 'room_adapter.dart';
 
-/// Output levels of this machine: the master volume, and per person a volume and a local mute.
+/// Audio levels of this machine: the output master volume, per person a volume and a local mute,
+/// and for your own microphone the input volume and the noise suppressor.
 class AudioPrefs {
-  const AudioPrefs({this.master = 1, this.volumes = const {}, this.muted = const {}});
+  const AudioPrefs({
+    this.master = 1,
+    this.volumes = const {},
+    this.muted = const {},
+    this.inputGain = 1,
+    this.noiseSuppression = NoiseSuppression.rnnoise,
+  });
   final double master;
   final Map<String, double> volumes;
   final Set<String> muted;
 
-  Map<String, Object?> toJson() => {'master': master, 'volumes': volumes, 'muted': muted.toList()};
+  /// Microphone gain, 0 to [maxVolume] (Discord's Input Volume).
+  final double inputGain;
+  final NoiseSuppression noiseSuppression;
+
+  AudioPrefs copyWith({
+    double? master,
+    Map<String, double>? volumes,
+    Set<String>? muted,
+    double? inputGain,
+    NoiseSuppression? noiseSuppression,
+  }) =>
+      AudioPrefs(
+        master: master ?? this.master,
+        volumes: volumes ?? this.volumes,
+        muted: muted ?? this.muted,
+        inputGain: inputGain ?? this.inputGain,
+        noiseSuppression: noiseSuppression ?? this.noiseSuppression,
+      );
+
+  Map<String, Object?> toJson() => {
+        'master': master,
+        'volumes': volumes,
+        'muted': muted.toList(),
+        'inputGain': inputGain,
+        'noiseSuppression': noiseSuppression.name,
+      };
 
   static AudioPrefs fromJson(Object? j) {
     if (j is! Map) return const AudioPrefs();
@@ -22,6 +55,8 @@ class AudioPrefs {
     final volumes = j['volumes'], muted = j['muted'];
     return AudioPrefs(
       master: level(j['master']),
+      inputGain: level(j['inputGain']),
+      noiseSuppression: NoiseSuppression.fromName(j['noiseSuppression']),
       volumes: volumes is Map
           ? {for (final e in volumes.entries) if (e.key is String) e.key as String: level(e.value)}
           : const {},
@@ -64,7 +99,7 @@ class AudioPrefsStore {
   }
 }
 
-/// The output volumes, saved choices, and pushing them to the media room.
+/// The output volumes and input processing, saved choices, and pushing them to the media room.
 class AudioSettings extends ChangeNotifier {
   AudioSettings(this._room, this._store);
 
@@ -84,8 +119,11 @@ class AudioSettings extends ChangeNotifier {
   double volumeOf(String id) => _prefs.volumes[id] ?? 1;
   bool isLocallyMuted(String id) => _prefs.muted.contains(id);
 
-  /// The level of your own microphone for the settings meter.
-  Stream<double> get inputLevel => _room.inputLevel;
+  double get inputGain => _prefs.inputGain;
+  NoiseSuppression get noiseSuppression => _prefs.noiseSuppression;
+
+  /// The peaks of your own microphone for the settings meter.
+  Stream<MicLevels> get micLevels => _room.micLevels;
 
   Future<void> start() async {
     final loaded = await _store.load();
@@ -96,29 +134,40 @@ class AudioSettings extends ChangeNotifier {
   }
 
   Future<void> setMaster(double v) async {
-    _prefs = AudioPrefs(
-        master: v.clamp(0.0, maxVolume), volumes: _prefs.volumes, muted: _prefs.muted);
+    _prefs = _prefs.copyWith(master: v.clamp(0.0, maxVolume));
     notifyListeners();
     await _throttled('master', () => _room.setMasterVolume(master.clamp(0.0, maxVolume)));
   }
 
   Future<void> setVolume(String id, double v) async {
     final level = v.clamp(0.0, maxVolume);
-    _prefs = AudioPrefs(
-        master: master, volumes: {..._prefs.volumes, id: level}, muted: _prefs.muted);
+    _prefs = _prefs.copyWith(volumes: {..._prefs.volumes, id: level});
     notifyListeners();
     await _throttled('volume:$id', () => _room.setParticipantVolume(id, level));
   }
 
   /// Local only: you stop hearing [id]; nobody else is told.
   Future<void> setLocalMute(String id, bool muted) async {
-    _prefs = AudioPrefs(
-        master: master,
-        volumes: _prefs.volumes,
+    _prefs = _prefs.copyWith(
         muted: muted ? {..._prefs.muted, id} : ({..._prefs.muted}..remove(id)));
     notifyListeners();
     await _push(() => _room.setLocalMuteFor(id, muted));
     await commit(); // a mute is a click, not a drag
+  }
+
+  /// Your microphone gain (0 to [maxVolume]); like the output sliders it reaches the capture
+  /// path while dragging (throttled) and is saved by [commit].
+  Future<void> setInputGain(double v) async {
+    _prefs = _prefs.copyWith(inputGain: v.clamp(0.0, maxVolume));
+    notifyListeners();
+    await _throttled('input-gain', () => _room.setInputGain(inputGain));
+  }
+
+  Future<void> setNoiseSuppression(NoiseSuppression ns) async {
+    _prefs = _prefs.copyWith(noiseSuppression: ns);
+    notifyListeners();
+    await _push(() => _room.setNoiseSuppression(ns));
+    await commit(); // a choice, not a drag
   }
 
   /// Saves what the sliders now show; called when a drag ends.
@@ -153,6 +202,8 @@ class AudioSettings extends ChangeNotifier {
   /// Before a join (and once the saved levels are loaded): hand every level to the room. The
   /// adapter keeps them across calls too; this makes a fresh room agree with the saved state.
   Future<void> applyForJoin() async {
+    await _push(() => _room.setNoiseSuppression(noiseSuppression));
+    await _push(() => _room.setInputGain(inputGain));
     await _push(() => _room.setMasterVolume(master));
     for (final e in _prefs.volumes.entries) {
       await _push(() => _room.setParticipantVolume(e.key, e.value));

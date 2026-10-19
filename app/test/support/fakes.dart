@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:hubbub/app_shell.dart';
+import 'package:hubbub/capture_options.dart';
 import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/links.dart';
 import 'package:hubbub/node_controller.dart';
@@ -214,10 +215,30 @@ class FakeRoom implements RoomAdapter {
     volumeCalls.add('mute:$id:$muted');
   }
 
-  final _levels = StreamController<double>.broadcast();
-  void emitLevel(double v) => _levels.add(v);
+  final _levels = StreamController<MicLevels>.broadcast();
+  void emitLevels(MicLevels l) => _levels.add(l);
+
+  /// A window whose pre-gain peak is [pre], sent at [post] after gain.
+  void emitPeak(double pre, {double? post, double clip = 0, double speech = -1}) =>
+      _levels.add(MicLevels(pre: pre, post: post ?? pre, clip: clip, speech: speech));
   @override
-  Stream<double> get inputLevel => _levels.stream;
+  Stream<MicLevels> get micLevels => _levels.stream;
+
+  /// What the room was last told about the microphone, and every such call in order.
+  double inputGain = 1;
+  NoiseSuppression noiseSuppression = NoiseSuppression.rnnoise;
+  final micCalls = <String>[];
+  @override
+  Future<void> setInputGain(double v) async {
+    inputGain = v;
+    micCalls.add('gain:$v');
+  }
+
+  @override
+  Future<void> setNoiseSuppression(NoiseSuppression ns) async {
+    noiseSuppression = ns;
+    micCalls.add('ns:${ns.name}');
+  }
 
   void emitParticipants(List<RoomParticipant> p) => _participants.add(p);
   void emitSignal(RoomSignal s) => _signals.add(s);

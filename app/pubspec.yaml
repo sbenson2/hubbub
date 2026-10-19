@@ -47,6 +47,12 @@ dependencies:
   window_manager: 0.5.2
   tray_manager: 0.5.2
 
+# Hubbub carries a patched copy of the flutter_webrtc desktop plugin (RNNoise, input gain and
+# a true peak meter in the capture path). See third_party/flutter_webrtc/HUBBUB_PATCHES.md.
+dependency_overrides:
+  flutter_webrtc:
+    path: ../third_party/flutter_webrtc
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

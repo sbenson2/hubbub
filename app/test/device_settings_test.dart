@@ -92,6 +92,9 @@ void main() {
     }
 
     Future<void> pick(WidgetTester tester, String dropdown, String item) async {
+      // the page is taller with the input volume and noise suppression: scroll to the dropdown
+      await tester.ensureVisible(find.byKey(Key(dropdown)));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(Key(dropdown)));
       await tester.pumpAndSettle();
       await tester.tap(find.text(item).last);
