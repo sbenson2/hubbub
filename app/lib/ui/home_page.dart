@@ -365,6 +365,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
+      _requireIce(c);
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted || _call != call) return;
@@ -636,6 +637,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (channel.isVoice && _callHere != channel.name) await _join(channel.name);
   }
 
+  /// Call media reaches the host only through the node's TURN shim. Credentials without it
+  /// (the machine has no usable network address) could join a room that never gets audio, so
+  /// fail the join with a clear message instead.
+  void _requireIce(AppVoiceCredentials c) {
+    if (c.ice != null) return;
+    debugPrint('hubbub: voice credentials carry no ICE server (no network address for media); not joining');
+    throw const _NoMediaAddress();
+  }
+
   Future<void> _join(String channel) async {
     if (_joining != null) return;
     setState(() => _joining = (_key, channel));
@@ -644,6 +654,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final node = _node;
       final key = _key;
       final c = await node.credentials(channel);
+      _requireIce(c);
       await _devices.applyForJoin();
       await _audio.applyForJoin();
       if (!mounted) return;
@@ -1055,4 +1066,11 @@ class _FullscreenStreamState extends State<_FullscreenStream> {
           ),
         ),
       );
+}
+
+class _NoMediaAddress implements Exception {
+  const _NoMediaAddress();
+
+  @override
+  String toString() => "Couldn't start voice: no network address for media";
 }

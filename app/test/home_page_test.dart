@@ -103,11 +103,19 @@ void main() {
     expect(room.iceAtConnect, next, reason: 'the rejoin must use the ICE config of the new credentials');
   });
 
-  testWidgets('a_node_without_a_usable_address_joins_with_no_ice_server', (tester) async {
+  testWidgets('a_node_without_a_usable_address_does_not_join_a_call_that_cannot_get_media', (tester) async {
     await pumpShell(tester);
     node.ice = null;
-    await joinLobby(tester);
-    expect(room.iceAtConnect, isNull);
+    final logs = <String?>[];
+    final prev = debugPrint;
+    debugPrint = (String? m, {int? wrapWidth}) => logs.add(m);
+    await tester.tap(find.text('lobby'));
+    await tester.pumpAndSettle();
+    debugPrint = prev;
+    expect(room.calls, isNot(contains('connect')));
+    expect(find.textContaining("Couldn't start voice: no network address for media"), findsOneWidget);
+    expect(find.text('Voice Connected'), findsNothing);
+    expect(logs.any((l) => l != null && l.startsWith('hubbub:') && l.contains('no network address')), isTrue);
   });
 
   testWidgets('a_host_change_during_an_in_flight_rejoin_is_not_lost', (tester) async {
