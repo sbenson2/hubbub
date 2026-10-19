@@ -400,6 +400,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         // The new host's media server may be a moment late: one more try before giving up.
         await Future<void>.delayed(const Duration(seconds: 2));
         if (!mounted || _call != call) return;
+        // Another host took over meanwhile, so these credentials are stale: the finally below
+        // follows the new host instead. (With no host at all, retry as before.)
+        final now = call.node.host;
+        if (now != null && (now != c.host || call.node.term != c.term.toInt())) return;
         await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
       }
       await widget.room.setMicrophoneEnabled(!_muted);
@@ -774,16 +778,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
     // Out of a call these settings apply on the next join.
     if (_call == null) return;
+    var deafApplied = false;
     try {
-      if (deafChanged) await widget.room.setDeafened(deafened);
+      if (deafChanged) {
+        await widget.room.setDeafened(deafened);
+        deafApplied = true;
+      }
       if (muteChanged || deafChanged) await widget.room.setMicrophoneEnabled(!muted);
     } catch (e) {
-      // The room did not take it: show what is really on.
+      // The room did not take it: show what is really on (a deafen that went through stays).
       _toast('Could not ${muted ? 'mute' : 'unmute'}: $e');
       if (mounted) {
         setState(() {
           _muted = !muteChanged ? _muted : !muted;
-          _deafened = !deafChanged ? _deafened : !deafened;
+          _deafened = !deafChanged || deafApplied ? _deafened : !deafened;
         });
       }
     }

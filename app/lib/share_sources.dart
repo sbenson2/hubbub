@@ -1,3 +1,6 @@
+import 'dart:ffi';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:window_manager/window_manager.dart';
@@ -40,10 +43,20 @@ Future<List<ShareSource>> desktopShareSources() async {
 /// enough to repeat while a share runs. Throws when the platform cannot list sources.
 typedef ShareSourceCheck = Future<bool> Function(String id);
 
+/// [ShareSourceCheck] for the desktop. The Windows window list leaves out minimized windows
+/// and windows on another virtual desktop, so there a window counts as gone only once its
+/// handle is destroyed (a window's id is its HWND).
 Future<bool> desktopSourceExists(String id) async {
+  if (Platform.isWindows) {
+    final hwnd = int.tryParse(id);
+    if (hwnd != null && _isWindow(hwnd) != 0) return true;
+  }
   final all = await rtc.desktopCapturer.getSources(types: [rtc.SourceType.Screen, rtc.SourceType.Window]);
   return all.any((s) => s.id == id);
 }
+
+final _isWindow = DynamicLibrary.open('user32.dll')
+    .lookupFunction<Int32 Function(IntPtr), int Function(int)>('IsWindow');
 
 /// Full-screen for the app window (a focused stream's Full Screen button).
 Future<void> setWindowFullscreen(bool on) async {

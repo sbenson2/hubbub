@@ -200,6 +200,36 @@ void main() {
     expect(find.byTooltip('Mute'), findsWidgets, reason: 'the mic is still on');
   });
 
+  testWidgets('a_rejoin_retry_follows_a_host_change_from_its_wait', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.connectFailures = 1;
+    events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+    await tester.pump();
+    // The connect to bbbb failed; the host moves on before the retry.
+    events.add(AppNodeEvent.hostChanged(host: 'cccc', term: BigInt.from(3), isMe: false));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+
+    expect(node.credentialRequests, ['lobby', 'lobby', 'lobby'], reason: 'fresh credentials for cccc');
+    expect(room.calls.where((c) => c == 'connect').length, 2,
+        reason: 'the failed bbbb connect, then cccc; no retry with the bbbb credentials');
+    expect(find.text('Voice Connected'), findsOneWidget);
+  });
+
+  testWidgets('a_deafen_whose_mute_fails_still_shows_deafened', (tester) async {
+    await pumpShell(tester);
+    await joinLobby(tester);
+
+    room.micError = StateError('capture refused');
+    await tester.tap(find.byTooltip('Deafen'));
+    await tester.pumpAndSettle();
+
+    expect(room.calls.where((c) => c.startsWith('deafened')), ['deafened:true']);
+    expect(find.byTooltip('Undeafen'), findsWidgets, reason: 'the room did deafen');
+  });
+
   testWidgets('deafen_mutes_the_mic_and_undeafen_restores_both', (tester) async {
     await pumpShell(tester);
     await joinLobby(tester);
