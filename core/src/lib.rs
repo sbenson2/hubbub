@@ -19,3 +19,4 @@ pub mod text;
 pub mod tunnel;
 pub mod upnp;
 pub mod view;
+pub mod voice;

@@ -64,6 +64,17 @@ pub struct HaveChannel {
     pub ids: Vec<(MemberId, u64)>,
 }
 
+/// One member in a voice channel, with their mute and deafen state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoicePresence {
+    pub member: MemberId,
+    pub channel: String,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub deafened: bool,
+}
+
 /// Every control message between nodes.
 ///
 /// Mixed versions talk to each other (friends update at different times), so changes follow
@@ -119,6 +130,20 @@ pub enum CtlMsg {
         #[serde(with = "hex_bytes")]
         ciphertext: Vec<u8>,
     },
+    /// The sender's own voice-channel state, sent to its direct peers on every change and on
+    /// every new session while it is in a call. The receiver takes the member from the session.
+    /// `channel: None` means not in a call.
+    VoiceState {
+        channel: Option<String>,
+        #[serde(default)]
+        muted: bool,
+        #[serde(default)]
+        deafened: bool,
+    },
+    /// Who is in which voice channel, as the host sees it (its own state plus every direct
+    /// peer's). Sent by the host to all peers on every change, to each new session and when it
+    /// becomes host. A member accepts it only from the member it sees as host at `term`.
+    VoiceRoster { term: u64, entries: Vec<VoicePresence> },
     /// Never sent: what `read_msg` returns for a frame it cannot decode (a message from a newer
     /// build). The session skips it.
     #[serde(skip)]
@@ -149,10 +174,15 @@ pub async fn write_msg(s: &mut iroh::endpoint::SendStream, m: &CtlMsg) -> Result
 /// between frames. An oversized length is an error and the stream is closed.
 pub async fn read_msg(r: &mut iroh::endpoint::RecvStream) -> Result<Option<CtlMsg>> {
     let Some(value) = read_json::<serde_json::Value>(r).await? else { return Ok(None) };
-    Ok(Some(serde_json::from_value(value).unwrap_or_else(|e| {
+    Ok(Some(decode_msg(value)))
+}
+
+/// A frame's JSON as a message; `Unknown` if this build cannot read it.
+fn decode_msg(value: serde_json::Value) -> CtlMsg {
+    serde_json::from_value(value).unwrap_or_else(|e| {
         eprintln!("hubbub: skipping a control message it cannot read: {e}");
         CtlMsg::Unknown
-    })))
+    })
 }
 
 /// `write_msg` for any message type (the join protocol has its own).
@@ -197,6 +227,30 @@ mod tests {
         assert_eq!(sig_alpn(&cid), b"hubbub/sig/1/000102030405060708090a0b0c0d0e0f");
         assert_eq!(media_alpn(&cid), b"hubbub/media/1/000102030405060708090a0b0c0d0e0f");
         assert!(ctl_alpn(&cid).starts_with(CTL_PREFIX));
+    }
+
+    #[test]
+    fn voice_messages_round_trip_and_older_fields_default() {
+        let state = CtlMsg::VoiceState { channel: Some("lobby".into()), muted: true, deafened: false };
+        let j = serde_json::to_string(&state).unwrap();
+        assert_eq!(j, r#"{"t":"VoiceState","channel":"lobby","muted":true,"deafened":false}"#);
+        assert_eq!(serde_json::from_str::<CtlMsg>(&j).unwrap(), state);
+        let bare: CtlMsg = serde_json::from_str(r#"{"t":"VoiceState","channel":null}"#).unwrap();
+        assert_eq!(bare, CtlMsg::VoiceState { channel: None, muted: false, deafened: false });
+        let roster = CtlMsg::VoiceRoster {
+            term: 3,
+            entries: vec![VoicePresence { member: MemberId([7; 32]), channel: "lobby".into(), muted: false, deafened: true }],
+        };
+        let j = serde_json::to_string(&roster).unwrap();
+        assert_eq!(serde_json::from_str::<CtlMsg>(&j).unwrap(), roster);
+    }
+
+    #[test]
+    fn a_message_from_a_newer_build_is_unknown() {
+        let future: serde_json::Value = serde_json::from_str(r#"{"t":"FromTheFuture","x":1}"#).unwrap();
+        assert_eq!(decode_msg(future), CtlMsg::Unknown);
+        let known: serde_json::Value = serde_json::from_str(r#"{"t":"Ping","nonce":1}"#).unwrap();
+        assert_eq!(decode_msg(known), CtlMsg::Ping { nonce: 1 });
     }
 
     #[test]

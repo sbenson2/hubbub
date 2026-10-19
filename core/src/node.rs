@@ -45,10 +45,11 @@ use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
 use crate::join::JoinMsg;
-use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, HaveChannel, PeerReport, PROTO_VERSION};
+use crate::proto::{read_json, read_msg, write_json, write_msg, CtlMsg, HaveChannel, PeerReport, VoicePresence, PROTO_VERSION};
 use crate::text::{Channels, Chat, Delivery, Ordered, Relay, Route, Submission, TextMessage};
 use crate::tunnel::{serve_host, serve_local};
 use crate::view::build_view;
+use crate::voice::{Slot, VoiceBook};
 
 const TICK: Duration = Duration::from_millis(100);
 const PING_EVERY: Duration = Duration::from_secs(1);
@@ -98,6 +99,9 @@ pub enum NodeEvent {
     /// The member list changed: someone joined, or a member's name or hosting ability did.
     /// `Node::members` has the new list. A change of who vouched for a member does not count.
     MembersChanged,
+    /// Who is in which voice channel changed. The full list, not a change: replace what was
+    /// shown. `Node::voice_roster` has the same list.
+    VoiceRoster { entries: Vec<VoicePresence> },
 }
 
 #[derive(Clone)]
@@ -243,6 +247,7 @@ impl Node {
                 rtc: None,
                 lk_served: Vec::new(),
                 lk_client: None,
+                voice: VoiceBook::default(),
             }),
             events,
             election,
@@ -279,6 +284,31 @@ impl Node {
 
     pub fn host_state(&self) -> HostState {
         self.inner.state.lock().unwrap().host
+    }
+
+    /// Tells every member where this node is in voice: `channel` is the voice channel it is
+    /// in, or `None` when it is in none (an unknown channel counts as none).
+    pub fn set_voice(&self, channel: Option<String>, muted: bool, deafened: bool) {
+        let slot = self.inner.voice_slot(channel, muted, deafened);
+        let msg = CtlMsg::VoiceState {
+            channel: slot.as_ref().map(|s| s.channel.clone()),
+            muted: slot.as_ref().is_some_and(|s| s.muted),
+            deafened: slot.as_ref().is_some_and(|s| s.deafened),
+        };
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            if st.voice.mine() == slot.as_ref() {
+                return;
+            }
+            st.voice.set_mine(slot);
+            Inner::broadcast_locked(&st, &msg);
+        }
+        self.inner.refresh_voice();
+    }
+
+    /// Who is in which voice channel, as this node shows it now.
+    pub fn voice_roster(&self) -> Vec<VoicePresence> {
+        self.inner.state.lock().unwrap().voice.shown().to_vec()
     }
 
     pub fn channels(&self) -> Channels {
@@ -521,6 +551,8 @@ struct State {
     lk_served: Vec<Connection>,
     /// This node's signal connection to the current host, reused across tunnel connections.
     lk_client: Option<(MemberId, Connection)>,
+    /// Who is in which voice channel (see `voice`).
+    voice: VoiceBook,
 }
 
 enum Cmd {
@@ -607,12 +639,35 @@ impl Inner {
 
     /// Queues `msg` on the newest session of every online peer.
     fn broadcast(&self, msg: &CtlMsg) {
-        let st = self.state.lock().unwrap();
+        Self::broadcast_locked(&self.state.lock().unwrap(), msg);
+    }
+
+    fn broadcast_locked(st: &State, msg: &CtlMsg) {
         for p in st.peers.values() {
             if let Some(s) = p.sessions.get(&p.newest) {
                 let _ = s.out.send(Out::Msg(msg.clone()));
             }
         }
+    }
+
+    /// Recomputes the voice roster. As host, sends a changed roster to every peer; if the
+    /// roster this node shows changed, emits it. Call after anything that can change it.
+    fn refresh_voice(&self) {
+        let mut st = self.state.lock().unwrap();
+        let host = st.host;
+        let r = st.voice.refresh(self.me, host);
+        if let Some((term, entries)) = r.broadcast {
+            Self::broadcast_locked(&st, &CtlMsg::VoiceRoster { term, entries });
+        }
+        if let Some(entries) = r.shown {
+            self.emit(NodeEvent::VoiceRoster { entries });
+        }
+    }
+
+    /// The slot for a voice state, if `channel` is one of this community's voice channels.
+    fn voice_slot(&self, channel: Option<String>, muted: bool, deafened: bool) -> Option<Slot> {
+        let channel = channel?;
+        self.chat.channels().voice.contains(&channel).then_some(Slot { channel, muted, deafened })
     }
 
     /// Like `broadcast`, to the peers whose newest session has been caught up on text.
@@ -764,6 +819,7 @@ impl Inner {
                         is_me: hs.host == Some(self.me),
                     });
                     self.flush_text();
+                    self.refresh_voice();
                 }
             }
         }
@@ -925,6 +981,20 @@ impl Inner {
         // The peer, if it hosts, sends back what this node lacks (see `CtlMsg::TextHave`).
         let (since_ms, have) = self.chat.have();
         let _ = out.send(Out::Msg(CtlMsg::TextHave { since_ms, have }));
+        {
+            // Voice: this node's own state, and the roster if it hosts.
+            let st = self.state.lock().unwrap();
+            if let Some(s) = st.voice.mine() {
+                let _ = out.send(Out::Msg(CtlMsg::VoiceState {
+                    channel: Some(s.channel.clone()),
+                    muted: s.muted,
+                    deafened: s.deafened,
+                }));
+            }
+            if let Some((term, entries)) = st.voice.roster_for_new_session(self.me, st.host) {
+                let _ = out.send(Out::Msg(CtlMsg::VoiceRoster { term, entries }));
+            }
+        }
         let probe_conn = conn.clone();
         let prober = self.clone();
         let helpers = [
@@ -952,6 +1022,8 @@ impl Inner {
             h.abort();
         }
         if self.remove_session(peer, id) {
+            self.state.lock().unwrap().voice.peer_down(peer);
+            self.refresh_voice();
             self.emit(NodeEvent::PeerDown { member: peer });
             self.elect(Input::PeerDown { member: peer, now_ms: self.now_ms() });
         }
@@ -1048,6 +1120,17 @@ impl Inner {
                 // The peer's measurement of this node; the view uses other members' reports.
                 CtlMsg::ProbeResult { .. } => {}
                 CtlMsg::Unknown => {}
+                CtlMsg::VoiceState { channel, muted, deafened } => {
+                    let slot = self.voice_slot(channel, muted, deafened);
+                    self.state.lock().unwrap().voice.set_peer(peer, slot);
+                    self.refresh_voice();
+                }
+                CtlMsg::VoiceRoster { term, entries } => {
+                    let known = self.chat.channels().voice.clone();
+                    let entries = entries.into_iter().filter(|e| known.contains(&e.channel)).collect();
+                    self.state.lock().unwrap().voice.offer(peer, term, entries);
+                    self.refresh_voice();
+                }
                 CtlMsg::TextHave { since_ms, have } => self.catch_up_text(peer, id, &out, since_ms, &have, true),
                 CtlMsg::TextSubmit { channel, client_id, ciphertext } => {
                     self.relay_text(peer, Submission { channel, client_id, ciphertext }, Some(out))
