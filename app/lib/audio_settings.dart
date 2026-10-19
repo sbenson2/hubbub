@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'room_adapter.dart';
@@ -71,6 +73,13 @@ class AudioSettings extends ChangeNotifier {
   AudioPrefs _prefs = const AudioPrefs();
   bool _disposed = false;
 
+  // Sliders fire many changes a second; the room hears at most one per key every 50 ms, and
+  // the last value is always delivered (by the timer, or at once by [commit]).
+  static const _throttle = Duration(milliseconds: 50);
+  final _lastPush = <String, DateTime>{};
+  final _pending = <String, Future<void> Function()>{};
+  Timer? _flushTimer;
+
   double get master => _prefs.master;
   double volumeOf(String id) => _prefs.volumes[id] ?? 1;
   bool isLocallyMuted(String id) => _prefs.muted.contains(id);
@@ -90,7 +99,7 @@ class AudioSettings extends ChangeNotifier {
     _prefs = AudioPrefs(
         master: v.clamp(0.0, maxVolume), volumes: _prefs.volumes, muted: _prefs.muted);
     notifyListeners();
-    await _push(() => _room.setMasterVolume(master));
+    await _throttled('master', () => _room.setMasterVolume(master.clamp(0.0, maxVolume)));
   }
 
   Future<void> setVolume(String id, double v) async {
@@ -98,7 +107,7 @@ class AudioSettings extends ChangeNotifier {
     _prefs = AudioPrefs(
         master: master, volumes: {..._prefs.volumes, id: level}, muted: _prefs.muted);
     notifyListeners();
-    await _push(() => _room.setParticipantVolume(id, level));
+    await _throttled('volume:$id', () => _room.setParticipantVolume(id, level));
   }
 
   /// Local only: you stop hearing [id]; nobody else is told.
@@ -113,7 +122,33 @@ class AudioSettings extends ChangeNotifier {
   }
 
   /// Saves what the sliders now show; called when a drag ends.
-  Future<void> commit() => _store.save(_prefs);
+  Future<void> commit() async {
+    await _flush();
+    await _store.save(_prefs);
+  }
+
+  Future<void> _throttled(String key, Future<void> Function() call) async {
+    final now = DateTime.now();
+    final last = _lastPush[key];
+    if (last == null || now.difference(last) >= _throttle) {
+      _lastPush[key] = now;
+      _pending.remove(key);
+      await _push(call);
+      return;
+    }
+    _pending[key] = call;
+    _flushTimer ??= Timer(_throttle, _flush);
+  }
+
+  Future<void> _flush() async {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    final calls = _pending.values.toList();
+    _pending.clear();
+    for (final c in calls) {
+      await _push(c);
+    }
+  }
 
   /// Before a join (and once the saved levels are loaded): hand every level to the room. The
   /// adapter keeps them across calls too; this makes a fresh room agree with the saved state.
@@ -138,6 +173,7 @@ class AudioSettings extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _flushTimer?.cancel();
     super.dispose();
   }
 }

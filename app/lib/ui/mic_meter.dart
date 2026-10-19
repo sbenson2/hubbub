@@ -13,6 +13,11 @@ double meterFill(double level) => math.sqrt(level.clamp(0.0, 1.0));
 /// Flags a mic that sits at full scale: that is a mic clipping at the source, which the far
 /// side hears as a buzz. A level of [near] or more for [run] samples in a row (about 0.6 s at
 /// ten samples a second) counts; a single loud peak does not.
+///
+/// PROVISIONAL: the level is the post-APM RMS `audioLevel`, and a clipping mic reads about 0.3
+/// to 0.8 there, so [near] is probably too high and this may never fire. The meter logs
+/// `hubbub: micLevel <value>` once a second so the threshold can be tuned from real journals.
+/// A true pre-APM peak comes with the later flutter_webrtc fork.
 class ClipDetector {
   static const near = 0.9;
   static const run = 6;
@@ -56,12 +61,14 @@ class _LiveMeterState extends State<_LiveMeter> {
   StreamSubscription<double>? _sub;
   double _level = 0;
   bool _clipping = false;
+  int _samples = 0;
 
   @override
   void initState() {
     super.initState();
     _sub = widget.levels.listen((l) {
       if (!mounted) return;
+      if (_samples++ % 10 == 0) debugPrint('hubbub: micLevel $l'); // about once a second
       setState(() {
         _level = l;
         _clipping = _clip.add(l);

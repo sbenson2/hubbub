@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hubbub/audio_settings.dart';
 import 'package:hubbub/device_settings.dart';
@@ -159,11 +160,17 @@ void main() {
       await tester.tap(find.byKey(const Key('menu-item:Desk Speakers')));
       await tester.pumpAndSettle();
       expect((await devStore.load()).output, isNull);
+      ScaffoldMessenger.of(tester.element(find.byType(Scaffold).first)).clearSnackBars();
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('User Settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Voice & Video'));
       await tester.pumpAndSettle();
-      expect(find.text("Couldn't switch to Desk Speakers. Still using Default."), findsOneWidget);
+      expect(
+          find.descendant(
+              of: find.byType(Dialog),
+              matching: find.text("Couldn't switch to Desk Speakers. Still using Default.")),
+          findsOneWidget);
     });
 
     testWidgets('the_output_volume_slider_sets_the_master_volume_and_saves_it', (tester) async {
@@ -193,6 +200,44 @@ void main() {
       expect(find.text('OUTPUT VOLUME'), findsOneWidget);
       await setSlider(tester, find.byKey(const Key('settings-output-volume')), 0.25);
       expect(room.masterVolume, closeTo(0.5, 0.1));
+    });
+  });
+
+  group('menu robustness', () {
+    testWidgets('a_long_device_list_scrolls_instead_of_overflowing', (tester) async {
+      await pumpShell(tester);
+      room.plugDevices([
+        for (var i = 0; i < 40; i++) MediaDeviceInfo('m$i', 'Mic number $i', DeviceKind.audioInput),
+      ]);
+      await tester.pumpAndSettle();
+      await rightClick(tester, inPanel('Mute'));
+      expect(tester.takeException(), isNull);
+      expect(find.text('Voice Settings'), findsOneWidget);
+      final menu = find.byType(SingleChildScrollView);
+      expect(menu, findsWidgets);
+    });
+
+    testWidgets('a_failed_switch_from_the_menu_shows_the_error_where_you_clicked',
+        (tester) async {
+      await pumpShell(tester);
+      room.outputError = StateError('Not found device id');
+      await rightClick(tester, inPanel('Deafen'));
+      await tester.tap(find.byKey(const Key('menu-item:Desk Speakers')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.text("Couldn't switch to Desk Speakers. Still using Default."), findsOneWidget);
+    });
+
+    testWidgets('a_keyboard_change_of_a_slider_is_saved_too', (tester) async {
+      await pumpShell(tester);
+      await rightClick(tester, inPanel('Deafen'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab); // focus the slider
+      await tester.pump();
+      final before = room.masterVolume;
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      expect(room.masterVolume, greaterThan(before));
+      expect((await audioStore.load()).master, room.masterVolume);
     });
   });
 
@@ -233,6 +278,7 @@ void main() {
     testWidgets('the_member_list_opens_it_too', (tester) async {
       await pumpShell(tester);
       await join(tester);
+      events.add(AppNodeEvent.peerUp(member: carol, direct: true));
       await tester.tap(find.text('general'));
       await tester.pumpAndSettle();
       await rightClick(tester, find.byKey(ValueKey('member:$carol')));
@@ -240,6 +286,15 @@ void main() {
       await tester.tap(find.text('Mute'));
       await tester.pumpAndSettle();
       expect(room.localMutes, {carol});
+    });
+
+    testWidgets('an_offline_member_has_no_volume_menu', (tester) async {
+      await pumpShell(tester);
+      await join(tester);
+      await tester.tap(find.text('general'));
+      await tester.pumpAndSettle();
+      await rightClick(tester, find.byKey(ValueKey('member:$carol')));
+      expect(find.text('User Volume'), findsNothing);
     });
 
     testWidgets('there_is_no_menu_on_yourself', (tester) async {
@@ -318,6 +373,25 @@ void main() {
       room.emitLevel(0.2);
       await tester.pump();
       expect(find.byKey(const Key('mic-clipping')), findsNothing);
+    });
+
+    testWidgets('the_level_is_logged_once_a_second_for_tuning', (tester) async {
+      final lines = <String>[];
+      final old = debugPrint;
+      debugPrint = (m, {wrapWidth}) => lines.add(m ?? '');
+      try {
+        await pumpShell(tester);
+        await join(tester);
+        await openVoice(tester);
+        for (var i = 0; i < 25; i++) {
+          room.emitLevel(0.42);
+          await tester.pump();
+        }
+      } finally {
+        debugPrint = old;
+      }
+      expect(lines.where((l) => l == 'hubbub: micLevel 0.42').length, 3,
+          reason: lines.join('|')); // samples 1, 11, 21
     });
 
     test('the_detector_needs_a_run_of_near_full_scale_samples', () {

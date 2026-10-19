@@ -63,24 +63,35 @@ class _DeviceMenu extends StatelessWidget {
               on ? Icons.radio_button_checked : Icons.radio_button_unchecked;
           // The same call as the settings dropdown: one code path, with its live switch and
           // its revert on failure. The menu closes first; a failure shows in settings.
-          void choose(MediaDeviceInfo? d) {
+          void choose(MediaDeviceInfo? d) async {
+            final messenger = ScaffoldMessenger.maybeOf(context);
             Navigator.of(context).pop();
-            devices.choose(kind, d);
+            await devices.choose(kind, d);
+            final error = devices.errorOf(kind);
+            if (error != null) messenger?.showSnackBar(SnackBar(content: Text(error)));
           }
 
           return Column(mainAxisSize: MainAxisSize.min, children: [
             MenuLabel(title),
-            MenuItem(
-                key: const Key('menu-item:Default'),
-                label: 'Default',
-                leading: radio(selected == null),
-                onTap: () => choose(null)),
-            for (final d in list)
-              MenuItem(
-                  key: Key('menu-item:${devices.labelOf(d)}'),
-                  label: devices.labelOf(d),
-                  leading: radio(selected?.id == d.id),
-                  onTap: () => choose(d)),
+            // Many devices scroll inside the menu instead of overflowing a short window.
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 256),
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  MenuItem(
+                      key: const Key('menu-item:Default'),
+                      label: 'Default',
+                      leading: radio(selected == null),
+                      onTap: () => choose(null)),
+                  for (final d in list)
+                    MenuItem(
+                        key: Key('menu-item:${devices.labelOf(d)}'),
+                        label: devices.labelOf(d),
+                        leading: radio(selected?.id == d.id),
+                        onTap: () => choose(d)),
+                ]),
+              ),
+            ),
             if (audio != null) ...[
               const _Divider(),
               MenuLabel('OUTPUT VOLUME', trailing: percent(audio!.master)),

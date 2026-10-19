@@ -493,17 +493,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return AudioScope(
         audio: _audio,
         child: Scaffold(
-        key: _scaffold,
-        backgroundColor: HubColors.main,
-        drawer: narrow
-            ? Drawer(
-                width: 312,
-                backgroundColor: HubColors.sidebar,
-                shape: const RoundedRectangleBorder(),
-                child: nav,
-              )
-            : null,
-        body: narrow ? main : Row(children: [nav, Expanded(child: main)]),
+          key: _scaffold,
+          backgroundColor: HubColors.main,
+          drawer: narrow
+              ? Drawer(
+                  width: 312,
+                  backgroundColor: HubColors.sidebar,
+                  shape: const RoundedRectangleBorder(),
+                  child: nav,
+                )
+              : null,
+          body: narrow ? main : Row(children: [nav, Expanded(child: main)]),
         ),
       );
     });

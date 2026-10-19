@@ -369,6 +369,16 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sampleStats());
   }
 
+  /// Ends the app's use of the adapter: stops the meter's polling and closes its stream.
+  Future<void> dispose() async {
+    _levelTimer?.cancel();
+    _levelTimer = null;
+    await _levels.close();
+    await disconnect();
+    await _signals.close();
+    await _participants.close();
+  }
+
   @override
   Future<void> disconnect() async {
     _statsTimer?.cancel();

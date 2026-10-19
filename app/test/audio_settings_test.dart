@@ -105,6 +105,16 @@ void main() {
       expect(room.effectiveFor('cccc'), 0);
     });
 
+    test('applying_while_dragging_is_throttled_and_commit_flushes_the_last_value', () async {
+      for (var i = 1; i <= 10; i++) {
+        await audio.setMaster(i / 10);
+      }
+      expect(room.volumeCalls.where((c) => c.startsWith('master:')).length, lessThan(5));
+      await audio.commit();
+      expect(room.masterVolume, 1.0, reason: 'the last value always reaches the room');
+      expect((await store.load()).master, 1.0);
+    });
+
     test('effective_volume_is_clamped_to_what_set_volume_accepts', () {
       expect(effectiveVolume(2, 2, false), 4);
       expect(effectiveVolume(10, 10, false), 10);

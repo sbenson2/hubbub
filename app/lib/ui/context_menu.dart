@@ -130,8 +130,9 @@ class _MenuItemState extends State<MenuItem> {
 }
 
 /// A 0 to 200% slider with its percentage, as Discord's volume sliders. [onChanged] fires
-/// while dragging, [onChangeEnd] when the pointer lets go (the moment to save).
-class VolumeSlider extends StatelessWidget {
+/// while dragging; [onChangeEnd] when the pointer lets go, and after every change that is not
+/// part of a drag (the keyboard), so each of those is saved too.
+class VolumeSlider extends StatefulWidget {
   const VolumeSlider({
     super.key,
     required this.value,
@@ -141,6 +142,13 @@ class VolumeSlider extends StatelessWidget {
   final double value;
   final ValueChanged<double> onChanged;
   final VoidCallback onChangeEnd;
+
+  @override
+  State<VolumeSlider> createState() => _VolumeSliderState();
+}
+
+class _VolumeSliderState extends State<VolumeSlider> {
+  bool _dragging = false;
 
   @override
   Widget build(BuildContext context) => SliderTheme(
@@ -154,11 +162,18 @@ class VolumeSlider extends StatelessWidget {
           trackShape: const RoundedRectSliderTrackShape(),
         ),
         child: Slider(
-          value: value.clamp(0.0, 2.0),
+          value: widget.value.clamp(0.0, 2.0),
           min: 0,
           max: 2,
-          onChanged: onChanged,
-          onChangeEnd: (_) => onChangeEnd(),
+          onChangeStart: (_) => _dragging = true,
+          onChanged: (v) {
+            widget.onChanged(v);
+            if (!_dragging) widget.onChangeEnd();
+          },
+          onChangeEnd: (_) {
+            _dragging = false;
+            widget.onChangeEnd();
+          },
         ),
       );
 }

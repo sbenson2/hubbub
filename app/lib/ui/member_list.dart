@@ -92,7 +92,7 @@ class _MemberRowState extends State<_MemberRow> {
     return UserVolumeRegion(
       id: m.id,
       name: name,
-      isMe: widget.isMe,
+      isMe: widget.isMe || !widget.online, // Discord has no volume for offline members
       child: MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
