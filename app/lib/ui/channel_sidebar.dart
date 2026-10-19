@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'audio_menus.dart';
 import 'avatar.dart';
 import 'theme.dart';
 
@@ -37,6 +38,7 @@ class VoiceMember {
     this.muted = false,
     this.deafened = false,
     this.hosting = false,
+    this.isMe = false,
   });
 
   final String id;
@@ -45,6 +47,9 @@ class VoiceMember {
   final bool muted;
   final bool deafened;
   final bool hosting;
+
+  /// You: nobody sets their own volume.
+  final bool isMe;
 }
 
 /// The community header, collapsible text and voice categories, and the people in the
@@ -389,7 +394,11 @@ class _VoiceMemberRowState extends State<_VoiceMemberRow> {
   Widget build(BuildContext context) {
     final m = widget.member;
     final bg = _hover ? HubColors.hover : HubColors.sidebar;
-    return MouseRegion(
+    return UserVolumeRegion(
+      id: m.id,
+      name: m.name,
+      isMe: m.isMe,
+      child: MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: Container(
@@ -442,6 +451,7 @@ class _VoiceMemberRowState extends State<_VoiceMemberRow> {
           ],
         ]),
       ),
+    ),
     );
   }
 }

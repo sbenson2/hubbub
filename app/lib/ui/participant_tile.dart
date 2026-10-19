@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'audio_menus.dart';
 import 'avatar.dart';
 import 'channel_sidebar.dart';
 import 'theme.dart';
@@ -13,7 +14,8 @@ class ParticipantTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = member;
-    return LayoutBuilder(builder: (context, box) {
+    return UserVolumeRegion(
+        id: m.id, name: m.name, isMe: m.isMe, child: LayoutBuilder(builder: (context, box) {
       final avatar = (box.maxHeight * 0.4).clamp(40.0, 80.0);
       return Container(
         decoration: BoxDecoration(
@@ -75,6 +77,6 @@ class ParticipantTile extends StatelessWidget {
           ),
         ]),
       );
-    });
+    }));
   }
 }

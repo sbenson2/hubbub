@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../audio_settings.dart';
 import '../device_settings.dart';
 import '../hub_controller.dart';
 import '../links.dart';
@@ -11,6 +12,7 @@ import '../node_controller.dart';
 import '../room_adapter.dart';
 import '../src/rust/api/hubbub.dart';
 import '../text_controller.dart';
+import 'audio_menus.dart';
 import 'avatar.dart';
 import 'channel_sidebar.dart';
 import 'community_rail.dart';
@@ -43,6 +45,7 @@ class HomePage extends StatefulWidget {
     this.clock,
     this.linkSource,
     this.deviceStore,
+    this.audioStore,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
   /// A single server (the pre-hub path); [hub] holds every server.
@@ -60,6 +63,9 @@ class HomePage extends StatefulWidget {
   /// Where the microphone, speaker and camera choices are kept; in memory when null (tests).
   final DevicePrefsStore? deviceStore;
 
+  /// Where the output volumes are kept; in memory when null (tests).
+  final AudioPrefsStore? audioStore;
+
   /// Replaces the wall clock for message times (tests).
   final DateTime Function()? clock;
 
@@ -75,13 +81,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _views = <String, ChannelRef>{};
   final _attached = <String, NodeController>{};
   late final DeviceSettings _devices;
+  late final AudioSettings _audio;
   StreamSubscription<RoomSignal>? _signalSub;
   StreamSubscription<List<RoomParticipant>>? _peopleSub;
   List<RoomParticipant> _people = const [];
 
   /// The voice channel whose call we are in (and its server), and the one being joined.
   /// Switching server leaves the call running, as Discord does.
-  _Call? _call;
+  _Call? get _call => _callValue;
+  set _call(_Call? c) {
+    _callValue = c;
+    _inCall.value = c != null;
+  }
+
+  _Call? _callValue;
+
+  /// Whether a call is up, for the settings dialog's mic meter.
+  final _inCall = ValueNotifier<bool>(false);
   (String, String)? _joining;
   bool _muted = false;
   bool _deafened = false;
@@ -125,6 +141,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _hub.addListener(_refresh);
     _devices = DeviceSettings(widget.room, widget.deviceStore ?? DevicePrefsStore.memory());
     unawaited(_devices.start());
+    _audio = AudioSettings(widget.room, widget.audioStore ?? AudioPrefsStore.memory());
+    unawaited(_audio.start());
     WidgetsBinding.instance.addObserver(this);
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
@@ -218,6 +236,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _devices.dispose();
+    _audio.dispose();
+    _inCall.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _links?.dispose();
     _hub.removeListener(_refresh);
@@ -285,6 +305,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
       await _devices.applyForJoin();
+      await _audio.applyForJoin();
       if (!mounted || _call != call) return;
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
@@ -376,6 +397,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final key = _key;
       final c = await node.credentials(channel);
       await _devices.applyForJoin();
+      await _audio.applyForJoin();
       if (!mounted) return;
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
@@ -435,6 +457,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             muted: p.isLocal ? _muted : p.muted,
             deafened: p.isLocal && _deafened,
             hosting: p.id == (_call?.node ?? _node).host,
+            isMe: p.isLocal,
           ),
       ];
 
@@ -467,7 +490,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ]),
         ),
       ]);
-      return Scaffold(
+      return AudioScope(
+        audio: _audio,
+        child: Scaffold(
         key: _scaffold,
         backgroundColor: HubColors.main,
         drawer: narrow
@@ -479,6 +504,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               )
             : null,
         body: narrow ? main : Row(children: [nav, Expanded(child: main)]),
+        ),
       );
     });
   }
@@ -534,18 +560,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 deafened: _deafened,
                 onToggleMute: _toggleMute,
                 onToggleDeafen: _toggleDeafen,
-                onSettings: () => showSettingsDialog(
-                  context,
-                  memberId: _node.memberId ?? '',
-                  tag: _node.memberTag ?? '',
-                  devices: _devices,
-                ),
+                devices: _devices,
+                audio: _audio,
+                onVoiceSettings: () => _openSettings(voice: true),
+                onSettings: _openSettings,
               ),
           ]),
         ),
       ]),
     );
   }
+
+  Future<void> _openSettings({bool voice = false}) => showSettingsDialog(
+        context,
+        memberId: _node.memberId ?? '',
+        tag: _node.memberTag ?? '',
+        devices: _devices,
+        audio: _audio,
+        inCall: _inCall,
+        voice: voice,
+      );
 
   Widget _header({required bool narrow}) {
     final v = _view;

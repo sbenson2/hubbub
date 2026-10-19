@@ -175,6 +175,41 @@ class FakeRoom implements RoomAdapter {
     deviceCalls.add('camera:${id ?? 'default'}');
   }
 
+  /// What the room was last told, as the adapter keeps it across calls.
+  double masterVolume = 1;
+  final userVolumes = <String, double>{};
+  final localMutes = <String>{};
+
+  /// Every volume call in order, as `master:<v>`, `volume:<id>:<v>`, `mute:<id>:<bool>`.
+  final volumeCalls = <String>[];
+
+  /// The gain the real adapter would give [id]'s track.
+  double effectiveFor(String id) =>
+      effectiveVolume(masterVolume, userVolumes[id] ?? 1, localMutes.contains(id));
+
+  @override
+  Future<void> setMasterVolume(double v) async {
+    masterVolume = v;
+    volumeCalls.add('master:$v');
+  }
+
+  @override
+  Future<void> setParticipantVolume(String id, double v) async {
+    userVolumes[id] = v;
+    volumeCalls.add('volume:$id:$v');
+  }
+
+  @override
+  Future<void> setLocalMuteFor(String id, bool muted) async {
+    muted ? localMutes.add(id) : localMutes.remove(id);
+    volumeCalls.add('mute:$id:$muted');
+  }
+
+  final _levels = StreamController<double>.broadcast();
+  void emitLevel(double v) => _levels.add(v);
+  @override
+  Stream<double> get inputLevel => _levels.stream;
+
   void emitParticipants(List<RoomParticipant> p) => _participants.add(p);
   void emitSignal(RoomSignal s) => _signals.add(s);
 

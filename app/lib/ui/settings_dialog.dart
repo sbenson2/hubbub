@@ -1,7 +1,11 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../audio_settings.dart';
 import '../device_settings.dart';
 import '../room_adapter.dart';
+import 'context_menu.dart';
+import 'mic_meter.dart';
 import 'theme.dart';
 
 /// Discord's User Settings, as a wide dialog: sections on the left, the open one on the right.
@@ -10,28 +14,42 @@ Future<void> showSettingsDialog(
   required String memberId,
   required String tag,
   required DeviceSettings devices,
+  required AudioSettings audio,
+  required ValueListenable<bool> inCall,
+  bool voice = false,
 }) =>
     showDialog<void>(
       context: context,
       barrierColor: const Color(0xD9000000),
-      builder: (context) => _SettingsDialog(memberId: memberId, tag: tag, devices: devices),
+      builder: (context) => _SettingsDialog(
+          memberId: memberId, tag: tag, devices: devices, audio: audio, inCall: inCall, voice: voice),
     );
 
 enum _Section { account, voice }
 
 class _SettingsDialog extends StatefulWidget {
-  const _SettingsDialog({required this.memberId, required this.tag, required this.devices});
+  const _SettingsDialog({
+    required this.memberId,
+    required this.tag,
+    required this.devices,
+    required this.audio,
+    required this.inCall,
+    required this.voice,
+  });
 
   final String memberId;
   final String tag;
   final DeviceSettings devices;
+  final AudioSettings audio;
+  final ValueListenable<bool> inCall;
+  final bool voice;
 
   @override
   State<_SettingsDialog> createState() => _SettingsDialogState();
 }
 
 class _SettingsDialogState extends State<_SettingsDialog> {
-  _Section _section = _Section.account;
+  late _Section _section = widget.voice ? _Section.voice : _Section.account;
 
   @override
   Widget build(BuildContext context) => Dialog(
@@ -74,7 +92,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     child: SingleChildScrollView(
                       child: _section == _Section.account
                           ? _Account(memberId: widget.memberId, tag: widget.tag)
-                          : _VoiceVideo(devices: widget.devices),
+                          : _VoiceVideo(
+                              devices: widget.devices,
+                              audio: widget.audio,
+                              inCall: widget.inCall),
                     ),
                   ),
                   Row(children: [
@@ -176,23 +197,47 @@ class _Account extends StatelessWidget {
 
 /// Input and output side by side, the camera below.
 class _VoiceVideo extends StatelessWidget {
-  const _VoiceVideo({required this.devices});
+  const _VoiceVideo({required this.devices, required this.audio, required this.inCall});
   final DeviceSettings devices;
+  final AudioSettings audio;
+  final ValueListenable<bool> inCall;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-        listenable: devices,
+        listenable: Listenable.merge([devices, audio]),
         builder: (context, _) => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Expanded(
-                  child: _DevicePicker('INPUT DEVICE', const Key('device-input'), devices,
-                      DeviceKind.audioInput)),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _DevicePicker('INPUT DEVICE', const Key('device-input'), devices,
+                      DeviceKind.audioInput),
+                  const SizedBox(height: 16),
+                  const Text('INPUT LEVEL', style: HubText.category),
+                  const SizedBox(height: 8),
+                  MicMeter(levels: audio.inputLevel, inCall: inCall),
+                  // The input volume slider goes here (a later task adds it).
+                ]),
+              ),
               const SizedBox(width: 20),
               Expanded(
-                  child: _DevicePicker('OUTPUT DEVICE', const Key('device-output'), devices,
-                      DeviceKind.audioOutput)),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _DevicePicker('OUTPUT DEVICE', const Key('device-output'), devices,
+                      DeviceKind.audioOutput),
+                  const SizedBox(height: 16),
+                  Row(children: [
+                    const Expanded(child: Text('OUTPUT VOLUME', style: HubText.category)),
+                    Text(percent(audio.master), style: HubText.category),
+                  ]),
+                  VolumeSlider(
+                    key: const Key('settings-output-volume'),
+                    value: audio.master,
+                    onChanged: audio.setMaster,
+                    onChangeEnd: audio.commit,
+                  ),
+                ]),
+              ),
             ]),
             const SizedBox(height: 24),
             _DevicePicker('CAMERA', const Key('device-camera'), devices, DeviceKind.videoInput),

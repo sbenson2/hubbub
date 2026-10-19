@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_shell.dart';
+import 'audio_settings.dart';
 import 'device_settings.dart';
 import 'frb_hub.dart';
 import 'hub_controller.dart';
@@ -84,7 +85,8 @@ Future<void> main() async {
       room: room,
       links: WindowRevealingLinks(AppLinkSource(), shell),
       navigatorKey: navigator,
-      devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json')));
+      devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json'),
+      audio: AudioPrefsStore.file('$root${Platform.pathSeparator}audio.json')));
 }
 
 /// The once-only "still running" notice (the tray package has no balloon), shown just before the
@@ -124,12 +126,19 @@ void _installExitHooks(TrayLifecycle lifecycle) {
 
 class HubbubApp extends StatelessWidget {
   const HubbubApp(
-      {super.key, required this.hub, required this.room, this.links, this.devices, this.navigatorKey});
+      {super.key,
+      required this.hub,
+      required this.room,
+      this.links,
+      this.devices,
+      this.audio,
+      this.navigatorKey});
 
   final HubController hub;
   final RoomAdapter room;
   final LinkSource? links;
   final DevicePrefsStore? devices;
+  final AudioPrefsStore? audio;
   final GlobalKey<NavigatorState>? navigatorKey;
 
   @override
@@ -139,7 +148,7 @@ class HubbubApp extends StatelessWidget {
       title: 'Hubbub',
       debugShowCheckedModeBanner: false,
       theme: hubbubTheme(),
-      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links, deviceStore: devices),
+      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links, deviceStore: devices, audioStore: audio),
     );
   }
 }

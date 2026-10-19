@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../src/rust/api/hubbub.dart';
+import 'audio_menus.dart';
 import 'avatar.dart';
 import 'theme.dart';
 
@@ -36,13 +37,13 @@ class MemberList extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 20),
         children: [
           _GroupHeader('ONLINE — ${up.length}'),
-          for (final m in up) _MemberRow(member: m, online: true, hosting: m.id == host),
+          for (final m in up) _MemberRow(member: m, online: true, hosting: m.id == host, isMe: m.id == me),
           if (down.isNotEmpty) ...[
             _GroupHeader('OFFLINE — ${down.length}'),
             for (final m in down)
               Opacity(
                 opacity: 0.3,
-                child: _MemberRow(member: m, online: false, hosting: m.id == host),
+                child: _MemberRow(member: m, online: false, hosting: m.id == host, isMe: false),
               ),
           ],
         ],
@@ -68,12 +69,14 @@ class _GroupHeader extends StatelessWidget {
 }
 
 class _MemberRow extends StatefulWidget {
-  _MemberRow({required this.member, required this.online, required this.hosting})
+  _MemberRow(
+      {required this.member, required this.online, required this.hosting, required this.isMe})
       : super(key: ValueKey('member:${member.id}'));
 
   final AppMember member;
   final bool online;
   final bool hosting;
+  final bool isMe;
 
   @override
   State<_MemberRow> createState() => _MemberRowState();
@@ -86,7 +89,11 @@ class _MemberRowState extends State<_MemberRow> {
   Widget build(BuildContext context) {
     final m = widget.member;
     final name = m.name.isEmpty ? m.tag : m.name;
-    return MouseRegion(
+    return UserVolumeRegion(
+      id: m.id,
+      name: name,
+      isMe: widget.isMe,
+      child: MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: Container(
@@ -122,6 +129,7 @@ class _MemberRowState extends State<_MemberRow> {
           ],
         ]),
       ),
+    ),
     );
   }
 }

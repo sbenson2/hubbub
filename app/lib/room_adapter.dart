@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
 
 import 'capture_options.dart';
@@ -62,6 +63,16 @@ class RoomParticipant {
   final bool muted;
 }
 
+/// Largest volume the UI offers (Discord's 200%), as a multiplier of the source level.
+const maxVolume = 2.0;
+
+/// The gain for one remote track: the master output volume times the person's own volume,
+/// or silence when you muted them locally. `Helper.setVolume` takes 0 to 10 (flutter_webrtc
+/// `rtc_audio_track.h:17`, "volume in [0-10]"), where 1 leaves the level as it is, so the
+/// product (at most 2 x 2) is clamped to that range.
+double effectiveVolume(double master, double user, bool localMuted) =>
+    localMuted ? 0 : (master * user).clamp(0.0, 10.0);
+
 enum DeviceKind { audioInput, audioOutput, videoInput }
 
 /// A microphone, speaker or camera the OS offers. [label] can be empty before the OS has
@@ -100,6 +111,20 @@ abstract class RoomAdapter {
 
   /// Kept for [setCameraEnabled]; switches the running camera when there is one.
   Future<void> setCameraDevice(String? id);
+
+  /// Output volume for everyone (1 is unchanged, up to [maxVolume]). Kept across calls and
+  /// applied to every remote track, new ones as they arrive.
+  Future<void> setMasterVolume(double v);
+
+  /// One person's volume for you (1 is unchanged, up to [maxVolume]). Kept across calls.
+  Future<void> setParticipantVolume(String id, double v);
+
+  /// Stops (or resumes) your hearing of one person; they are not muted for anyone else.
+  Future<void> setLocalMuteFor(String id, bool muted);
+
+  /// The level of your own microphone, 0 to 1, about ten times a second while someone listens
+  /// and you are in a call.
+  Stream<double> get inputLevel;
 }
 
 class LiveKitRoomAdapter implements RoomAdapter {
@@ -113,6 +138,19 @@ class LiveKitRoomAdapter implements RoomAdapter {
   String? _inputId;
   String? _outputId;
   String? _cameraId;
+  double _master = 1;
+  final _userVolume = <String, double>{};
+  final _localMuted = <String>{};
+  late final _levels = StreamController<double>.broadcast(
+    onListen: () => _levelTimer ??=
+        Timer.periodic(const Duration(milliseconds: 100), (_) => unawaited(_sampleLevel())),
+    onCancel: () {
+      _levelTimer?.cancel();
+      _levelTimer = null;
+    },
+  );
+  Timer? _levelTimer;
+  bool _levelBusy = false;
 
   @override
   Stream<RoomSignal> get signals => _signals.stream;
@@ -195,6 +233,71 @@ class LiveKitRoomAdapter implements RoomAdapter {
   }
 
   @override
+  Future<void> setMasterVolume(double v) {
+    _master = v;
+    return _applyVolumes();
+  }
+
+  @override
+  Future<void> setParticipantVolume(String id, double v) {
+    _userVolume[id] = v;
+    return _applyVolumes(only: id);
+  }
+
+  @override
+  Future<void> setLocalMuteFor(String id, bool muted) {
+    muted ? _localMuted.add(id) : _localMuted.remove(id);
+    return _applyVolumes(only: id);
+  }
+
+  /// Gives each remote audio track its gain: master x the person's volume, or 0 when muted
+  /// locally. Run again whenever a track (re)subscribes, after connecting, and on undeafen.
+  Future<void> _applyVolumes({String? only}) async {
+    final room = _room;
+    if (room == null) return;
+    for (final p in room.remoteParticipants.values) {
+      if (only != null && p.identity != only) continue;
+      final v = effectiveVolume(_master, _userVolume[p.identity] ?? 1, _localMuted.contains(p.identity));
+      for (final pub in p.audioTrackPublications) {
+        final track = pub.track;
+        if (track != null) await _setTrackVolume(track, v);
+      }
+    }
+  }
+
+  static Future<void> _setTrackVolume(RemoteAudioTrack track, double v) async {
+    try {
+      await rtc.Helper.setVolume(v, track.mediaStreamTrack);
+    } catch (e) {
+      debugPrint('audio volume change failed: $e');
+    }
+  }
+
+  @override
+  Stream<double> get inputLevel => _levels.stream;
+
+  /// Reads the local microphone's `audioLevel` (0 to 1) from the sender's stats.
+  Future<void> _sampleLevel() async {
+    if (_levelBusy) return;
+    _levelBusy = true;
+    try {
+      for (final pub in _room?.localParticipant?.audioTrackPublications ?? const []) {
+        final stats = await pub.track?.sender?.getStats() ?? const <rtc.StatsReport>[];
+        for (final r in stats) {
+          if (r.type == 'media-source' && r.values['kind'] == 'audio') {
+            final level = r.values['audioLevel'];
+            if (level is num) _levels.add(level.toDouble().clamp(0.0, 1.0));
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('mic level sample failed: $e');
+    } finally {
+      _levelBusy = false;
+    }
+  }
+
+  @override
   Future<void> setCameraDevice(String? id) async {
     _cameraId = id;
     final room = _room;
@@ -230,7 +333,10 @@ class LiveKitRoomAdapter implements RoomAdapter {
       })
       ..on<TrackSubscribedEvent>((e) {
         final track = e.track;
-        if (track is RemoteAudioTrack && _deafened) _setPlayback(track, false);
+        if (track is RemoteAudioTrack) {
+          if (_deafened) _setPlayback(track, false);
+          unawaited(_applyVolumes(only: e.participant.identity));
+        }
         if (e.track.kind == TrackType.AUDIO && !_sawRemoteAudio) {
           _sawRemoteAudio = true;
           _signals.add(RoomSignal.firstRemoteAudio);
@@ -258,6 +364,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       }
     }
     await _applyOutput();
+    await _applyVolumes();
     _emitParticipants();
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sampleStats());
   }
@@ -294,6 +401,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
         if (track != null) _setPlayback(track, !on);
       }
     }
+    if (!on) await _applyVolumes();
   }
 
   /// Track.enable/disable do nothing before the track starts, and a track is subscribed

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../audio_settings.dart';
+import '../device_settings.dart';
+import 'audio_menus.dart';
 import 'avatar.dart';
 import 'theme.dart';
 
@@ -15,6 +18,9 @@ class UserPanel extends StatelessWidget {
     required this.onToggleMute,
     required this.onToggleDeafen,
     required this.onSettings,
+    this.devices,
+    this.audio,
+    this.onVoiceSettings,
   });
 
   final String id;
@@ -25,6 +31,11 @@ class UserPanel extends StatelessWidget {
   final VoidCallback onToggleMute;
   final VoidCallback onToggleDeafen;
   final VoidCallback onSettings;
+
+  /// With these, a right click on the mic or the headphones opens Discord's device menu.
+  final DeviceSettings? devices;
+  final AudioSettings? audio;
+  final VoidCallback? onVoiceSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -65,6 +76,10 @@ class UserPanel extends StatelessWidget {
         PanelButton(
           tooltip: muted ? 'Unmute' : 'Mute',
           onPressed: onToggleMute,
+          onSecondaryTap: devices == null || onVoiceSettings == null
+              ? null
+              : (at) => showMicMenu(context, at,
+                  devices: devices!, onVoiceSettings: onVoiceSettings!),
           child: muted
               ? const CrossedIcon(Icons.mic_rounded,
                   size: 20,
@@ -76,6 +91,10 @@ class UserPanel extends StatelessWidget {
         PanelButton(
           tooltip: deafened ? 'Undeafen' : 'Deafen',
           onPressed: onToggleDeafen,
+          onSecondaryTap: devices == null || audio == null || onVoiceSettings == null
+              ? null
+              : (at) => showHeadphonesMenu(context, at,
+                  devices: devices!, audio: audio!, onVoiceSettings: onVoiceSettings!),
           child: deafened
               ? const CrossedIcon(Icons.headphones_rounded,
                   size: 20,
@@ -102,12 +121,16 @@ class PanelButton extends StatefulWidget {
     required this.onPressed,
     required this.child,
     this.size = 32,
+    this.onSecondaryTap,
   });
 
   final String tooltip;
   final VoidCallback onPressed;
   final Widget child;
   final double size;
+
+  /// A right click, with where it happened (for a context menu).
+  final void Function(Offset at)? onSecondaryTap;
 
   @override
   State<PanelButton> createState() => _PanelButtonState();
@@ -125,6 +148,9 @@ class _PanelButtonState extends State<PanelButton> {
           onExit: (_) => setState(() => _hover = false),
           child: GestureDetector(
             onTap: widget.onPressed,
+            onSecondaryTapUp: widget.onSecondaryTap == null
+                ? null
+                : (d) => widget.onSecondaryTap!(d.globalPosition),
             child: Container(
               width: widget.size,
               height: widget.size,
