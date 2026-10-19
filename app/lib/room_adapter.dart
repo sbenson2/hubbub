@@ -60,6 +60,17 @@ class RoomParticipant {
   final bool muted;
 }
 
+enum DeviceKind { audioInput, audioOutput, videoInput }
+
+/// A microphone, speaker or camera the OS offers. [label] can be empty before the OS has
+/// granted access to the device names.
+class MediaDeviceInfo {
+  const MediaDeviceInfo(this.id, this.label, this.kind);
+  final String id;
+  final String label;
+  final DeviceKind kind;
+}
+
 /// What the UI and node logic need from a media room, so LiveKit can be faked.
 abstract class RoomAdapter {
   Future<void> connect(String url, String token, Uint8List e2eeKey);
@@ -73,6 +84,20 @@ abstract class RoomAdapter {
   Future<void> subscribeVideo(String participantId, String trackSid, bool on);
   Stream<RoomSignal> get signals;
   Stream<List<RoomParticipant>> get participants;
+
+  /// Every microphone, speaker and camera the OS offers right now.
+  Future<List<MediaDeviceInfo>> listDevices();
+
+  /// Fires when a device is plugged in or removed.
+  Stream<void> get devicesChanged;
+
+  /// Choose the device to use (null follows the OS default). Live when in a call, else kept
+  /// for the next [connect] (the output is applied right after connecting).
+  Future<void> setInputDevice(String? id);
+  Future<void> setOutputDevice(String? id);
+
+  /// Kept for [setCameraEnabled]; switches the running camera when there is one.
+  Future<void> setCameraDevice(String? id);
 }
 
 class LiveKitRoomAdapter implements RoomAdapter {
@@ -83,6 +108,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Timer? _statsTimer;
   bool _sawRemoteAudio = false;
   bool _deafened = false;
+  String? _inputId;
+  String? _outputId;
+  String? _cameraId;
 
   @override
   Stream<RoomSignal> get signals => _signals.stream;
@@ -91,8 +119,86 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Stream<List<RoomParticipant>> get participants => _participants.stream;
 
   @override
+  Stream<void> get devicesChanged => Hardware.instance.onDeviceChange.stream.map((_) {});
+
+  @override
+  Future<List<MediaDeviceInfo>> listDevices() async {
+    final all = await Hardware.instance.enumerateDevices();
+    final kinds = {
+      'audioinput': DeviceKind.audioInput,
+      'audiooutput': DeviceKind.audioOutput,
+      'videoinput': DeviceKind.videoInput,
+    };
+    return [
+      for (final d in all)
+        if (kinds[d.kind] != null) MediaDeviceInfo(d.deviceId, d.label, kinds[d.kind]!),
+    ];
+  }
+
+  /// The device with [id], or the OS default of [type] when [id] is null or gone. WebRTC has
+  /// no "follow the default" selector, so the default is the entry named "default" when the
+  /// OS lists one, else the first of its kind.
+  Future<MediaDevice?> _resolve(String? id, String type) async {
+    final all = await Hardware.instance.enumerateDevices(type: type);
+    if (all.isEmpty) return null;
+    if (id != null) {
+      for (final d in all) {
+        if (d.deviceId == id) return d;
+      }
+    }
+    for (final d in all) {
+      if (d.deviceId == 'default') return d;
+    }
+    return all.first;
+  }
+
+  @override
+  Future<void> setInputDevice(String? id) async {
+    _inputId = id;
+    await _applyInput();
+  }
+
+  Future<void> _applyInput() async {
+    final d = await _resolve(_inputId, 'audioinput');
+    if (d == null) return;
+    final room = _room;
+    if (room != null) {
+      await room.setAudioInputDevice(d);
+    } else {
+      await Hardware.instance.selectAudioInput(d);
+    }
+  }
+
+  @override
+  Future<void> setOutputDevice(String? id) async {
+    _outputId = id;
+    await _applyOutput();
+  }
+
+  Future<void> _applyOutput() async {
+    final d = await _resolve(_outputId, 'audiooutput');
+    if (d == null) return;
+    final room = _room;
+    if (room != null) {
+      await room.setAudioOutputDevice(d);
+    } else {
+      await Hardware.instance.selectAudioOutput(d);
+    }
+  }
+
+  @override
+  Future<void> setCameraDevice(String? id) async {
+    _cameraId = id;
+    final room = _room;
+    if (room == null || id == null) return;
+    final d = await _resolve(id, 'videoinput');
+    if (d != null) await room.setVideoInputDevice(d);
+  }
+
+  @override
   Future<void> connect(String url, String token, Uint8List e2eeKey) async {
     await disconnect();
+    await _applyInput();
     // Every member derives the same key, so the shared-key provider is enough.
     final keyProvider = await BaseKeyProvider.create();
     await keyProvider.setSharedKey(base64.encode(e2eeKey));
@@ -100,7 +206,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
       roomOptions: RoomOptions(
         adaptiveStream: true,
         dynacast: true,
-        defaultAudioCaptureOptions: const AudioCaptureOptions(
+        defaultAudioCaptureOptions: AudioCaptureOptions(
+          deviceId: _inputId,
           noiseSuppression: true,
           echoCancellation: true,
           autoGainControl: true,
@@ -148,6 +255,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
         pub.subscribe();
       }
     }
+    await _applyOutput();
     _emitParticipants();
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sampleStats());
   }
@@ -197,7 +305,10 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> setCameraEnabled(bool on) async {
-    await _room?.localParticipant?.setCameraEnabled(on);
+    await _room?.localParticipant?.setCameraEnabled(
+      on,
+      cameraCaptureOptions: _cameraId == null ? null : CameraCaptureOptions(deviceId: _cameraId),
+    );
   }
 
   @override

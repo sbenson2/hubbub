@@ -134,6 +134,42 @@ class FakeRoom implements RoomAdapter {
   /// When set, a connect fails with this after the gate.
   Object? connectError;
 
+  /// Every device call, as `input:<id>`, `output:<id>`, `camera:<id>` (`default` for null);
+  /// kept apart from [calls] so call-flow tests stay exact.
+  final deviceCalls = <String>[];
+  List<MediaDeviceInfo> devices = const [];
+  final _devicesChanged = StreamController<void>.broadcast();
+
+  /// What the last connect had chosen as input and output.
+  String? inputId, outputId, cameraId, inputAtConnect;
+
+  void plugDevices(List<MediaDeviceInfo> d) {
+    devices = d;
+    _devicesChanged.add(null);
+  }
+
+  @override
+  Future<List<MediaDeviceInfo>> listDevices() async => devices;
+  @override
+  Stream<void> get devicesChanged => _devicesChanged.stream;
+  @override
+  Future<void> setInputDevice(String? id) async {
+    inputId = id;
+    deviceCalls.add('input:${id ?? 'default'}');
+  }
+
+  @override
+  Future<void> setOutputDevice(String? id) async {
+    outputId = id;
+    deviceCalls.add('output:${id ?? 'default'}');
+  }
+
+  @override
+  Future<void> setCameraDevice(String? id) async {
+    cameraId = id;
+    deviceCalls.add('camera:${id ?? 'default'}');
+  }
+
   void emitParticipants(List<RoomParticipant> p) => _participants.add(p);
   void emitSignal(RoomSignal s) => _signals.add(s);
 
@@ -145,6 +181,7 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> connect(String url, String token, Uint8List e2eeKey) async {
     calls.add('connect');
+    inputAtConnect = inputId;
     await connectGate?.future;
     if (connectError != null) throw connectError!;
     _participants.add(onConnect);

@@ -206,69 +206,6 @@ class VoiceConnectedBar extends StatelessWidget {
       );
 }
 
-/// Your member id (selectable) and your tag.
-Future<void> showSettingsDialog(
-  BuildContext context, {
-  required String memberId,
-  required String tag,
-}) =>
-    showDialog<void>(
-      context: context,
-      barrierColor: const Color(0xD9000000),
-      builder: (context) => Dialog(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('My Account',
-                    style: TextStyle(
-                      fontFamily: hubFont,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: HubColors.header,
-                    )),
-                const SizedBox(height: 20),
-                const Text('MEMBER ID', style: HubText.category),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: HubColors.rail,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: SelectableText(memberId,
-                      style: const TextStyle(
-                        fontFamily: hubFont,
-                        fontSize: 14,
-                        height: 1.4,
-                        color: HubColors.text,
-                      )),
-                ),
-                const SizedBox(height: 16),
-                const Text('TAG', style: HubText.category),
-                const SizedBox(height: 8),
-                SelectableText(tag, style: HubText.message),
-                const SizedBox(height: 24),
-                Row(children: [
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Close',
-                        style: TextStyle(fontFamily: hubFont, fontSize: 14, color: HubColors.header)),
-                  ),
-                ]),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
 /// Discord's filled button: a flat rounded rectangle, brighter on hover.
 class HubButton extends StatefulWidget {
   const HubButton({

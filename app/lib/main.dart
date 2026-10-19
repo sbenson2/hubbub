@@ -4,6 +4,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'device_settings.dart';
 import 'frb_hub.dart';
 import 'hub_controller.dart';
 import 'links.dart';
@@ -58,14 +59,19 @@ Future<void> main() async {
   await initCore();
   final hub = HubController(FrbHub());
   final room = LiveKitRoomAdapter();
+  final root = await hubRoot();
   try {
-    await hub.open(await hubRoot(), canHost: bundledLiveKit() != null, livekitBin: bundledLiveKit());
+    await hub.open(root, canHost: bundledLiveKit() != null, livekitBin: bundledLiveKit());
   } catch (e) {
     runApp(StartFailed(error: '$e'));
     return;
   }
   _installExitHooks(hub);
-  runApp(HubbubApp(hub: hub, room: room, links: AppLinkSource()));
+  runApp(HubbubApp(
+      hub: hub,
+      room: room,
+      links: AppLinkSource(),
+      devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json')));
 }
 
 /// Stops every server (and the livekit-server child) before the process ends: destructors
@@ -88,11 +94,12 @@ void _installExitHooks(HubController hub) {
 }
 
 class HubbubApp extends StatelessWidget {
-  const HubbubApp({super.key, required this.hub, required this.room, this.links});
+  const HubbubApp({super.key, required this.hub, required this.room, this.links, this.devices});
 
   final HubController hub;
   final RoomAdapter room;
   final LinkSource? links;
+  final DevicePrefsStore? devices;
 
   @override
   Widget build(BuildContext context) {
@@ -100,7 +107,7 @@ class HubbubApp extends StatelessWidget {
       title: 'Hubbub',
       debugShowCheckedModeBanner: false,
       theme: hubbubTheme(),
-      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links),
+      home: HomePage(hub: hub, room: room, loadConfig: nodeConfig, linkSource: links, deviceStore: devices),
     );
   }
 }

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../device_settings.dart';
 import '../hub_controller.dart';
 import '../links.dart';
 import '../node_controller.dart';
@@ -20,6 +21,7 @@ import 'dialogs/join_dialog.dart';
 import 'dialogs/leave_dialog.dart';
 import 'dialogs/name_dialog.dart';
 import 'member_list.dart';
+import 'settings_dialog.dart';
 import 'text_channel_view.dart';
 import 'theme.dart';
 import 'user_panel.dart';
@@ -40,6 +42,7 @@ class HomePage extends StatefulWidget {
     this.onAddServer,
     this.clock,
     this.linkSource,
+    this.deviceStore,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
   /// A single server (the pre-hub path); [hub] holds every server.
@@ -53,6 +56,9 @@ class HomePage extends StatefulWidget {
 
   /// Where `hubbub://` links come from; each opens the Join dialog once a name is set.
   final LinkSource? linkSource;
+
+  /// Where the microphone, speaker and camera choices are kept; in memory when null (tests).
+  final DevicePrefsStore? deviceStore;
 
   /// Replaces the wall clock for message times (tests).
   final DateTime Function()? clock;
@@ -68,6 +74,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _texts = <String, TextController>{};
   final _views = <String, ChannelRef>{};
   final _attached = <String, NodeController>{};
+  late final DeviceSettings _devices;
   StreamSubscription<RoomSignal>? _signalSub;
   StreamSubscription<List<RoomParticipant>>? _peopleSub;
   List<RoomParticipant> _people = const [];
@@ -116,6 +123,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _idle = NodeController();
     _hub = widget.hub ?? HubController.single(widget.controller!);
     _hub.addListener(_refresh);
+    _devices = DeviceSettings(widget.room, widget.deviceStore ?? DevicePrefsStore.memory());
+    unawaited(_devices.start());
     WidgetsBinding.instance.addObserver(this);
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
@@ -208,6 +217,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _devices.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _links?.dispose();
     _hub.removeListener(_refresh);
@@ -274,6 +284,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
+      await _devices.applyForJoin();
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
@@ -363,6 +374,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final node = _node;
       final key = _key;
       final c = await node.credentials(channel);
+      await _devices.applyForJoin();
       await widget.room.connect(c.url, c.token, c.e2EeKey);
       await widget.room.setMicrophoneEnabled(!_muted);
       await widget.room.setDeafened(_deafened);
@@ -524,6 +536,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   context,
                   memberId: _node.memberId ?? '',
                   tag: _node.memberTag ?? '',
+                  devices: _devices,
                 ),
               ),
           ]),
