@@ -23,8 +23,10 @@ pub struct RankKey {
 
 /// How often a hosting node announces itself.
 pub const HEARTBEAT_MS: u64 = 500;
-/// A host silent for longer than this is considered gone.
-pub const HOST_TIMEOUT_MS: u64 = 1_500;
+/// A host whose heartbeats stay silent this long is replaced even while its connection is up
+/// (its election loop is stuck). Silence alone never triggers sooner (R33): a dropped connection
+/// is reported as `PeerDown`, and relay gaps of a few seconds are normal.
+pub const HOST_SILENT_MS: u64 = 5_000;
 /// A freshly started node never claims within this window, so it can hear an existing host.
 pub const STARTUP_GRACE_MS: u64 = 1_500;
 
@@ -224,7 +226,7 @@ impl Election {
                 }
             }
             Some(_) => {
-                if now_ms.saturating_sub(self.last_host_seen_ms) > HOST_TIMEOUT_MS {
+                if now_ms.saturating_sub(self.last_host_seen_ms) > HOST_SILENT_MS {
                     self.host_gone(false, now_ms, view, out);
                 }
             }
@@ -363,13 +365,26 @@ mod tests {
         assert_eq!(e.state().host, Some(m(2)));
     }
     #[test]
-    fn host_timeout_triggers_reelection_by_best() {
+    fn heartbeat_silence_under_5s_never_replaces_a_live_host() {
+        // R33: a host whose connection is up (no PeerDown) is not replaced by a short heartbeat gap.
+        let v = [cand(1, true, 20, 10, 0), cand(2, true, 0, 100, 0)];
+        let mut e = Election::new(m(1), true, 0);
+        e.step(Input::Heartbeat { from: m(2), term: 3, key: dk(), now_ms: 0 }, &v);
+        let mut t = 100;
+        while t <= 4_900 {
+            assert!(e.step(Input::Tick { now_ms: t }, &v).is_empty(), "acted at {t} ms");
+            t += 100;
+        }
+        assert_eq!(e.state(), &HostState { host: Some(m(2)), term: 3 });
+    }
+    #[test]
+    fn host_silent_5s_triggers_reelection_by_best() {
         // m2 is the best in view but is the silent old host, so it must be excluded.
         let v = [cand(1, true, 20, 10, 0), cand(2, true, 0, 100, 0)];
         let mut e = Election::new(m(1), true, 0);
         e.step(Input::Heartbeat { from: m(2), term: 3, key: dk(), now_ms: 0 }, &v);
-        assert!(starts(&e.step(Input::Tick { now_ms: 1_400 }, &v)).is_empty());
-        let a = e.step(Input::Tick { now_ms: 1_600 }, &v);
+        assert!(starts(&e.step(Input::Tick { now_ms: 4_900 }, &v)).is_empty());
+        let a = e.step(Input::Tick { now_ms: 5_100 }, &v);
         assert_eq!(starts(&a), vec![4]);
     }
     #[test]
@@ -469,10 +484,10 @@ mod tests {
         let v = [cand(2, true, 0, 100, 0), cand(1, true, 10, 50, 0), cand(3, true, 40, 10, 0)];
         let mut f3 = Election::new(m(3), true, 0);
         f3.step(hb(2, 3, rank_key(&v[0]), 2_000), &v);
-        f3.step(Input::Tick { now_ms: 3_600 }, &v); // gap: host cleared
+        f3.step(Input::Tick { now_ms: 7_100 }, &v); // gap: host cleared
         assert_eq!(f3.state().host, None);
-        let mut t = 3_700;
-        while t <= 10_000 {
+        let mut t = 7_200;
+        while t <= 12_000 {
             let a = f3.step(hb(2, 3, rank_key(&v[0]), t), &v);
             assert!(starts(&f3.step(Input::Tick { now_ms: t }, &v)).is_empty() && starts(&a).is_empty());
             t += 500;

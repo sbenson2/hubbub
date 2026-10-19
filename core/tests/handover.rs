@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hubbub_core::community::CommunityState;
-use hubbub_core::election::HOST_TIMEOUT_MS;
 use hubbub_core::identity::Identity;
 use hubbub_core::ids::MemberId;
 use hubbub_core::media_host::{FakeHost, MediaHost};
@@ -319,8 +318,8 @@ async fn host_start_failure_resigns() {
     assert_eq!(agreed_host(&ns), Some(survivor), "no dead host remains");
 }
 
-/// R23: a host that goes silent, with no CONNECTION_CLOSE, is replaced once its heartbeats time
-/// out, and the survivors close its sessions after 3 s of silence so it leaves their view.
+/// R23 + R33: a host that goes silent, with no CONNECTION_CLOSE, is replaced once the survivors
+/// close its session after 3 s of silence (`PeerDown`), not on a shorter heartbeat gap.
 #[tokio::test]
 async fn silent_host_handover_and_its_sessions_close() {
     let (mut ns, freezers) = freezable_cluster(&[true; 3]).await;
@@ -334,11 +333,12 @@ async fn silent_host_handover_and_its_sessions_close() {
     freezers[i].send(()).unwrap();
     let _frozen = ns.remove(i);
 
-    // The heartbeat timeout, then a claim and its Announce.
-    let bound = Duration::from_millis(HOST_TIMEOUT_MS + 500);
+    // The session's silence limit, then a claim and its Announce.
+    let bound = SILENCE_LIMIT + Duration::from_millis(1_500);
     let new_host = wait_agree(&ns, bound).await;
     let took = t0.elapsed();
     assert_ne!(new_host, host);
+    assert!(took >= Duration::from_secs(2), "R33: heartbeat silence alone replaced the host after {took:?}");
     assert!(took < bound, "silent-host hand-over took {took:?}");
     println!("silent-host hand-over took {took:?}");
 
