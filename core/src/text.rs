@@ -118,6 +118,11 @@ impl<V> Recent<V> {
         self.values.insert(key, value);
         true
     }
+
+    /// The remembered values, each channel's oldest first.
+    pub fn in_order(&self) -> Vec<&V> {
+        self.order.values().flatten().filter_map(|k| self.values.get(k)).collect()
+    }
 }
 
 /// A message on its way to the host: what `TextSubmit` carries.
@@ -242,6 +247,11 @@ impl Sequencer {
         };
         self.ordered.insert(&d.channel, (from, d.client_id), d.clone());
         Some(Ordered::New(d))
+    }
+
+    /// The deliveries of this term still remembered, each channel in seq order.
+    pub fn recent(&self) -> Vec<Delivery> {
+        self.ordered.in_order().into_iter().cloned().collect()
     }
 }
 
@@ -423,6 +433,10 @@ impl Chat {
             return;
         }
         let Ok(body) = open(&self.key, &d.channel, &d.from, d.client_id, &d.ciphertext) else { return };
+        // Delivered, even if this node already had it (a second host sent it again).
+        if d.from == self.me {
+            self.pending.lock().unwrap().retain(|p| p.submission.client_id != d.client_id);
+        }
         let mut received = self.received.lock().unwrap();
         if !received.insert(&d.channel, (d.from, d.client_id), ()) {
             return;
@@ -432,10 +446,20 @@ impl Chat {
         if let Err(e) = self.store.append(&d.channel, &message) {
             eprintln!("hubbub node: text message not stored: {e:#}");
         }
-        if d.from == self.me {
-            self.pending.lock().unwrap().retain(|p| p.submission.client_id != d.client_id);
-        }
         show(Received { channel: d.channel.clone(), message });
+    }
+
+    /// A node that stops hosting asks the next host to order again what it ordered for itself:
+    /// nobody else need have heard of it (two members that elected themselves in a split).
+    pub fn resubmit_own(&self, ordered: &[Delivery]) {
+        let mut pending = self.pending.lock().unwrap();
+        for d in ordered.iter().filter(|d| d.from == self.me) {
+            if pending.iter().any(|p| p.submission.client_id == d.client_id) {
+                continue;
+            }
+            let submission = Submission { channel: d.channel.clone(), client_id: d.client_id, ciphertext: d.ciphertext.clone() };
+            pending.push(Pending { submission, sent_on: None });
+        }
     }
 
     pub fn history(&self, channel: &str, limit: usize) -> Result<Vec<TextMessage>> {
@@ -469,8 +493,15 @@ impl Relay {
         *self.sequencer.lock().unwrap() = Some(Sequencer::new(term, &self.channels));
     }
 
-    pub fn stop(&self) {
-        *self.sequencer.lock().unwrap() = None;
+    /// This node stops hosting. Returns what it ordered in that term, still remembered.
+    pub fn stop(&self) -> Vec<Delivery> {
+        self.sequencer.lock().unwrap().take().map(|q| q.recent()).unwrap_or_default()
+    }
+
+    /// While hosting, the deliveries of this term still remembered, for a member that was not
+    /// connected when they went out. Members drop what they already have.
+    pub fn recent(&self) -> Vec<Delivery> {
+        self.sequencer.lock().unwrap().as_ref().map(|q| q.recent()).unwrap_or_default()
     }
 
     /// While hosting, orders `s` from `from` and calls `deliver` with the result, a new

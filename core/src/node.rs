@@ -300,7 +300,12 @@ impl Node {
     /// address lookup).
     #[cfg(feature = "test-util")]
     pub fn add_peer_addr(&self, addr: EndpointAddr) {
-        self.inner.dial_addrs.lock().unwrap().insert(MemberId(*addr.id.as_bytes()), addr);
+        let peer = MemberId(*addr.id.as_bytes());
+        self.inner.dial_addrs.lock().unwrap().insert(peer, addr);
+        // A peer learned late (tests) is dialed like one admitted late.
+        if peer != self.inner.me && self.inner.dialing.lock().unwrap().insert(peer) {
+            self.inner.spawn(self.inner.clone().dial_loop(peer));
+        }
     }
 
     /// Sends `body` to text channel `channel` and returns its client id. Without a live host it
@@ -612,7 +617,8 @@ impl Inner {
                 }
                 Action::StopHosting => {
                     *claim = None;
-                    self.relay.stop();
+                    let ordered = self.relay.stop();
+                    self.chat.resubmit_own(&ordered);
                     let _ = self.media.send(MediaCmd::Stop);
                 }
                 Action::SendHeartbeat { term, key } => {
@@ -785,6 +791,10 @@ impl Inner {
         let _ = self.election.send(Cmd::SessionUp(out.clone()));
         // This may be a new session to the host.
         self.flush_text();
+        // Or this node hosts, and the peer missed what it ordered before the session came up.
+        for d in self.relay.recent() {
+            let _ = out.send(Out::Msg(d.to_msg()));
+        }
         let probe_conn = conn.clone();
         let prober = self.clone();
         let helpers = [

@@ -295,3 +295,73 @@ async fn a_delivery_lost_with_the_senders_session_comes_back_once_in_the_same_te
         assert_eq!(n.text_history("general", 10).unwrap().len(), 1, "node {i} stored it once");
     }
 }
+
+/// Node 0 (the only one that can host at first, so it wins) is dialled by 1 and 2, which do not
+/// know each other.
+async fn star_cluster() -> Cluster {
+    let (dirs, _, file) = community(&[true; 3]);
+    let (n0, r0) = start(&dirs[0], &file, true, vec![]).await;
+    let a0 = n0.endpoint_addr().await.unwrap();
+    let (n1, r1) = start(&dirs[1], &file, true, vec![a0.clone()]).await;
+    let (n2, r2) = start(&dirs[2], &file, true, vec![a0]).await;
+    Cluster { nodes: vec![n0, n1, n2], events: vec![r0, r1, r2], _dirs: dirs }
+}
+
+/// One round of the split-brain scenario: the host leaves (gracefully or not) and the two
+/// remaining members text each other straight away. Returns a description of any failure.
+async fn host_leaves_then_survivors_text(graceful: bool, star: bool) -> Result<(), String> {
+    let mut c = if star { star_cluster().await } else { cluster(&[true; 3]).await };
+    let old_host = wait_agree(&c.nodes, Duration::from_secs(10)).await;
+    let h = c.nodes.iter().position(|n| n.member_id() == old_host).unwrap();
+    let gone = c.nodes.remove(h);
+    c.events.remove(h);
+    if graceful {
+        gone.shutdown().await;
+    } else {
+        drop(gone);
+    }
+    if star {
+        // The survivors only now learn each other's addresses (they met through the host).
+        let (x, y) = (c.nodes[0].endpoint_addr().await.unwrap(), c.nodes[1].endpoint_addr().await.unwrap());
+        c.nodes[0].add_peer_addr(y);
+        c.nodes[1].add_peer_addr(x);
+    }
+    let (a, b) = (0, 1);
+    let ida = c.nodes[a].send_text("general", "a to b").await.unwrap();
+    let idb = c.nodes[b].send_text("general", "b to a").await.unwrap();
+    for (who, rx, from, id) in [("b", 1usize, a, ida), ("a", 0usize, b, idb)] {
+        let want_from = c.nodes[from].member_id();
+        let got = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                if let NodeEvent::Text { from, client_id, .. } = c.events[rx].recv().await.unwrap() {
+                    if from == want_from && client_id == id {
+                        return;
+                    }
+                }
+            }
+        })
+        .await;
+        if got.is_err() {
+            let st: Vec<_> = c.nodes.iter().map(|n| (n.member_id().tag(), n.host_state())).collect();
+            let hist: Vec<_> = c.nodes.iter().map(|n| n.text_history("general", 10).unwrap().iter().map(|m| (m.term, m.seq, m.body.clone())).collect::<Vec<_>>()).collect();
+            return Err(format!("{who} never got the text (graceful={graceful}): {st:?} history={hist:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn survivors_can_text_after_the_host_leaves() {
+    let n: usize = std::env::var("SPLIT_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let mut fails = Vec::new();
+    for i in 0..n {
+        for graceful in [true, false] {
+            for star in [false, true] {
+            if let Err(e) = host_leaves_then_survivors_text(graceful, star).await {
+                fails.push(format!("iter {i} star={star}: {e}"));
+            }
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} of {} rounds failed:\n{}", fails.len(), n * 4, fails.join("\n"));
+}
