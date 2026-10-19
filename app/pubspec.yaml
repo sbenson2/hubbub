@@ -43,6 +43,8 @@ dependencies:
   qr_flutter: 4.1.0
   app_links: 7.2.2
   path_provider: 2.1.6
+  window_manager: 0.5.2
+  tray_manager: 0.5.2
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +69,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # The tray icon: tray_manager reads it from the bundle (.ico on Windows, .png elsewhere).
+  assets:
+    - assets/tray/
 
   # Noto Sans (SIL OFL 1.1, assets/fonts/OFL.txt), close to the metrics of Discord's UI font.
   fonts:

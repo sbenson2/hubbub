@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:hubbub/app_shell.dart';
 import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/links.dart';
 import 'package:hubbub/node_controller.dart';
@@ -328,4 +329,44 @@ class FakeLinks implements LinkSource {
 
   @override
   Stream<String> get stream => _stream.stream;
+}
+
+/// A window and tray the test drives: [closeWindow] is the user's X, [trayOpen]/[trayQuit] the
+/// tray's click and "Quit Hubbub". [calls] records what the app asked of the window.
+class FakeAppShell implements AppShell {
+  FakeAppShell({this.hasTray = true});
+
+  @override
+  bool hasTray;
+  final calls = <String>[];
+  bool visible = true;
+  void Function()? _close, _open, _quit;
+
+  @override
+  set onCloseRequested(void Function() cb) => _close = cb;
+  @override
+  set onTrayOpen(void Function() cb) => _open = cb;
+  @override
+  set onTrayQuit(void Function() cb) => _quit = cb;
+
+  void closeWindow() => _close!();
+  void trayOpen() => _open!();
+  void trayQuit() => _quit!();
+
+  @override
+  Future<void> start() async => calls.add('start');
+  @override
+  Future<void> hideWindow() async {
+    visible = false;
+    calls.add('hide');
+  }
+
+  @override
+  Future<void> showWindow() async {
+    visible = true;
+    calls.add('show');
+  }
+
+  @override
+  Future<void> exitApp() async => calls.add('exit');
 }

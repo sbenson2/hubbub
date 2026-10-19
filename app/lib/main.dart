@@ -4,11 +4,13 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app_shell.dart';
 import 'device_settings.dart';
 import 'frb_hub.dart';
 import 'hub_controller.dart';
 import 'links.dart';
 import 'node_controller.dart';
+import 'plugin_shell.dart';
 import 'room_adapter.dart';
 import 'src/rust/api/hubbub.dart';
 import 'ui/home_page.dart';
@@ -67,11 +69,39 @@ Future<void> main() async {
     return;
   }
   _installExitHooks(hub);
+  final navigator = GlobalKey<NavigatorState>();
+  final shell = PluginAppShell();
+  final lifecycle = TrayLifecycle(
+    shell: shell,
+    shutdown: hub.shutdown,
+    notice: HideNoticeStore.file('$root${Platform.pathSeparator}shell.json'),
+    showNotice: () => showHideNotice(navigator),
+  );
+  await lifecycle.start();
   runApp(HubbubApp(
       hub: hub,
       room: room,
-      links: AppLinkSource(),
+      links: WindowRevealingLinks(AppLinkSource(), shell),
+      navigatorKey: navigator,
       devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json')));
+}
+
+/// The once-only "still running" notice (the tray package has no balloon), shown just before the
+/// window first hides.
+Future<void> showHideNotice(GlobalKey<NavigatorState> navigator) async {
+  final context = navigator.currentContext;
+  if (context == null) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Hubbub is still running'),
+      content: const Text('Hubbub keeps running in the tray so your servers stay online. '
+          'To quit it, right-click the Hubbub tray icon and choose Quit Hubbub.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context, rootNavigator: true).pop(), child: const Text('Got it')),
+      ],
+    ),
+  );
 }
 
 /// Stops every server (and the livekit-server child) before the process ends: destructors
@@ -94,16 +124,19 @@ void _installExitHooks(HubController hub) {
 }
 
 class HubbubApp extends StatelessWidget {
-  const HubbubApp({super.key, required this.hub, required this.room, this.links, this.devices});
+  const HubbubApp(
+      {super.key, required this.hub, required this.room, this.links, this.devices, this.navigatorKey});
 
   final HubController hub;
   final RoomAdapter room;
   final LinkSource? links;
   final DevicePrefsStore? devices;
+  final GlobalKey<NavigatorState>? navigatorKey;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Hubbub',
       debugShowCheckedModeBanner: false,
       theme: hubbubTheme(),

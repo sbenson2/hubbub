@@ -6,6 +6,9 @@ list(APPEND FLUTTER_PLUGIN_LIST
   app_links_linux
   flutter_webrtc
   livekit_client
+  screen_retriever_linux
+  tray_manager
+  window_manager
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
