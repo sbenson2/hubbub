@@ -84,7 +84,9 @@ task that called `Success` (the levels and layout publish tasks) re-locked the m
 deadlocked it. Both runners now swap the queue into a local under the lock and run it unlocked (FIFO kept; tasks
 enqueued meanwhile run in the next round). On Linux `g_main_context_invoke` runs the callback inline when the
 caller owns the context, so the callback also returns at once if it is already draining (`draining_`), which keeps
-strict FIFO. `PostEvent` stays one enqueue per event: the posted task calls the sink directly, so each event is
+strict FIFO; a small RAII guard clears `draining_` even if a task throws, so one bad task cannot strand the queue
+(test: `TestThrowingTask`, Linux). The `onDeviceChange` lambda in `flutter_webrtc_base.cc` checks the `alive` flag
+before it touches `task_runner_`, which is gone once the object is destroyed. `PostEvent` stays one enqueue per event: the posted task calls the sink directly, so each event is
 delivered once. Test: `hubbub_test/task_runner_test.cc` (real runner; watchdog turns a hang into a failure).
 
 | Path | Change |

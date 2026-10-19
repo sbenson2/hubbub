@@ -23,6 +23,12 @@ void TaskRunnerLinux::EnqueueTask(TaskClosure task) {
           // recursively and overtake the rest of the batch; the nested call
           // returns instead and the outer loop picks the new task up in order.
           if (runner->draining_.exchange(true)) return G_SOURCE_REMOVE;
+          // Hubbub patch: reset the flag even when a task throws, or the queue
+          // would never be drained again.
+          struct Draining {
+            std::atomic<bool>& flag;
+            ~Draining() { flag = false; }
+          } draining{runner->draining_};
           for (;;) {
             std::queue<TaskClosure> batch;
             {
@@ -36,7 +42,6 @@ void TaskRunnerLinux::EnqueueTask(TaskClosure task) {
               task();
             }
           }
-          runner->draining_ = false;
           return G_SOURCE_REMOVE;
         },
         this);

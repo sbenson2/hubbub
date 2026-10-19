@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -139,6 +140,23 @@ static void TestPublisherThroughProxy(Runner& r) {
   CHECK(ordered);
 }
 
+#ifndef _WIN32
+// A task that throws must not leave the runner "draining" for ever: the next
+// task still runs. (The test owns the main context, so the throw comes back
+// out of EnqueueTask.)
+static void TestThrowingTask(Runner& r) {
+  g_case = "throwing task";
+  bool ran = false;
+  try {
+    r.EnqueueTask([] { throw std::runtime_error("boom"); });
+  } catch (const std::exception&) {
+  }
+  r.EnqueueTask([&] { ran = true; });
+  Pump([&] { return ran; });
+  CHECK(ran);
+}
+#endif
+
 int main() {
   StartWatchdog();
   {
@@ -146,6 +164,12 @@ int main() {
     TestNestedEnqueue(r);
     TestFifoOrder(r);
   }
+#ifndef _WIN32
+  {
+    Runner r;
+    TestThrowingTask(r);
+  }
+#endif
   {
     Runner r;
     TestPublisherThroughProxy(r);

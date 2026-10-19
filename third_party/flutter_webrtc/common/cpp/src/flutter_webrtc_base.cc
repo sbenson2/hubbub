@@ -115,6 +115,9 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
   // this object).
   std::shared_ptr<std::atomic<bool>> alive = hubbub_alive_;
   audio_device_->OnDeviceChange([this, alive] {
+    // After the destructor this object (and task_runner_) is gone: look at the
+    // flag before touching any member.
+    if (!alive->load()) return;
     auto publish = [this, alive] {
       if (!alive->load()) return;
       EventChannelProxy* channel = event_channel();
