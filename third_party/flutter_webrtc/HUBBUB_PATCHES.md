@@ -74,6 +74,18 @@ the platform thread and only touch atomics (`CaptureSettings`: gain, RNNoise on/
 levels go through a lock-free slot (`LevelsSlot`, a seqlock); a publisher thread in
 `flutter_webrtc_base.cc` polls it every 50 ms and queues the `hubbubLevels` event on the plugin's
 task runner, so the audio thread builds no maps, calls no channel and allocates nothing in steady state.
+`onDeviceChange` (called from a device thread) is routed through the same task runner.
+
+### Task runners run tasks without their mutex
+
+Upstream `TaskRunnerWindows::ProcessTasks` and the `TaskRunnerLinux` invoke callback ran every task while
+holding the non-recursive `tasks_mutex_`. `EventChannelProxyImpl::Success` -> `PostEvent` enqueues a task, so a
+task that called `Success` (the levels and layout publish tasks) re-locked the mutex on the platform thread and
+deadlocked it. Both runners now swap the queue into a local under the lock and run it unlocked (FIFO kept; tasks
+enqueued meanwhile run in the next round). On Linux `g_main_context_invoke` runs the callback inline when the
+caller owns the context, so the callback also returns at once if it is already draining (`draining_`), which keeps
+strict FIFO. `PostEvent` stays one enqueue per event: the posted task calls the sink directly, so each event is
+delivered once. Test: `hubbub_test/task_runner_test.cc` (real runner; watchdog turns a hang into a failure).
 
 | Path | Change |
 |---|---|
@@ -84,6 +96,7 @@ task runner, so the audio thread builds no maps, calls no channel and allocates 
 | `windows/CMakeLists.txt` (CRLF kept), `linux/CMakeLists.txt` | `add_subdirectory(../third_party/rnnoise)`, build `hubbub_audio.cc`, link `rnnoise` (Linux also `pthread`) |
 | `third_party/rnnoise/` | new: RNNoise v0.2 (BSD-3-Clause, `COPYING`), own `CMakeLists.txt`; `src/rnnoise_data.c` is the upstream model, 29 MB of C arrays |
 | `lib/src/hubbub_audio.dart`, `lib/flutter_webrtc.dart` | new `HubbubAudio` (setNoiseSuppression, setInputGain, status, levels, layout), exported |
+| `windows/task_runner_windows.cc`, `linux/task_runner_linux.{h,cc}` | tasks run with the queue mutex released (see Threads); upstream re-entrant `EnqueueTask` deadlocked |
 | `hubbub_test/` | native tests (`hubbub_audio_test`, `hubbub_processor_test`), the runtime probe (`apm_probe`) and `pulse_tone.c` (virtual tone microphone for Linux/WSLg) |
 | `example/` | removed (1.4 MB, not needed; done in the pristine commit `24913d5`) |
 | `third_party/rnnoise/CMakeLists.txt` | own file; for MSVC it defines `__SSE2__=1` (MSVC does not define it, RNNoise's x86 code selects its SSE paths with it) |
@@ -112,6 +125,7 @@ Windows (cmd.exe, VS Build Tools 2022 x64 environment):
     cmake --build target/hubbub_test
     target\hubbub_test\hubbub_audio_test.exe       # DSP tests, ALL PASSED
     target\hubbub_test\hubbub_processor_test.exe   # adapter layouts, threads, shutdown; ALL PASSED
+    target\hubbub_test\task_runner_test.exe       # real TaskRunnerWindows (message pump); Linux builds it against GLib
     target\hubbub_test\apm_probe.exe real          # needs a microphone; prints "hubbub: probe ..." lines
 
 Debug runtime (iterator checks, debug heap) for the thread tests: configure another directory with

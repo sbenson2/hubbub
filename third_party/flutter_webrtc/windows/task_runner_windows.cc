@@ -54,12 +54,23 @@
    // Even though it would usually be sufficient to process only a single task
    // whenever we receive the message, if the message queue happens to be full,
    // we might not receive a message for each individual task.
+   //
+   // Hubbub patch: the tasks run with the mutex released. A task may enqueue
+   // another task (the event channel proxy does, from Success), and the mutex
+   // is not recursive. The queue is swapped out under the lock and run in FIFO
+   // order; tasks enqueued meanwhile are picked up by the next loop round.
    for (;;) {
-     std::lock_guard<std::mutex> lock(tasks_mutex_);
-     if (tasks_.empty()) break;
-     TaskClosure task = tasks_.front();
-     tasks_.pop();
-     task();
+     std::queue<TaskClosure> batch;
+     {
+       std::lock_guard<std::mutex> lock(tasks_mutex_);
+       if (tasks_.empty()) break;
+       batch.swap(tasks_);
+     }
+     while (!batch.empty()) {
+       TaskClosure task = std::move(batch.front());
+       batch.pop();
+       task();
+     }
    }
  }
  

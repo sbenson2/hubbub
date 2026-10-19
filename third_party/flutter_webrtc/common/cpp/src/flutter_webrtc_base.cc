@@ -109,10 +109,25 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
   audio_processing_->SetCapturePostProcessing(hubbub_processor_.get());
   if (task_runner_) hubbub_publisher_ = std::thread([this] { HubbubPublishLoop(); });
 
-  audio_device_->OnDeviceChange([&] {
-    EncodableMap info;
-    info[EncodableValue("event")] = "onDeviceChange";
-    event_channel()->Success(EncodableValue(info), false);
+  // Hubbub patch: the device callback comes from a device thread; the event
+  // channel proxy is not thread safe, so hand the Success call to the platform
+  // thread like the levels events (the shared flag guards a task that outlives
+  // this object).
+  std::shared_ptr<std::atomic<bool>> alive = hubbub_alive_;
+  audio_device_->OnDeviceChange([this, alive] {
+    auto publish = [this, alive] {
+      if (!alive->load()) return;
+      EventChannelProxy* channel = event_channel();
+      if (!channel) return;
+      EncodableMap info;
+      info[EncodableValue("event")] = "onDeviceChange";
+      channel->Success(EncodableValue(info), false);
+    };
+    if (task_runner_) {
+      task_runner_->EnqueueTask(publish);
+    } else {
+      publish();
+    }
   });
 }
 

@@ -1,6 +1,7 @@
 #ifndef PACKAGES_FLUTTER_WEBRTC_LINUX_TASK_RUNNER_LINUX_H_
 #define PACKAGES_FLUTTER_WEBRTC_LINUX_TASK_RUNNER_LINUX_H_
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -19,6 +20,8 @@ class TaskRunnerLinux : public TaskRunner {
  private:
   std::mutex tasks_mutex_;
   std::queue<TaskClosure> tasks_;
+  // Hubbub patch: set while the tasks are being drained (see the .cc).
+  std::atomic<bool> draining_{false};
 };
 
 }  // namespace flutter_webrtc_plugin
