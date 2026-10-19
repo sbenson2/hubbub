@@ -354,6 +354,85 @@ async fn silent_host_handover_and_its_sessions_close() {
     println!("silent host's sessions closed after {:?}", t0.elapsed());
 }
 
+/// Like `start_freezable`, but the runtime thread can be stalled for a while: sending a duration
+/// blocks the whole runtime that long (a laptop sleeping, a suspended process), then it resumes.
+async fn start_stallable(cfg: NodeConfig, addrs: Vec<EndpointAddr>) -> (Node, EndpointAddr, std::sync::mpsc::Sender<Duration>) {
+    let (ready_tx, ready) = tokio::sync::oneshot::channel();
+    let (stall, stalls) = std::sync::mpsc::channel::<Duration>();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let node = Node::start_with_addrs(cfg, Box::new(FakeHost::new()), addrs).await.unwrap();
+            let addr = node.endpoint_addr().await.unwrap();
+            let _ = ready_tx.send((node, addr));
+            loop {
+                match stalls.try_recv() {
+                    Ok(d) => std::thread::sleep(d),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => tokio::time::sleep(Duration::from_millis(5)).await,
+                    Err(_) => return,
+                }
+            }
+        });
+    });
+    let (node, addr) = ready.await.unwrap();
+    (node, addr, stall)
+}
+
+/// A live host is superseded: it stalls for longer than the silence limit, the other member
+/// drops its session and takes over at a higher term, then the old host wakes and must step
+/// down and get working credentials for the new host's room (the former host rejoining the call).
+#[tokio::test]
+async fn superseded_live_host_steps_down_and_gets_credentials_from_the_new_host() {
+    let (dirs, community_file) = community(&[true; 2]);
+    let (mut nodes, mut stalls, mut addrs) = (Vec::new(), Vec::new(), Vec::new());
+    for dir in &dirs {
+        let (node, addr, stall) = start_stallable(config(dir, &community_file, true), addrs.clone()).await;
+        addrs.push(addr);
+        nodes.push(node);
+        stalls.push(stall);
+    }
+    let host = wait_agree(&nodes, Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let old = nodes.iter().position(|n| n.member_id() == host).unwrap();
+    let new = 1 - old;
+    let old_term = nodes[old].host_state().term;
+    // The old host has a credentials-ready call of its own before it stalls.
+    nodes[old].voice_credentials("lobby").await.unwrap();
+
+    let t0 = Instant::now();
+    stalls[old].send(SILENCE_LIMIT + Duration::from_millis(1_500)).unwrap();
+    let new_id = nodes[new].member_id();
+    wait_for(Duration::from_secs(10), "the other member to take over", || {
+        (nodes[new].host_state().host == Some(new_id)).then_some(())
+    })
+    .await;
+    let took_over = t0.elapsed();
+    assert!(nodes[new].host_state().term > old_term);
+
+    // How long the new host needs for its own credentials (what its app waits for).
+    let t1 = Instant::now();
+    let own = nodes[new].voice_credentials("lobby").await.unwrap();
+    let own_took = t1.elapsed();
+    assert_eq!(own.host, new_id);
+
+    // (a) the old host steps down
+    wait_for(Duration::from_secs(10), "the old host to accept the new host", || {
+        (nodes[old].host_state().host == Some(new_id)).then_some(())
+    })
+    .await;
+    let stepped_down = t0.elapsed();
+    // (b) and gets working credentials from the new host
+    let t2 = Instant::now();
+    let c = nodes[old].voice_credentials("lobby").await.unwrap();
+    let creds_took = t2.elapsed();
+    assert_eq!(c.host, new_id);
+    assert_eq!(echo_via(&c.url, b"ping").await, b"ping");
+    println!(
+        "took over after {took_over:?}; new host's own credentials took {own_took:?}; old host stepped down at {stepped_down:?} and got credentials in {creds_took:?}"
+    );
+    assert!(creds_took < Duration::from_secs(3), "credentials took {creds_took:?}");
+}
+
 /// R23, the review's scenario: the host and another member go silent together. The survivor may
 /// rank below the silent member, so it can claim only once that member's session closes.
 #[tokio::test]
