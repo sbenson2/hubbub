@@ -271,6 +271,10 @@ impl Routes {
         self.map.lock().unwrap().remove(&flow);
     }
 
+    pub fn contains(&self, flow: u16) -> bool {
+        self.map.lock().unwrap().contains_key(&flow)
+    }
+
     pub fn clear(&self) {
         self.map.lock().unwrap().clear();
     }

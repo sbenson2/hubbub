@@ -9,6 +9,7 @@ pub mod hub;
 pub mod ids;
 pub mod media_host;
 pub mod media_shared;
+pub mod media_shim;
 pub mod media_tunnel;
 pub mod net;
 pub mod node;

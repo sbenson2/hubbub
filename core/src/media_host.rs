@@ -74,7 +74,7 @@ pub fn render_config(ports: &LkPorts, node_ip: IpAddr, api_key: &str, api_secret
 const ALNUM: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// Random alphanumeric string, unbiased via rejection sampling (accept bytes below 248 = 4 * 62).
-fn random_alnum(len: usize) -> String {
+pub(crate) fn random_alnum(len: usize) -> String {
     let mut out = String::with_capacity(len);
     let mut buf = [0u8; 64];
     while out.len() < len {

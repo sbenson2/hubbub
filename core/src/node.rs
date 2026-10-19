@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
 
 mod hosting;
+mod media_link;
 
 use hosting::media_actor;
 
@@ -38,6 +39,7 @@ use crate::identity::Identity;
 use crate::invite::Invite;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::MediaHost;
+use crate::media_shim::IceConfig;
 use crate::media_tunnel::{serve_media_host, FlowLimits, TunnelStats};
 use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
@@ -102,6 +104,9 @@ pub struct VoiceCredentials {
     pub e2ee_key: [u8; 32],
     pub host: MemberId,
     pub term: u64,
+    /// The ICE server (this node's TURN shim) the LiveKit client must use, so its media
+    /// goes through the tunnel. `None` if the machine has no usable address.
+    pub ice: Option<IceConfig>,
 }
 
 pub struct Node {
@@ -200,6 +205,8 @@ impl Node {
             dial_addrs: Mutex::new(dial_addrs),
             dialing,
             tunnel_port,
+            shim: Mutex::new(None),
+            shim_gate: tokio::sync::Mutex::new(()),
             state: Mutex::new(State {
                 host: HostState { host: None, term: 0 },
                 can_host,
@@ -355,6 +362,7 @@ impl Node {
                         e2ee_key: inner.community().e2ee_key(),
                         host,
                         term: hs.term,
+                        ice: inner.ice_config().await,
                     })
                 }
                 Err(e) if Instant::now() >= deadline => return Err(e),
@@ -494,6 +502,10 @@ struct Inner {
     /// Members that have a dial loop.
     dialing: Mutex<HashSet<MemberId>>,
     tunnel_port: u16,
+    /// The TURN shim for call media, started with the first credentials.
+    shim: Mutex<Option<media_link::ShimSlot>>,
+    /// Serialises starting the shim.
+    shim_gate: tokio::sync::Mutex<()>,
     state: Mutex<State>,
     events: broadcast::Sender<NodeEvent>,
     election: mpsc::UnboundedSender<Cmd>,
@@ -660,7 +672,10 @@ impl Inner {
                     self.broadcast(&CtlMsg::Announce { term, key });
                 }
                 Action::HostChanged(hs) => {
-                    self.state.lock().unwrap().host = hs;
+                    let previous = std::mem::replace(&mut self.state.lock().unwrap().host, hs);
+                    if previous.host != hs.host {
+                        self.repoint_media();
+                    }
                     self.emit(NodeEvent::HostChanged {
                         host: hs.host,
                         term: hs.term,
