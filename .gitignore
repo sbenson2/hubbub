@@ -21,3 +21,6 @@ HANDOFF*.md
 *.jks
 
 tools/relay-check/web/node_modules/
+
+# Installer and update-feed output (tools/package-windows.ps1, tools/package-linux.sh).
+dist/
