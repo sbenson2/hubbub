@@ -9,6 +9,7 @@
 
 #include "helper.h"
 #include "rtc_field_trials.h"
+#include "rtc_logging.h"
 #include "task_runner.h"
 
 namespace flutter_webrtc_plugin {
@@ -70,6 +71,11 @@ void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,
   }
   webrtc_initialized_ = true;
   warp_enabled_ = enable_warp;
+
+  // Hubbub: the prebuilt libwebrtc logs to stderr at Info, where the frame
+  // cryptor prints the raw end-to-end key (and journald keeps it on Linux).
+  // Only warnings and errors reach stderr.
+  libwebrtc::LibWebRTCLogging::setMinDebugLogLevel(libwebrtc::Warning);
 
   // WARP (WebRTC Abridged Roundtrip Protocol, draft-uberti-tsvwg-warp) is
   // opted into through the `enableWARP` initialize() option. The part of it

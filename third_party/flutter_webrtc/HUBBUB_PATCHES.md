@@ -43,6 +43,10 @@ samples). The processor runs after echo cancellation, noise suppression and AGC 
    after the APM's echo cancellation, noise suppression and (on Windows, where it stays on) AGC, so
    it is the level that would have been sent without Hubbub's gain, not the raw device level.
 
+Quieter libwebrtc logs: `EnsureWebRTCInitialized` (`common/cpp/src/flutter_webrtc_base.cc`) sets
+`LibWebRTCLogging::setMinDebugLogLevel(Warning)`. The prebuilt library logs to stderr at Info, and
+there the frame cryptor prints the raw end-to-end key, which journald keeps on Linux.
+
 ## Buffer layout (measured, `hubbub_test/apm_probe`, prebuilt libwebrtc m150)
 
 | Where | `Initialize` | `Process(num_bands, num_frames, buffer_size)` | Notes |
