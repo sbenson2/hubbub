@@ -1,10 +1,8 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import 'avatar.dart';
+import 'call_stage.dart';
 import 'channel_sidebar.dart';
-import 'participant_tile.dart';
 import 'theme.dart';
 import 'user_panel.dart';
 
@@ -25,6 +23,7 @@ class VoiceChannelView extends StatelessWidget {
     required this.onToggleShare,
     required this.onLeave,
     required this.onJoin,
+    required this.stage,
   });
 
   final String channel;
@@ -41,6 +40,7 @@ class VoiceChannelView extends StatelessWidget {
   final VoidCallback onToggleShare;
   final VoidCallback onLeave;
   final VoidCallback onJoin;
+  final StageActions stage;
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +51,7 @@ class VoiceChannelView extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
             child: connected && participants.isNotEmpty
-                ? _TileGrid(participants: participants)
+                ? CallStage(participants: participants, actions: stage)
                 : _Lobby(channel: channel, connecting: connecting, onJoin: onJoin),
           ),
         ),
@@ -103,51 +103,6 @@ class VoiceChannelView extends StatelessWidget {
         ),
       ]),
     );
-  }
-}
-
-/// Lays tiles out 16:9 at the largest size that fits, rows centred.
-class _TileGrid extends StatelessWidget {
-  const _TileGrid({required this.participants});
-
-  final List<VoiceMember> participants;
-
-  static const _gap = 8.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, box) {
-      final n = participants.length;
-      var best = 0.0;
-      var columns = 1;
-      for (var c = 1; c <= n; c++) {
-        final rows = (n / c).ceil();
-        final byWidth = (box.maxWidth - _gap * (c - 1)) / c;
-        final byHeight = (box.maxHeight - _gap * (rows - 1)) / rows * 16 / 9;
-        final w = math.min(byWidth, byHeight);
-        if (w > best) {
-          best = w;
-          columns = c;
-        }
-      }
-      final width = math.max(0.0, best);
-      final height = width * 9 / 16;
-      Widget tile(VoiceMember p) =>
-          SizedBox(width: width, height: height, child: ParticipantTile(member: p));
-      return Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          for (var r = 0; r < n; r += columns) ...[
-            if (r > 0) const SizedBox(height: _gap),
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              for (var i = r; i < math.min(n, r + columns); i++) ...[
-                if (i > r) const SizedBox(width: _gap),
-                tile(participants[i]),
-              ],
-            ]),
-          ],
-        ]),
-      );
-    });
   }
 }
 

@@ -1,6 +1,6 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:window_manager/window_manager.dart';
 
 enum ShareKind { screen, window }
 
@@ -34,4 +34,13 @@ Future<List<ShareSource>> desktopShareSources() async {
         thumbnail: s.thumbnail,
       ),
   ];
+}
+
+/// Full-screen for the app window (a focused stream's Full Screen button).
+Future<void> setWindowFullscreen(bool on) async {
+  try {
+    await windowManager.setFullScreen(on);
+  } catch (e) {
+    debugPrint('hubbub: full screen failed: $e');
+  }
 }

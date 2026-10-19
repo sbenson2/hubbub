@@ -17,9 +17,11 @@ void main() {
   late FakeRoom room;
   late AppMember me;
   late FakeShareSources shares;
+  late List<bool> fullscreen;
 
   Future<void> pumpShell(WidgetTester tester, {DevicePrefs prefs = const DevicePrefs()}) async {
     shares = FakeShareSources();
+    fullscreen = [];
     events = StreamController<AppNodeEvent>.broadcast();
     me = member('aaaa', 'Shawn');
     node = FakeNode(events: events, me: me, roster: [me, member('bbbb', 'Bob')]);
@@ -40,6 +42,7 @@ void main() {
         room: room,
         deviceStore: DevicePrefsStore.memory(prefs),
         shareSources: shares.load,
+        setFullscreen: (on) async => fullscreen.add(on),
         loadConfig: () => throw StateError('a started node needs no config'),
       ),
     ));
@@ -196,6 +199,157 @@ void main() {
       await tester.pumpAndSettle();
       expect(room.calls, ['connect', 'mic:true', 'deafened:false', 'screen:true:screen:0:0']);
       expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+    });
+  });
+
+  // Bob and Shawn in the call; [bob] and [mine] are what each has published.
+  void callWith(WidgetTester tester, {VideoFeed? bobShare, VideoFeed? bobCamera, VideoFeed? myShare}) {
+    room.emitParticipants([
+      RoomParticipant(id: me.id, name: 'Shawn', speaking: false, isLocal: true, share: myShare),
+      RoomParticipant(
+          id: 'bbbb', name: 'Bob', speaking: false, isLocal: false, camera: bobCamera, share: bobShare),
+    ]);
+  }
+
+  group('streams', () {
+    const stream = VideoFeed('TR_s');
+
+    testWidgets('watch_subscribes_only_on_click', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+
+      // Announced, not received: a LIVE badge and a Watch Stream button, no subscription.
+      expect(find.text('LIVE'), findsOneWidget);
+      expect(find.text('Watch Stream'), findsOneWidget);
+      expect(room.calls.where((c) => c.startsWith('video:')), isEmpty);
+
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('video:')).toList(), ['video:bbbb:TR_s:true']);
+      expect(find.text('Watch Stream'), findsNothing);
+
+      // Later participant updates (speaking, mute) do not subscribe again.
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('video:')).length, 1);
+
+      await tester.tap(find.byTooltip('Stop Watching'));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('video:')).toList(),
+          ['video:bbbb:TR_s:true', 'video:bbbb:TR_s:false']);
+      expect(find.text('Watch Stream'), findsOneWidget);
+    });
+
+    testWidgets('a_watched_stream_is_shown_large_with_the_other_tiles_in_a_strip', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('focused')), findsNothing);
+
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      final big = tester.getSize(find.byKey(const ValueKey('focused')));
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('focused')), matching: find.byKey(const ValueKey('video:TR_s'))),
+          findsOneWidget);
+      final strip = find.byKey(const ValueKey('strip'));
+      expect(find.descendant(of: strip, matching: find.byKey(ValueKey('tile:${me.id}'))), findsOneWidget);
+      expect(find.descendant(of: strip, matching: find.byKey(const ValueKey('tile:bbbb'))), findsOneWidget);
+      expect(big.width, greaterThan(tester.getSize(find.byKey(const ValueKey('tile:bbbb'))).width * 2));
+    });
+
+    testWidgets('your_own_share_is_a_preview_tile_labelled_as_yours_with_no_watch_button',
+        (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, myShare: const VideoFeed('TR_mine'));
+      await tester.pumpAndSettle();
+      expect(find.text('Your stream'), findsOneWidget);
+      expect(find.byKey(const ValueKey('video:TR_mine')), findsOneWidget);
+      expect(find.text('Watch Stream'), findsNothing);
+      expect(room.calls.where((c) => c.startsWith('video:')), isEmpty);
+    });
+
+    testWidgets('focusing_a_camera_asks_for_the_better_layer_and_closing_goes_back', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobCamera: const VideoFeed('TR_cam'));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('quality:')), isEmpty);
+
+      await tester.tap(find.byKey(const ValueKey('tile:bbbb')));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('quality:')).toList(), ['quality:bbbb:TR_cam:high']);
+      expect(find.byKey(const ValueKey('focused')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('quality:')).toList(),
+          ['quality:bbbb:TR_cam:high', 'quality:bbbb:TR_cam:low']);
+      expect(find.byKey(const ValueKey('focused')), findsNothing);
+    });
+
+    testWidgets('a_host_change_resubscribes_a_watched_stream_that_still_exists', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      room.calls.clear();
+
+      // The new host's room has Bob sharing under a new track id.
+      room.onConnect = [
+        RoomParticipant(id: me.id, name: 'Shawn', speaking: false, isLocal: true),
+        RoomParticipant(
+            id: 'bbbb', name: 'Bob', speaking: false, isLocal: false, share: const VideoFeed('TR_s2')),
+      ];
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('video:')).toList(), ['video:bbbb:TR_s2:true']);
+      expect(find.byKey(const ValueKey('focused')), findsOneWidget);
+    });
+
+    testWidgets('a_stream_that_ends_is_forgotten_and_a_later_one_needs_a_new_click', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      room.calls.clear();
+
+      callWith(tester);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('focused')), findsNothing);
+
+      callWith(tester, bobShare: const VideoFeed('TR_s3'));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('video:')), isEmpty);
+      expect(find.text('Watch Stream'), findsOneWidget);
+    });
+
+    testWidgets('full_screen_covers_the_window_with_the_stream_and_exits_back', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Full Screen'));
+      await tester.pumpAndSettle();
+      expect(fullscreen, [true]);
+      expect(find.byKey(const ValueKey('fullscreen')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Exit Full Screen'));
+      await tester.pumpAndSettle();
+      expect(fullscreen, [true, false]);
+      expect(find.byKey(const ValueKey('fullscreen')), findsNothing);
     });
   });
 }

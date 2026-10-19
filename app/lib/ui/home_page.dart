@@ -16,6 +16,7 @@ import '../src/rust/api/hubbub.dart';
 import '../text_controller.dart';
 import 'audio_menus.dart';
 import 'avatar.dart';
+import 'call_stage.dart';
 import 'channel_sidebar.dart';
 import 'community_rail.dart';
 import 'dialogs/clipboard_banner.dart';
@@ -28,6 +29,7 @@ import 'dialogs/share_picker_dialog.dart';
 import 'member_list.dart';
 import 'settings_dialog.dart';
 import 'text_channel_view.dart';
+import 'video_view.dart';
 import 'theme.dart';
 import 'user_panel.dart';
 import 'voice_channel_view.dart';
@@ -50,6 +52,7 @@ class HomePage extends StatefulWidget {
     this.deviceStore,
     this.audioStore,
     this.shareSources = desktopShareSources,
+    this.setFullscreen = setWindowFullscreen,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
   /// A single server (the pre-hub path); [hub] holds every server.
@@ -62,6 +65,9 @@ class HomePage extends StatefulWidget {
 
   /// What the Share Your Screen picker lists; tests give a fixed list.
   final ShareSourceLoader shareSources;
+
+  /// Puts the whole window in (or takes it out of) full screen for a focused stream.
+  final Future<void> Function(bool) setFullscreen;
   final Future<AppNodeConfig> Function() loadConfig;
 
   /// Where `hubbub://` links come from; each opens the Join dialog once a name is set.
@@ -102,6 +108,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (c == null) {
       _cameraOn = _sharing = false;
       _shareSource = null;
+      _watching.clear();
+      _requested.clear();
+      _seenSharing.clear();
+      _watchGrace?.cancel();
+      _focus = null;
     }
     _inCall.value = c != null;
   }
@@ -118,6 +129,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// The screen or window being shared, so a host change can share it again.
   String? _shareSource;
+
+  /// Whose screen shares you clicked Watch on (member ids; a share's track id changes when
+  /// the room does), the track ids already asked for, and which of them have been seen in
+  /// this room. A watch whose stream is gone is forgotten, so a later share needs a new click.
+  final _watching = <String>{};
+  final _requested = <String>{};
+  final _seenSharing = <String>{};
+  Timer? _watchGrace;
+
+  /// The tile shown large (a [StageItem.key]), if any.
+  String? _focus;
   bool _mutedBeforeDeafen = false;
   bool _memberList = true;
   bool _starting = false;
@@ -163,7 +185,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
-    _peopleSub = widget.room.participants.listen((p) => setState(() => _people = p));
+    _peopleSub = widget.room.participants.listen((p) {
+      setState(() => _people = p);
+      _syncWatching(p);
+    });
     _openFirstChannel();
     if (widget.controller != null && !_node.started) {
       _starting = true;
@@ -255,6 +280,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _devices.dispose();
     _audio.dispose();
     _inCall.dispose();
+    _watchGrace?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _links?.dispose();
     _hub.removeListener(_refresh);
@@ -318,6 +344,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _rejoin(_Call call) async {
     _rejoining = true;
+    // The new room has new track ids: watches are asked for again as their streams show up,
+    // and dropped if they do not within a few seconds.
+    _requested.clear();
+    _seenSharing.clear();
+    _watchGrace?.cancel();
+    if (_watching.isNotEmpty) {
+      _watchGrace = Timer(const Duration(seconds: 15), () {
+        if (mounted) setState(() => _watching.removeWhere((id) => !_seenSharing.contains(id)));
+      });
+    }
     try {
       final c = await call.node.credentials(call.channel);
       if (!mounted || _call != call) return;
@@ -375,6 +411,95 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _toast('Could not turn the camera ${on ? 'on' : 'off'}: $e');
       if (mounted) setState(() => _cameraOn = !on);
     }
+  }
+
+  VideoFeed? _shareOf(String id) {
+    for (final p in _people) {
+      if (p.id == id) return p.share;
+    }
+    return null;
+  }
+
+  Future<void> _watch(VoiceMember m) async {
+    final sid = m.share?.sid;
+    if (sid == null) return;
+    setState(() {
+      _watching.add(m.id);
+      _seenSharing.add(m.id);
+      _focus = 'stream:${m.id}';
+    });
+    if (_requested.add(sid)) await widget.room.subscribeVideo(m.id, sid, true);
+  }
+
+  Future<void> _unwatch(String id) async {
+    final sid = _shareOf(id)?.sid;
+    setState(() {
+      _watching.remove(id);
+      _seenSharing.remove(id);
+      if (_focus == 'stream:$id') _focus = null;
+    });
+    if (sid != null) {
+      _requested.remove(sid);
+      await widget.room.subscribeVideo(id, sid, false);
+    }
+  }
+
+  /// Keeps the watches in step with who is sharing: asks for a watched stream that has
+  /// (re)appeared, and forgets one that has ended.
+  void _syncWatching(List<RoomParticipant> people) {
+    for (final id in _watching.toList()) {
+      final sid = people.where((p) => p.id == id).firstOrNull?.share?.sid;
+      if (sid != null) {
+        _seenSharing.add(id);
+        if (_requested.add(sid)) unawaited(widget.room.subscribeVideo(id, sid, true));
+      } else if (_seenSharing.contains(id) && !_rejoining && _call != null) {
+        setState(() {
+          _watching.remove(id);
+          _seenSharing.remove(id);
+          if (_focus == 'stream:$id') _focus = null;
+        });
+      }
+    }
+  }
+
+  /// A camera focused is received at its best layer, and back at the grid's layer when closed.
+  void _setFocus(String? key) {
+    final old = _focus;
+    setState(() => _focus = key);
+    unawaited(_cameraQuality(old, high: false));
+    unawaited(_cameraQuality(key, high: true));
+  }
+
+  Future<void> _cameraQuality(String? key, {required bool high}) async {
+    if (key == null || !key.startsWith('user:')) return;
+    final id = key.substring(5);
+    for (final p in _people) {
+      final sid = p.camera?.sid;
+      if (p.id == id && !p.isLocal && sid != null) {
+        await widget.room.setVideoQuality(id, sid, high: high);
+      }
+    }
+  }
+
+  void _closeFocused(StageItem item) {
+    if (item.stream && !item.member.isMe) {
+      unawaited(_unwatch(item.member.id));
+    } else {
+      _setFocus(null);
+    }
+  }
+
+  /// The focused picture alone over the whole window, as Discord's full screen.
+  Future<void> _openFullscreen(StageItem item) async {
+    final feed = item.stream ? item.member.share : item.member.camera;
+    if (feed == null) return;
+    await widget.setFullscreen(true);
+    if (!mounted) return;
+    await Navigator.of(context).push(PageRouteBuilder<void>(
+      opaque: true,
+      pageBuilder: (_, _, _) => _FullscreenStream(feed: feed, mirror: !item.stream && item.member.isMe),
+    ));
+    await widget.setFullscreen(false);
   }
 
   /// Stop Streaming, or open the picker and Go Live on what it returns.
@@ -721,6 +846,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         onToggleShare: _toggleShare,
         onLeave: _leave,
         onJoin: () => _join(v.name),
+        stage: StageActions(
+          watching: _watching,
+          focusKey: _focus,
+          onWatch: _watch,
+          onFocus: _setFocus,
+          onClose: _closeFocused,
+          onFullscreen: _openFullscreen,
+        ),
       );
     }
     return TextChannelView(
@@ -802,4 +935,43 @@ class _Call {
   /// The host and term whose media room this call is in.
   final String host;
   final int term;
+}
+
+/// A stream (or camera) filling the window; Esc or the button goes back.
+class _FullscreenStream extends StatelessWidget {
+  const _FullscreenStream({required this.feed, required this.mirror});
+
+  final VideoFeed feed;
+  final bool mirror;
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(
+        bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.of(context).pop()},
+        child: Focus(
+          autofocus: true,
+          child: ColoredBox(
+            key: const ValueKey('fullscreen'),
+            color: Colors.black,
+            child: Stack(children: [
+              Positioned.fill(child: VideoView(feed: feed, contain: true, mirror: mirror)),
+              Positioned(
+                top: 12,
+                right: 12,
+                child: Tooltip(
+                  message: 'Exit Full Screen',
+                  child: GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: const BoxDecoration(color: Color(0xB3000000), shape: BoxShape.circle),
+                      child: const Icon(Icons.fullscreen_exit_rounded, color: HubColors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      );
 }

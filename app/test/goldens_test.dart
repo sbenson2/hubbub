@@ -111,6 +111,32 @@ void main() {
     await expectLater(find.byType(HomePage), matchesGoldenFile('goldens/voice_channel.png'));
   }, skip: kIsWeb);
 
+  // Maya is streaming and Theo has his camera on.
+  Future<void> streamingCall(WidgetTester tester) async {
+    await pumpShell(tester, online: true);
+    room.onConnect = [
+      RoomParticipant(id: me.id, name: 'Shawn', speaking: false, isLocal: true),
+      RoomParticipant(
+          id: maya.id, name: 'Maya', speaking: true, isLocal: false, share: const VideoFeed('TR_s')),
+      RoomParticipant(
+          id: theo.id, name: 'Theo', speaking: false, isLocal: false, camera: const VideoFeed('TR_c')),
+    ];
+    await tester.tap(find.text('lobby'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('golden_voice_stream_live', (tester) async {
+    await streamingCall(tester);
+    await expectLater(find.byType(HomePage), matchesGoldenFile('goldens/voice_stream_live.png'));
+  }, skip: kIsWeb);
+
+  testWidgets('golden_voice_stream_watching', (tester) async {
+    await streamingCall(tester);
+    await tester.tap(find.text('Watch Stream'));
+    await tester.pumpAndSettle();
+    await expectLater(find.byType(HomePage), matchesGoldenFile('goldens/voice_stream_watching.png'));
+  }, skip: kIsWeb);
+
   testWidgets('golden_offline_banner', (tester) async {
     await pumpShell(tester, online: false);
     // Sent while no host is up: it stays dimmed until delivered.
