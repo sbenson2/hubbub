@@ -337,6 +337,9 @@ void main() {
     expect(screenPub, isNotNull, reason: 'viewer never subscribed to the screen share');
     await screenPub!.setVideoQuality(VideoQuality.HIGH);
     summary.add(await rig.measure('screen @HIGH', screen, screenPub.track!));
+    // Dynacast: with the viewer on LOW, the higher layers must pause ([h]/[f] fps ~0).
+    await screenPub.setVideoQuality(VideoQuality.LOW);
+    summary.add(await rig.measure('screen @LOW', screen, screenPub.track!));
     rig.fitTimer?.cancel();
     await rig.sender!.localParticipant!.unpublishAllTracks();
     await screen.stop();
@@ -373,8 +376,22 @@ void main() {
       await cam.stop();
       await Future<void>.delayed(const Duration(seconds: 1));
       summary.add('after the camera stopped: ${await priority()}');
+
+      // Quit: the app ends with exit(), so it calls restoreExposure first. With a camera running,
+      // that must put the priority back to 1 and leave no crash record.
+      final cam2 = await LocalVideoTrack.createCameraTrack(cameraCaptureOptionsFor(null));
+      rig.tracks.add(cam2);
+      summary.add('second camera start, while running: ${await priority()}');
+      await rtc.HubbubCamera.restoreExposure();
+      summary.add('after restoreExposure (quit path), camera still running: ${await priority()}');
+      final reg = await Process.run(
+          'reg', ['query', r'HKCU\Software\Hubbub\CameraExposureRestore']);
+      summary.add('crash record after quit path: ${(reg.stdout as String).trim().replaceAll('\n', ' | ')}');
+      await cam2.stop();
+      await Future<void>.delayed(const Duration(seconds: 1));
+      summary.add('after the second camera stopped: ${await priority()}');
     }
 
     _log('==== SUMMARY ====\n${summary.join('\n')}\n=================');
-  }, timeout: const Timeout(Duration(minutes: 3)));
+  }, timeout: const Timeout(Duration(minutes: 4)));
 }

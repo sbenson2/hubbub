@@ -160,7 +160,9 @@ Measured with `app/integration_test/video_fps_test.dart` (4K monitor, C920, loca
   Follow-ups (2026-10-19, B2): a Dart encoding is matched to the sender's encoding by `rid` when it
   has one and the sender has that rid, otherwise by position (when either side has no rids). An
   encoding that matches nothing, or matches an already used one, makes the function return null and
-  `RtpSenderSetParameters` answers `result: false`; nothing is dropped silently. The `rid` is never
+  `RtpSenderSetParameters` answers `result: false`; nothing is dropped silently. Every refusal is
+  written to stderr (`WARNING hubbub: setParameters refused: ...`) with the unmatched or doubly
+  matched encoding and both rid lists. The `rid` is never
   written (fixed once the sender exists). A field is written only when it differs from what the
   sender reports: `active`, `maxBitrate`, `minBitrate`, `maxFramerate`, `scaleResolutionDownBy`,
   `priority`, `networkPriority`. `numTemporalLayers` and `scalabilityMode` are not reported by
@@ -193,17 +195,32 @@ at 15 fps in a dark room; with 0 it captures at 30. New files `windows/hubbub_ca
   `HubbubCamera.setLowLightFullFrameRate`. On by default. A change applies at the next camera start,
   not to a camera that already runs.
 - `GetUserVideo` (flutter_media_stream.cc), before `RTCVideoDevice::Create`: find the DirectShow
-  device with the same name (and the same ordinal among same-named devices as libwebrtc lists it),
+  device whose `DevicePath` moniker property equals the guid libwebrtc lists it by (stable across
+  hot-plug, unlike name plus ordinal; a device without a `DevicePath` is matched by `FriendlyName`),
   read the priority through `IKsPropertySet`, and when it is 1 set it to 0. The filter is opened
   only for the get or set and released at once; the capture is never held open or touched. A
   camera without the control (the get fails) or with a value other than 1 is left alone.
 - The original is restored when the track's capturer stops (`MediaStreamDispose`,
-  `MediaStreamTrackDispose`), when `Create` fails, and in the `FlutterWebRTCBase` destructor. Users
-  of one device are counted.
-- Crash safety: before the change, `HKCU\Software\Hubbub\CameraExposureRestore\<device>#<n>` =
-  `<original>;<pid>` is written. The first `hubbubSetLowLightFullFrameRate` call (or camera start)
-  of the next run restores records whose process is gone (and only if the value is still 0), then
-  deletes them.
+  `MediaStreamTrackDispose`), when `Create` fails (a failed first `Create` ends its use before the
+  fallback to device 0 begins another), and in the `FlutterWebRTCBase` destructor. Users of one
+  device are counted.
+- App quit: Dart `exit(0)` runs no destructors, so `PluginAppShell.exitApp` (and the session-end
+  handler for logoff and shutdown) first calls `hubbubRestoreCameraExposure`
+  (`HubbubCamera.restoreExposure`, 2 s timeout), which runs `CameraExposureRestoreAll`.
+- Crash safety: before the change, `HKCU\Software\Hubbub\CameraExposureRestore\<DevicePath>` =
+  `<original>;<pid>;<process creation time>` is written. The first `hubbubSetLowLightFullFrameRate`
+  call (or camera start) of the next run restores records whose process is gone (and only if the
+  value is still 0), then deletes them. The creation time tells a reused pid from the Hubbub that
+  wrote the record; an access-denied `OpenProcess` (an elevated Hubbub) counts as alive.
+- Locking: `g_mu` guards only the maps; device enumeration and COM calls run outside it.
+- Known limit: two Hubbub instances on one camera. The second sees 0 and leaves it alone, and the
+  first restores 1 on its quit. The runner is single-instance per `HUBBUB_ROOT`, so this needs two
+  roots. Also, a begin for a camera in the instant between another capture's last stop and its
+  restore can read 0 and leave it, then see it restored to 1.
+- Constraint numbers: NaN, infinity and values beyond int range count as missing (the default).
+- Not unit tested (C++ has no test setup here): covered by the harness
+  `app/integration_test/video_fps_test.dart` (priority 0 while running, 1 after stop, quit path,
+  dynacast paused layers) and manual runs. The crash-recovery path was not run live.
 
 ## Re-applying on an upgrade (new flutter_webrtc version)
 

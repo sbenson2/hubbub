@@ -598,6 +598,14 @@ void FlutterWebRTC::HandleMethodCall(
     hubbub::CameraExposureSetEnabled(GetValue<bool>(on));
 #endif
     result->Success();
+  } else if (method_call.method_name().compare(
+                 "hubbubRestoreCameraExposure") == 0) {
+    // Hubbub patch (Windows): the app is quitting (exit() runs no destructors):
+    // give every webcam its auto-exposure priority back now.
+#ifdef _WIN32
+    hubbub::CameraExposureRestoreAll();
+#endif
+    result->Success();
   } else if (method_call.method_name().compare("hubbubGetStatus") == 0) {
     // Hubbub patch: what the processor has seen, for the app's log.
     if (!hubbub_processor_) {

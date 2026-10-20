@@ -1,5 +1,7 @@
 #include "flutter_peerconnection.h"
 
+#include <cstdio>
+
 #include "base/scoped_ref_ptr.h"
 #include "flutter_data_channel.h"
 #include "flutter_frame_capturer.h"
@@ -816,6 +818,26 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
     }
     if (match < 0 || match >= static_cast<int>(senderEncodings.size()) ||
         used[match]) {
+      // Hubbub: a refusal is logged (the caller only reports false, which
+      // LiveKit ignores), with both rid lists.
+      std::string dartRids, senderRids;
+      for (size_t i = 0; i < encodings.size(); i++) {
+        EncodableValue r = findEncodableValue(GetValue<EncodableMap>(encodings[i]), "rid");
+        dartRids += (i ? "," : "") + std::string("'") +
+                    (TypeIs<std::string>(r) ? GetValue<std::string>(r) : "") + "'";
+      }
+      for (size_t i = 0; i < senderEncodings.size(); i++) {
+        senderRids += (i ? "," : "") + std::string("'") +
+                      senderEncodings[i]->rid().std_string() + "'";
+      }
+      fprintf(stderr,
+              "WARNING hubbub: setParameters refused: dart encoding %zu (rid "
+              "'%s') %s; dart rids [%s], sender rids [%s]\n",
+              index, dartRid.c_str(),
+              (match >= 0 && match < static_cast<int>(senderEncodings.size()))
+                  ? "matches a sender encoding already matched"
+                  : "matches no sender encoding",
+              dartRids.c_str(), senderRids.c_str());
       return scoped_refptr<RTCRtpParameters>();
     }
     used[match] = true;

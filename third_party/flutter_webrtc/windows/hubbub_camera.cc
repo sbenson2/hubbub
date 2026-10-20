@@ -58,9 +58,11 @@ struct ComScope {
   }
 };
 
-// The IKsPropertySet of the ordinal-th video input device called `name`, opened
-// only for the get or set, as the caller releases it at once.
-IKsPropertySet* OpenDevice(const std::string& name, int ordinal) {
+// The IKsPropertySet of the video input device whose DirectShow DevicePath is
+// `id` (the id libwebrtc lists a device by), opened only for the get or set, as
+// the caller releases it at once. A device without a DevicePath is matched by
+// its FriendlyName, as libwebrtc then uses that for the id.
+IKsPropertySet* OpenDevice(const std::string& id) {
   ICreateDevEnum* dev = nullptr;
   if (FAILED(CoCreateInstance(CLSID_SystemDeviceEnum, nullptr,
                               CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dev)))) {
@@ -71,24 +73,31 @@ IKsPropertySet* OpenDevice(const std::string& name, int ordinal) {
   if (dev->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &en, 0) ==
       S_OK) {
     IMoniker* mk = nullptr;
-    int seen = 0;
     while (!result && en->Next(1, &mk, nullptr) == S_OK) {
       IPropertyBag* bag = nullptr;
       if (SUCCEEDED(mk->BindToStorage(nullptr, nullptr, IID_PPV_ARGS(&bag)))) {
+        std::string path, friendly;
         VARIANT v;
         VariantInit(&v);
-        if (SUCCEEDED(bag->Read(L"FriendlyName", &v, nullptr)) &&
-            v.vt == VT_BSTR && ToUtf8(v.bstrVal) == name) {
-          if (seen++ == ordinal) {
-            IBaseFilter* f = nullptr;
-            if (SUCCEEDED(mk->BindToObject(nullptr, nullptr,
-                                           IID_PPV_ARGS(&f)))) {
-              f->QueryInterface(IID_PPV_ARGS(&result));
-              f->Release();
-            }
-          }
+        if (SUCCEEDED(bag->Read(L"DevicePath", &v, nullptr)) &&
+            v.vt == VT_BSTR) {
+          path = ToUtf8(v.bstrVal);
         }
         VariantClear(&v);
+        VariantInit(&v);
+        if (SUCCEEDED(bag->Read(L"FriendlyName", &v, nullptr)) &&
+            v.vt == VT_BSTR) {
+          friendly = ToUtf8(v.bstrVal);
+        }
+        VariantClear(&v);
+        if (path == id || (path.empty() && friendly == id)) {
+          IBaseFilter* f = nullptr;
+          if (SUCCEEDED(mk->BindToObject(nullptr, nullptr,
+                                         IID_PPV_ARGS(&f)))) {
+            f->QueryInterface(IID_PPV_ARGS(&result));
+            f->Release();
+          }
+        }
         bag->Release();
       }
       mk->Release();
@@ -121,7 +130,16 @@ bool SetPriority(IKsPropertySet* ps, LONG value, ULONG flags) {
                            nullptr, 0, &p, sizeof(p)));
 }
 
-// The crash record: value name "<device>#<ordinal>", data "<original>;<pid>".
+// The process creation time as a 64-bit FILETIME; 0 when unknown.
+unsigned long long CreationTime(HANDLE h) {
+  FILETIME c, e, k, u;
+  if (!GetProcessTimes(h, &c, &e, &k, &u)) return 0;
+  return (static_cast<unsigned long long>(c.dwHighDateTime) << 32) |
+         c.dwLowDateTime;
+}
+
+// The crash record: value name = device id, data "<original>;<pid>;<created>".
+// The creation time tells a reused pid from the Hubbub that wrote the record.
 void RecordWrite(const std::wstring& valueName, LONG original) {
   HKEY k;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegKey, 0, nullptr, 0, KEY_SET_VALUE,
@@ -129,7 +147,8 @@ void RecordWrite(const std::wstring& valueName, LONG original) {
     return;
   }
   std::wstring data = std::to_wstring(original) + L";" +
-                      std::to_wstring(GetCurrentProcessId());
+                      std::to_wstring(GetCurrentProcessId()) + L";" +
+                      std::to_wstring(CreationTime(GetCurrentProcess()));
   RegSetValueExW(k, valueName.c_str(), 0, REG_SZ,
                  reinterpret_cast<const BYTE*>(data.c_str()),
                  static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
@@ -155,30 +174,26 @@ void RecordDelete(const std::wstring& valueName) {
   }
 }
 
-bool ProcessAlive(DWORD pid) {
-  HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
-  if (!h) return false;
+// True when the process `pid` that was created at `created` still runs. An
+// access-denied open (an elevated Hubbub) counts as alive. A record without a
+// creation time (0) falls back to the pid alone.
+bool ProcessAlive(DWORD pid, unsigned long long created) {
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE,
+                         pid);
+  if (!h) return GetLastError() == ERROR_ACCESS_DENIED;
   bool alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+  if (alive && created != 0) {
+    unsigned long long now = CreationTime(h);
+    if (now != 0 && now != created) alive = false;  // the pid was reused
+  }
   CloseHandle(h);
   return alive;
 }
 
-// "device#ordinal" -> name, ordinal.
-bool SplitKey(const std::string& key, std::string* name, int* ordinal) {
-  size_t at = key.rfind('#');
-  if (at == std::string::npos) return false;
-  *name = key.substr(0, at);
-  *ordinal = atoi(key.c_str() + at + 1);
-  return true;
-}
-
 // Puts `original` back when the priority is still the 0 we set.
 // Returns false only when the device could not be opened (unplugged).
-bool RestoreDevice(const std::string& key, LONG original) {
-  std::string name;
-  int ordinal = 0;
-  if (!SplitKey(key, &name, &ordinal)) return true;
-  IKsPropertySet* ps = OpenDevice(name, ordinal);
+bool RestoreDevice(const std::string& id, LONG original) {
+  IKsPropertySet* ps = OpenDevice(id);
   if (!ps) return false;
   LONG v = 0;
   ULONG fl = 0;
@@ -188,10 +203,8 @@ bool RestoreDevice(const std::string& key, LONG original) {
 }
 
 // Restores what a Hubbub that died left changed. A record of a process that is
-// still running (another Hubbub) is left alone.
-void RecoverLocked() {
-  if (g_recovered) return;
-  g_recovered = true;
+// still running (another Hubbub) is left alone. No lock is held here.
+void Recover() {
   HKEY k;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegKey, 0,
                     KEY_QUERY_VALUE | KEY_SET_VALUE, &k) != ERROR_SUCCESS) {
@@ -199,17 +212,17 @@ void RecoverLocked() {
   }
   std::map<std::wstring, std::wstring> records;
   for (DWORD i = 0;; i++) {
-    wchar_t name[512];
-    DWORD nameLen = 512;
-    BYTE data[128];
+    wchar_t name[1024];
+    DWORD nameLen = 1024;
+    wchar_t data[64];  // wchar_t, so the buffer is aligned
     DWORD dataLen = sizeof(data) - sizeof(wchar_t);
     DWORD type = 0;
-    LONG rc = RegEnumValueW(k, i, name, &nameLen, nullptr, &type, data,
-                            &dataLen);
+    LONG rc = RegEnumValueW(k, i, name, &nameLen, nullptr, &type,
+                            reinterpret_cast<BYTE*>(data), &dataLen);
     if (rc == ERROR_NO_MORE_ITEMS) break;
     if (rc != ERROR_SUCCESS || type != REG_SZ) continue;
-    reinterpret_cast<wchar_t*>(data)[dataLen / sizeof(wchar_t)] = 0;
-    records[name] = reinterpret_cast<wchar_t*>(data);
+    data[dataLen / sizeof(wchar_t)] = 0;
+    records[name] = data;
   }
   RegCloseKey(k);
   if (records.empty()) return;
@@ -222,61 +235,94 @@ void RecoverLocked() {
     }
     LONG original = _wtol(r.second.c_str());
     DWORD pid = static_cast<DWORD>(_wtol(r.second.c_str() + semi + 1));
-    if (pid != GetCurrentProcessId() && ProcessAlive(pid)) continue;
+    unsigned long long created = 0;
+    size_t semi2 = r.second.find(L';', semi + 1);
+    if (semi2 != std::wstring::npos) {
+      created = _wcstoui64(r.second.c_str() + semi2 + 1, nullptr, 10);
+    }
+    if (pid != GetCurrentProcessId() && ProcessAlive(pid, created)) continue;
     if (RestoreDevice(ToUtf8(r.first.c_str()), original)) RecordDelete(r.first);
   }
 }
 
-void EndLocked(const std::string& key) {
-  auto it = g_active.find(key);
-  if (it == g_active.end()) return;
-  if (--it->second.users > 0) return;
+// Recovery once per process. Only the first caller does the work, outside the
+// lock; a concurrent caller does not wait for it.
+void RecoverOnce() {
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (g_recovered) return;
+    g_recovered = true;
+  }
+  Recover();
+}
+
+// Drops one user of `key`; the last one restores the device (outside the lock).
+void End(const std::string& key) {
+  Active gone;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    auto it = g_active.find(key);
+    if (it == g_active.end()) return;
+    if (--it->second.users > 0) return;
+    gone = it->second;
+    g_active.erase(it);
+  }
   ComScope com;
-  if (RestoreDevice(key, it->second.original)) RecordDelete(it->second.valueName);
-  g_active.erase(it);
+  if (RestoreDevice(key, gone.original)) RecordDelete(gone.valueName);
 }
 
 }  // namespace
 
 void CameraExposureSetEnabled(bool enabled) {
-  std::lock_guard<std::mutex> lock(g_mu);
-  g_enabled = enabled;
-  RecoverLocked();
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_enabled = enabled;
+  }
+  RecoverOnce();
 }
 
-std::string CameraExposureBegin(const std::string& name, int ordinal) {
-  std::lock_guard<std::mutex> lock(g_mu);
-  RecoverLocked();
-  if (!g_enabled) return "";
-  const std::string key = name + "#" + std::to_string(ordinal);
-  auto it = g_active.find(key);
-  if (it != g_active.end()) {
-    it->second.users++;
-    return key;
+std::string CameraExposureBegin(const std::string& id) {
+  RecoverOnce();
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (!g_enabled || id.empty()) return "";
+    auto it = g_active.find(id);
+    if (it != g_active.end()) {
+      it->second.users++;
+      return id;
+    }
   }
+  // The COM work runs without the lock.
   ComScope com;
-  IKsPropertySet* ps = OpenDevice(name, ordinal);
+  IKsPropertySet* ps = OpenDevice(id);
   if (!ps) return "";
-  std::string result;
+  bool changed = false;
   LONG v = 0;
   ULONG fl = 0;
+  const std::wstring valueName = ToWide(id);
   // Only a camera that reports the control, and has the default 1, is touched.
   if (GetPriority(ps, &v, &fl) && v == 1 && RecordWritable()) {
-    const std::wstring valueName = ToWide(key);
     RecordWrite(valueName, v);  // before the change, so a crash can undo it
     if (SetPriority(ps, 0, fl)) {
-      Active a;
-      a.original = v;
-      a.users = 1;
-      a.valueName = valueName;
-      g_active[key] = a;
-      result = key;
+      changed = true;
     } else {
       RecordDelete(valueName);
     }
   }
   ps->Release();
-  return result;
+  if (!changed) return "";
+  std::lock_guard<std::mutex> lock(g_mu);
+  auto it = g_active.find(id);
+  if (it != g_active.end()) {
+    it->second.users++;  // another capture of the same camera got there first
+    return id;
+  }
+  Active a;
+  a.original = v;
+  a.users = 1;
+  a.valueName = valueName;
+  g_active[id] = a;
+  return id;
 }
 
 void CameraExposureBind(const std::string& track_id, const std::string& key) {
@@ -286,28 +332,33 @@ void CameraExposureBind(const std::string& track_id, const std::string& key) {
 }
 
 void CameraExposureEndTrack(const std::string& track_id) {
-  std::lock_guard<std::mutex> lock(g_mu);
-  auto it = g_track_key.find(track_id);
-  if (it == g_track_key.end()) return;
-  const std::string key = it->second;
-  g_track_key.erase(it);
-  EndLocked(key);
+  std::string key;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    auto it = g_track_key.find(track_id);
+    if (it == g_track_key.end()) return;
+    key = it->second;
+    g_track_key.erase(it);
+  }
+  End(key);
 }
 
 void CameraExposureEnd(const std::string& key) {
   if (key.empty()) return;
-  std::lock_guard<std::mutex> lock(g_mu);
-  EndLocked(key);
+  End(key);
 }
 
 void CameraExposureRestoreAll() {
-  std::lock_guard<std::mutex> lock(g_mu);
-  g_track_key.clear();
+  std::map<std::string, Active> all;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_track_key.clear();
+    all.swap(g_active);
+  }
   ComScope com;
-  for (auto& a : g_active) {
+  for (auto& a : all) {
     if (RestoreDevice(a.first, a.second.original)) RecordDelete(a.second.valueName);
   }
-  g_active.clear();
 }
 
 }  // namespace hubbub

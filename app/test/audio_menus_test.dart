@@ -467,6 +467,7 @@ void main() {
     testWidgets('windows_has_a_low_light_frame_rate_switch_on_by_default_that_is_saved',
         (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       await pumpShell(tester);
       expect(room.lowLightFullFrameRate, isTrue, reason: 'handed to the plugin at start');
       await openVoice(tester);
@@ -482,7 +483,7 @@ void main() {
       expect(tester.widget<SwitchListTile>(sw).value, isFalse);
       expect(room.lowLightFullFrameRate, isFalse);
       expect((await audioStore.load()).lowLightFullFrameRate, isFalse);
-      debugDefaultTargetPlatformOverride = null;
+      debugDefaultTargetPlatformOverride = null; // the framework checks this before tearDowns
     });
 
     testWidgets('the_low_light_switch_is_not_shown_off_windows', (tester) async {

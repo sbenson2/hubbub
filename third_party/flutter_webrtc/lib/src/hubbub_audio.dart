@@ -105,4 +105,8 @@ class HubbubCamera {
   /// own value when the capture stops. Takes effect at the next camera start.
   static Future<void> setLowLightFullFrameRate(bool on) =>
       WebRTC.invokeMethod('hubbubSetLowLightFullFrameRate', <String, dynamic>{'on': on});
+
+  /// Gives every webcam its own auto-exposure priority back at once. For the app's quit, which
+  /// ends with `exit()` and so runs no native destructors.
+  static Future<void> restoreExposure() => WebRTC.invokeMethod('hubbubRestoreCameraExposure');
 }

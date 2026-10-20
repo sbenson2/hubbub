@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' show HubbubCamera;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -41,6 +42,7 @@ class PluginAppShell with TrayListener, WindowListener implements AppShell {
       switch (call.method) {
         case 'sessionEnd':
           await _session();
+          await _restoreCamera();
         case 'quit':
           _quit();
       }
@@ -100,8 +102,18 @@ class PluginAppShell with TrayListener, WindowListener implements AppShell {
     await windowManager.focus();
   }
 
+  /// Windows: the webcam's auto-exposure priority goes back before the process ends. exit() runs
+  /// no native destructors. Short timeout, so a quit never hangs on it.
+  Future<void> _restoreCamera() async {
+    if (!HubbubCamera.supported) return;
+    try {
+      await HubbubCamera.restoreExposure().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
   @override
   Future<void> exitApp() async {
+    await _restoreCamera();
     // exit() runs no window destructors, which would leave a ghost icon in the notification area.
     if (_hasTray) {
       try {

@@ -14,11 +14,11 @@ namespace hubbub {
 // Hubbub left behind (recorded in HKCU\Software\Hubbub\CameraExposureRestore).
 void CameraExposureSetEnabled(bool enabled);
 
-// Before a capturer is created for DirectShow device `name` (UTF-8, as libwebrtc
-// lists it); `ordinal` counts same-named devices before it. Returns a key for the
-// device when its priority was changed from 1 to 0, else "" (setting off, no such
-// control, already 0).
-std::string CameraExposureBegin(const std::string& name, int ordinal);
+// Before a capturer is created for the DirectShow device `id` (UTF-8, the
+// device guid libwebrtc lists, which is the DevicePath moniker property).
+// Returns a key for the device when its priority was changed from 1 to 0, else
+// "" (setting off, no such control, already 0).
+std::string CameraExposureBegin(const std::string& id);
 
 // Ties the key to the video track whose capturer was created.
 void CameraExposureBind(const std::string& track_id, const std::string& key);
@@ -29,7 +29,7 @@ void CameraExposureEndTrack(const std::string& track_id);
 // A capturer could not be created: undo CameraExposureBegin.
 void CameraExposureEnd(const std::string& key);
 
-// Plugin teardown: restore everything.
+// Plugin teardown and app quit: restore everything, whatever the use counts.
 void CameraExposureRestoreAll();
 
 }  // namespace hubbub
