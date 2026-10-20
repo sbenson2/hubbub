@@ -486,6 +486,47 @@ class MicLevels {
   final double clip;
 }
 
+/// Opus publish options for the voice track. DTX off: with it on, the encoder stops sending after
+/// about 200 ms of quiet and the tail of a word can give way to comfort noise. 64 kbps (LiveKit's
+/// default is 48 kbps, [AudioEncoding.presetMusic]); LiveKit 2.13.1 has no stereo option here, so
+/// the track stays mono voice. RED keeps LiveKit's default, which it forces off under E2EE
+/// (participant/local.dart `disableRed`), and Hubbub always uses E2EE.
+const AudioPublishOptions hubbubAudioPublishOptions = AudioPublishOptions(
+  dtx: false,
+  encoding: _hubbubOpusEncoding,
+);
+
+/// Screen-share audio is game or music sound, which DTX only harms (it would gate quiet passages),
+/// so it gets the same values as voice. They are passed explicitly at the share publish calls
+/// rather than inherited from `defaultAudioPublishOptions`, so a later change to the voice
+/// defaults cannot silently change share audio. Both use [_hubbubOpusEncoding].
+const AudioPublishOptions hubbubShareAudioPublishOptions = AudioPublishOptions(
+  dtx: false,
+  encoding: _hubbubOpusEncoding,
+);
+
+const AudioEncoding _hubbubOpusEncoding = AudioEncoding(maxBitrate: 64000);
+
+/// The options every Hubbub room is created with. [keyProvider] is null only in tests.
+@visibleForTesting
+RoomOptions hubbubRoomOptions({
+  BaseKeyProvider? keyProvider,
+  String? inputId,
+  NoiseSuppression noiseSuppression = NoiseSuppression.rnnoise,
+}) {
+  return RoomOptions(
+    // Off: with it on, the layer follows the size of the view, so a watched share in a
+    // normal window got 720p30 whatever setVideoQuality said. The app picks the layer
+    // itself: only the focused tile, camera or share, gets HIGH ([wantsHighVideo]), and
+    // [setVideoShown] pauses what nobody sees.
+    adaptiveStream: false,
+    dynacast: true,
+    defaultAudioCaptureOptions: captureOptionsFor(inputId, noiseSuppression: noiseSuppression),
+    defaultAudioPublishOptions: hubbubAudioPublishOptions,
+    e2eeOptions: keyProvider == null ? null : E2EEOptions(keyProvider: keyProvider),
+  );
+}
+
 class LiveKitRoomAdapter implements RoomAdapter {
   final _signals = StreamController<RoomSignal>.broadcast();
   final _participants = StreamController<List<RoomParticipant>>.broadcast();
@@ -737,18 +778,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
     // Every member derives the same key, so the shared-key provider is enough.
     final keyProvider = await BaseKeyProvider.create();
     await keyProvider.setSharedKey(base64.encode(e2eeKey));
-    final room = Room(
-      roomOptions: RoomOptions(
-        // Off: with it on, the layer follows the size of the view, so a watched share in a
-        // normal window got 720p30 whatever setVideoQuality said. The app picks the layer
-        // itself: only the focused tile, camera or share, gets HIGH ([wantsHighVideo]), and
-        // [setVideoShown] pauses what nobody sees.
-        adaptiveStream: false,
-        dynacast: true,
-        defaultAudioCaptureOptions: captureOptionsFor(_inputId, noiseSuppression: _ns),
-        e2eeOptions: E2EEOptions(keyProvider: keyProvider),
-      ),
-    );
+    final room = Room(roomOptions: hubbubRoomOptions(keyProvider: keyProvider, inputId: _inputId, noiseSuppression: _ns));
     _room = room;
     _sawRemoteAudio = false;
     _listener = room.createListener()
@@ -841,8 +871,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
           'webrtcNoiseSuppression': effectiveNoiseSuppression(_ns) == NoiseSuppression.standard,
         },
         'opus': {
-          'setByHubbub': false,
-          'note': 'Hubbub passes only LiveKit defaults for the audio publish options (bitrate is encoding.maxBitrate; RED is forced off under E2EE).',
+          'setByHubbub': true,
+          'note': 'Read from room.roomOptions.defaultAudioPublishOptions (bitrate is encoding.maxBitrate; RED is forced off under E2EE).',
           'dtx': publish.dtx,
           'red': publish.red,
           'encoding': publish.encoding?.maxBitrate,
@@ -1032,7 +1062,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
               _fits[sid] = ShareFit();
               return sid;
             }
-            return (await local.publishAudioTrack(t as LocalAudioTrack)).sid;
+            return (await local.publishAudioTrack(t as LocalAudioTrack, publishOptions: hubbubShareAudioPublishOptions)).sid;
           },
           stop: t.stop,
         ),
@@ -1079,7 +1109,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       for (final t in tracks)
         PublishStep(
           publish: () async {
-            if (t is! LocalVideoTrack) return (await local.publishAudioTrack(t as LocalAudioTrack)).sid;
+            if (t is! LocalVideoTrack) return (await local.publishAudioTrack(t as LocalAudioTrack, publishOptions: hubbubShareAudioPublishOptions)).sid;
             final sid = (await local.publishVideoTrack(t, publishOptions: publish)).sid;
             _fits[sid] = ShareFit();
             return sid;

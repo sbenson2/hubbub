@@ -558,6 +558,32 @@ void FlutterWebRTC::HandleMethodCall(
     }
     hubbub_processor_->SetRnnoiseEnabled(mode == "rnnoise");
     result->Success();
+  } else if (method_call.method_name().compare("hubbubSetTailMode") == 0) {
+    // Hubbub patch, test-only: mode "classic" (upstream RNNoise gain smoothing)
+    // or "hold" (the default: gain floor and hold). Optional floorDb (-25..-15)
+    // and holdMs (150..250), clamped.
+    auto args = method_call.arguments();
+    if (!args || !hubbub_processor_) {
+      result->Error("Bad Arguments", "hubbubSetTailMode() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::string mode = findString(params, "mode");
+    if (mode != "classic" && mode != "hold") {
+      result->Error("Bad Arguments", "hubbubSetTailMode() unknown mode");
+      return;
+    }
+    const std::optional<double> floor_db = maybeFindDouble(params, "floorDb");
+    const std::optional<double> hold_ms = maybeFindDouble(params, "holdMs");
+    if ((floor_db.has_value() && !std::isfinite(*floor_db)) ||
+        (hold_ms.has_value() && !std::isfinite(*hold_ms))) {
+      result->Error("Bad Arguments", "hubbubSetTailMode() numbers must be finite");
+      return;
+    }
+    hubbub_processor_->SetTailMode(mode == "classic",
+                                   (float)floor_db.value_or(-20.0),
+                                   (float)hold_ms.value_or(200.0));
+    result->Success();
   } else if (method_call.method_name().compare("hubbubSetInputGain") == 0) {
     // Hubbub patch: gain factor 0.0 to 2.0 (0 to 200 percent).
     auto args = method_call.arguments();

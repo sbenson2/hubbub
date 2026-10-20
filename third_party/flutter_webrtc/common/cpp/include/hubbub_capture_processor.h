@@ -68,6 +68,13 @@ class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing 
   void SetRnnoiseEnabled(bool on) { settings_.rnnoise.store(on); }
   // False (and no change) for NaN and infinity.
   bool SetGain(float g) { return settings_.SetGain(g); }
+  // Test-only A/B switch (hidden plugin method hubbubSetTailMode). Out-of-range
+  // numbers are clamped; the floor to -25..-15 dB and the hold to 150..250 ms.
+  void SetTailMode(bool classic, float floor_db, float hold_ms) {
+    settings_.tail_classic.store(classic);
+    settings_.tail_floor_db.store(floor_db < -25.f ? -25.f : floor_db > -15.f ? -15.f : floor_db);
+    settings_.tail_hold_ms.store(hold_ms < 150.f ? 150.f : hold_ms > 250.f ? 250.f : hold_ms);
+  }
   bool rnnoise() const { return settings_.rnnoise.load(); }
   float gain() const { return settings_.gain.load(); }
 

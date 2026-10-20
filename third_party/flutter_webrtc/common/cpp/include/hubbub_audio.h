@@ -78,6 +78,12 @@ struct Levels {
 struct CaptureSettings {
   std::atomic<bool> rnnoise{false};
   std::atomic<float> gain{1.f};  // factor 0..2
+  // RNNoise tail handling. false (the default) = gain floor and hold; true =
+  // upstream "classic" smoothing, kept for A/B tests only (hidden plugin
+  // method hubbubSetTailMode). Floor in dB (-25..-15), hold in ms (150..250).
+  std::atomic<bool> tail_classic{false};
+  std::atomic<float> tail_floor_db{-20.f};
+  std::atomic<float> tail_hold_ms{200.f};
   // NaN and infinity are refused (false); other values are clamped to 0..2.
   bool SetGain(float g) {
     if (!std::isfinite(g)) return false;
@@ -136,6 +142,7 @@ class CapturePipeline {
   void SetGain(float g) { own_.SetGain(g); }
   float Gain() const { return s_->gain.load(); }
   bool RnnoiseEnabled() const { return s_->rnnoise.load(); }
+  void SetTailClassic(bool on) { own_.tail_classic.store(on); }
   void UseSettings(const CaptureSettings* s) { s_ = s ? s : &own_; }
   // Called about 20 times a second from the audio thread (tests only; the
   // adapter uses UseLevelsSlot so nothing allocates on the audio thread).
@@ -144,6 +151,7 @@ class CapturePipeline {
 
  private:
   void ResetDenoise();
+  void ApplyTail();
   // Returns how many samples at the front were zero filled (RNNoise not primed).
   size_t RunDenoise(float* samples, size_t n);
 
@@ -158,6 +166,8 @@ class CapturePipeline {
   // on or off on the audio thread allocates nothing.
   DenoiseState* st_ = nullptr;
   bool denoise_active_ = false;
+  bool tail_classic_ = false;
+  float tail_floor_db_ = -20.f, tail_hold_ms_ = 200.f;
   float mix_ = 0.f;  // 0 = dry, 1 = RNNoise output; moves over one block
   std::unique_ptr<RationalResampler> up_, down_;
   FrameRechunker chunker_{480};

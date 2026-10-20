@@ -84,7 +84,12 @@ struct DenoiseState {
   kiss_fft_cpx delayed_P[FREQ_SIZE];
   float delayed_Ex[NB_BANDS], delayed_Ep[NB_BANDS];
   float delayed_Exp[NB_BANDS];
-
+  /* Hubbub patch: tail hold (see HUBBUB_PATCHES.md). hb_mode 0 = upstream. */
+  int hb_mode;
+  float hb_floor;
+  float hb_release;
+  int hb_hold_frames;
+  int hb_hold_left;
 };
 
 static void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
@@ -320,6 +325,15 @@ DenoiseState *rnnoise_create(RNNModel *model) {
   return st;
 }
 
+void rnnoise_set_tail(DenoiseState *st, int mode, float floor_gain,
+                      int hold_frames, float release) {
+  st->hb_mode = mode != 0;
+  st->hb_floor = floor_gain < 0.f ? 0.f : floor_gain > 1.f ? 1.f : floor_gain;
+  st->hb_hold_frames = hold_frames < 0 ? 0 : hold_frames;
+  st->hb_release = release < 0.f ? 0.f : release > 1.f ? 1.f : release;
+  st->hb_hold_left = 0;
+}
+
 void rnnoise_destroy(DenoiseState *st) {
   free(st);
 }
@@ -476,6 +490,27 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
     compute_rnn(&st->model, &st->rnn, g, &vad_prob, features, st->arch);
 #endif
     rnn_pitch_filter(st->delayed_X, st->delayed_P, st->delayed_Ex, st->delayed_Ep, st->delayed_Exp, g);
+    if (st->hb_mode) {
+      /* Hubbub patch: gain floor, hold and slow release. While the speech
+         probability is high the usual 0.6 decay applies. When it drops, the
+         gains are held for hb_hold_frames, then released at hb_release per
+         frame. The floor applies always. */
+      float alpha;
+      if (vad_prob >= 0.5f) {
+        st->hb_hold_left = st->hb_hold_frames;
+        alpha = .6f;
+      } else if (st->hb_hold_left > 0) {
+        st->hb_hold_left--;
+        alpha = 1.f;
+      } else {
+        alpha = st->hb_release;
+      }
+      for (i=0;i<NB_BANDS;i++) {
+        g[i] = MAX16(g[i], alpha*st->lastg[i]);
+        g[i] = MAX16(g[i], st->hb_floor);
+        st->lastg[i] = g[i];
+      }
+    } else
     for (i=0;i<NB_BANDS;i++) {
       float alpha = .6f;
       g[i] = MAX16(g[i], alpha*st->lastg[i]);

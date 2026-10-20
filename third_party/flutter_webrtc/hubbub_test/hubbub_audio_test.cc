@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "hubbub_audio.h"
+#include "rnnoise.h"
 
 // Counts allocations while g_count is set (to prove the audio path allocates nothing).
 static std::atomic<bool> g_count{false};
@@ -269,6 +270,108 @@ static void TestSpeechLike() {
   for (float v : out) CHECK(std::isfinite(v), "finite");
 }
 
+// Voiced stand-in (120 Hz, 30 harmonics, 4 Hz syllable envelope) for |burst_ms|,
+// then a quiet noise tail (the trailing "s"/fade) for |tail_ms|. Deterministic.
+static std::vector<float> SpeechThenTail(int burst_ms, int tail_ms, float tail_amp) {
+  const int rate = 48000;
+  const int nb = rate * burst_ms / 1000, nt = rate * tail_ms / 1000;
+  std::vector<float> v(nb + nt, 0.f);
+  for (int h = 1; h <= 30; ++h) {
+    double amp = 5000.0 / h;
+    for (int i = 0; i < nb; ++i)
+      v[i] += (float)(amp * std::sin(2 * M_PI * 120.0 * h * i / rate + h));
+  }
+  for (int i = 0; i < nb; ++i)
+    v[i] *= (float)(0.65 + 0.35 * std::sin(2 * M_PI * 4.0 * i / rate));
+  std::mt19937 rng(7);
+  std::normal_distribution<float> nd(0.f, tail_amp);
+  for (int i = nb; i < nb + nt; ++i) v[i] = nd(rng);
+  return v;
+}
+
+// Runs |in| through RNNoise directly (48 kHz, 10 ms frames) with the tail mode on, the
+// given hold and a floor of 0, so the floor cannot be what keeps the tail alive. Returns the
+// output energy per frame and the speech probability per frame.
+static void RawTail(const std::vector<float>& in, int hold_frames, std::vector<double>* energy,
+                    std::vector<float>* vad) {
+  DenoiseState* st = rnnoise_create(nullptr);
+  rnnoise_set_tail(st, 1, 0.f, hold_frames, 0.92f);
+  const size_t fs = (size_t)rnnoise_get_frame_size();
+  std::vector<float> out(fs);
+  for (size_t i = 0; i + fs <= in.size(); i += fs) {
+    vad->push_back(rnnoise_process_frame(st, out.data(), in.data() + i));
+    double e = 0;
+    for (float v : out) e += (double)v * v;
+    energy->push_back(e);
+  }
+  rnnoise_destroy(st);
+}
+
+static double MeanOf(const std::vector<double>& e, size_t from, size_t to) {
+  double s = 0;
+  for (size_t i = from; i < to; ++i) s += e[i];
+  return s / (double)(to - from);
+}
+
+static void TestTailHold() {
+  std::printf("rnnoise tail: the hold keeps the speech gain for 200 ms after speech ends, then releases\n");
+  // Loud noise tail: RNNoise's own gain for it is near zero, so what the output keeps comes
+  // from the held speech gains. Floor 0 in RawTail: only the hold can keep it.
+  auto in = SpeechThenTail(1500, 600, 3000.f);
+  std::vector<double> held, none;
+  std::vector<float> vad_held, vad_none;
+  RawTail(in, 20, &held, &vad_held);
+  RawTail(in, 0, &none, &vad_none);
+  // The first frame after the burst whose speech probability is below 0.5.
+  size_t drop = 150;
+  while (drop < vad_held.size() && vad_held[drop] >= 0.5f) ++drop;
+  CHECK(drop + 45 < held.size(), "speech probability drops after the burst: frame %zu", drop);
+  // Frames 3..17 after the drop: inside the 20 frame hold. 30..40: after it has run out and
+  // the gain has had 10 frames at 0.92 to release.
+  double in_hold = MeanOf(held, drop + 3, drop + 18), in_none = MeanOf(none, drop + 3, drop + 18);
+  double after = MeanOf(held, drop + 30, drop + 41);
+  std::printf("  drop at frame %zu; energy: hold %.3g, no hold %.3g, after hold %.3g\n", drop,
+              in_hold, in_none, after);
+  CHECK(in_hold > 4 * in_none, "hold keeps the gain: %g vs %g without", in_hold, in_none);
+  CHECK(after < in_hold * 0.4, "gain releases after the hold: %g vs %g", after, in_hold);
+}
+
+static void TestTailSteadyNoise() {
+  std::printf("rnnoise tail: steady noise is still suppressed with the new mode\n");
+  for (int classic = 0; classic < 2; ++classic) {
+    CapturePipeline p;
+    p.Initialize(48000, 1);
+    p.SetRnnoiseEnabled(true);
+    p.SetTailClassic(classic);
+    std::mt19937 rng(3);
+    std::normal_distribution<float> nd(0.f, 800.f);
+    std::vector<float> in(48000 * 4);
+    for (auto& x : in) x = nd(rng);
+    auto out = RunPipeline(p, in, 480);
+    double r = Rms(out, 48000 * 2) / Rms(in, 48000 * 2);
+    std::printf("  %s: out/in %.3f (%.1f dB)\n", classic ? "classic" : "new", r, 20 * std::log10(r));
+    CHECK(r < 0.25, "suppressed by at least 12 dB: ratio %f", r);
+    if (!classic) CHECK(r >= 0.08, "not below the floor: ratio %f", r);
+  }
+}
+
+static void TestTailSwitchLive() {
+  std::printf("rnnoise tail: switching mode on the audio thread allocates nothing\n");
+  CapturePipeline p;
+  p.Initialize(48000, 1);
+  p.SetRnnoiseEnabled(true);
+  std::vector<float> blk(480, 100.f);
+  p.Process(blk.data(), blk.size());
+  g_allocs = 0;
+  g_count = true;
+  for (int i = 0; i < 6; ++i) {
+    p.SetTailClassic(i & 1);
+    std::fill(blk.begin(), blk.end(), 100.f);
+    p.Process(blk.data(), blk.size());
+  }
+  g_count = false;
+  CHECK(g_allocs.load() == 0, "allocs=%ld", g_allocs.load());
+}
 
 static void TestLevelsSlot() {
   std::printf("levels slot: a reader never sees a torn write\n");
@@ -440,6 +543,9 @@ int main() {
   TestRnnoise(16000);
   TestRnnoise(32000);
   TestSpeechLike();
+  TestTailHold();
+  TestTailSteadyNoise();
+  TestTailSwitchLive();
   TestLevelsSlot();
   TestSharedSettings();
   TestLimiterAtUnity();

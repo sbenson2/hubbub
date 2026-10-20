@@ -129,9 +129,22 @@ void CapturePipeline::Initialize(int sample_rate, int channels) {
   mix_ = 0.f;
 }
 
+// Pushes the tail settings into RNNoise. Allocation free.
+void CapturePipeline::ApplyTail() {
+  tail_classic_ = s_->tail_classic.load(std::memory_order_relaxed);
+  tail_floor_db_ = s_->tail_floor_db.load(std::memory_order_relaxed);
+  tail_hold_ms_ = s_->tail_hold_ms.load(std::memory_order_relaxed);
+  if (!st_) return;
+  float floor_gain = std::pow(10.f, tail_floor_db_ / 20.f);
+  int hold_frames = (int)std::lround(tail_hold_ms_ / 10.f);
+  // 0.92 per 10 ms frame: -7 dB per 100 ms once the hold has run out.
+  rnnoise_set_tail(st_, tail_classic_ ? 0 : 1, floor_gain, hold_frames, 0.92f);
+}
+
 // Allocation free: re-initialises the existing state and resampler history.
 void CapturePipeline::ResetDenoise() {
   if (st_) rnnoise_init(st_, nullptr);
+  ApplyTail();
   chunker_.Clear();
   fifo_.clear();
   speech_sum_ = 0;
@@ -183,6 +196,11 @@ void CapturePipeline::Process(float* x, size_t n) {
   // first blocks after switching on stay dry until RNNoise has real output, so
   // toggling neither clicks nor drops audio.
   bool want = s_->rnnoise.load(std::memory_order_relaxed);
+  if (s_->tail_classic.load(std::memory_order_relaxed) != tail_classic_ ||
+      s_->tail_floor_db.load(std::memory_order_relaxed) != tail_floor_db_ ||
+      s_->tail_hold_ms.load(std::memory_order_relaxed) != tail_hold_ms_) {
+    ApplyTail();
+  }
   if (want && !denoise_active_) {
     ResetDenoise();
     denoise_active_ = true;

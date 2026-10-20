@@ -66,6 +66,16 @@ class HubbubAudio {
   static Future<void> setNoiseSuppression(HubbubNoiseSuppression mode) =>
       WebRTC.invokeMethod('hubbubSetNoiseSuppression', <String, dynamic>{'mode': mode.name});
 
+  /// Test-only: `classic` restores upstream RNNoise gain smoothing (no floor, no hold) so a test can
+  /// compare it with the default. Normal use never calls this. [floorDb] is clamped to -25..-15 and
+  /// [holdMs] to 150..250 natively.
+  static Future<void> setTailMode({required bool classic, double floorDb = -20, double holdMs = 200}) =>
+      WebRTC.invokeMethod('hubbubSetTailMode', <String, dynamic>{
+        'mode': classic ? 'classic' : 'hold',
+        'floorDb': floorDb,
+        'holdMs': holdMs,
+      });
+
   /// Input gain as a factor, 0 to 2 (0 to 200 percent), applied after RNNoise with a soft limiter.
   static Future<void> setInputGain(double gain) => WebRTC.invokeMethod(
       'hubbubSetInputGain', <String, dynamic>{'gain': gain.clamp(0.0, 2.0)});

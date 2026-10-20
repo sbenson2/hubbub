@@ -5,6 +5,16 @@
 //   cmd /c "set HUBBUB_ROOT=C:\Users\shawn\AppData\Local\Temp\hubbub-audio-root& cd /d C:\dev\hubbub\app &&
 //           C:\src\flutter\bin\flutter.bat test integration_test\audio_quality_test.dart -d windows"
 //
+// Environment (all optional):
+//   HUBBUB_AUDIO_SUITE   clean (default: SAPI speech, 3 NS modes x 2 gains), noisy, or all.
+//   HUBBUB_AUDIO_ONLY    comma separated config ids to run, e.g. rnnoise-g100 or
+//                        noisy-rnnoise-new-dtxoff.
+// The noisy suite injects the speech mixed with seeded noise at 10 dB SNR (pink noise, fan hum,
+// keyboard clicks: tools/make_noisy_speech.py) but compares the received audio with the CLEAN
+// speech. It runs RNNoise classic (upstream gain smoothing) and new (gain floor and hold) with
+// DTX on and off, plus a no-suppression control, and writes noisy-comparison.md next to
+// baseline.md. Expect about 1 minute per config on top of the build.
+//
 // How it works (all local, nothing downloaded, nothing played):
 //  * The reference is made with Windows SAPI text to speech (tools/make-speech-ref.ps1).
 //  * "Inject" replaces the microphone signal at the capture post-processing hook. That hook
@@ -199,10 +209,20 @@ class _Rig {
 }
 
 class _Config {
-  const _Config(this.ns, this.gain);
+  const _Config(this.ns, this.gain, {this.noisy = false, this.classic = false, this.dtx = true});
   final NoiseSuppression ns;
   final double gain;
-  String get id => '${ns.name}-g${(gain * 100).round()}';
+  final bool noisy; // inject speech + noise, compare with the clean speech
+  final bool classic; // RNNoise: upstream gain smoothing instead of floor and hold
+  final bool dtx; // Opus DTX; the noisy suite also publishes at 64 kbps like the app
+  String get id => noisy
+      ? 'noisy-${ns.name}${ns == NoiseSuppression.rnnoise ? (classic ? '-classic' : '-new') : ''}-dtx${dtx ? 'on' : 'off'}'
+      : '${ns.name}-g${(gain * 100).round()}';
+  String get title => noisy
+      ? '${ns.label}${ns == NoiseSuppression.rnnoise ? (classic ? ' classic' : ' new') : ''}, DTX ${dtx ? 'on' : 'off'}, noisy'
+      : '${ns.label}, gain ${(gain * 100).round()} %';
+  AudioPublishOptions? get publish =>
+      noisy ? AudioPublishOptions(dtx: dtx, encoding: const AudioEncoding(maxBitrate: 64000)) : null;
   rtc.HubbubNoiseSuppression get hook => switch (ns) {
         NoiseSuppression.none => rtc.HubbubNoiseSuppression.off,
         NoiseSuppression.standard => rtc.HubbubNoiseSuppression.webrtc,
@@ -295,15 +315,36 @@ void main() {
     expect(play?['muted'], isTrue, reason: 'playout must be muted before a test plays anything');
     await rig.start();
 
+    final suite = Platform.environment['HUBBUB_AUDIO_SUITE'] ?? 'clean';
+    expect(['clean', 'noisy', 'all'], contains(suite), reason: 'HUBBUB_AUDIO_SUITE: clean, noisy or all');
     final configs = <_Config>[
-      for (final ns in [NoiseSuppression.rnnoise, NoiseSuppression.standard, NoiseSuppression.none])
-        for (final g in [1.0, 1.5]) _Config(ns, g),
+      if (suite != 'noisy')
+        for (final ns in [NoiseSuppression.rnnoise, NoiseSuppression.standard, NoiseSuppression.none])
+          for (final g in [1.0, 1.5]) _Config(ns, g),
+      if (suite != 'clean') ...[
+        for (final classic in [true, false])
+          for (final dtx in [true, false]) _Config(NoiseSuppression.rnnoise, 1.0, noisy: true, classic: classic, dtx: dtx),
+        const _Config(NoiseSuppression.none, 1.0, noisy: true, dtx: false),
+      ],
     ];
     final only = Platform.environment['HUBBUB_AUDIO_ONLY']; // e.g. "rnnoise-g100" for a quick run
     final rows = <String>[];
+    final noisyRows = <String>[];
+    final noisySummary = <String>[];
     final notes = <String>[];
     String? hookLayout;
     String? lastSid;
+
+    // The noisy speech: same speech, seeded noise at 10 dB SNR. Made only when a noisy config runs.
+    File? noisyRef;
+    if (configs.any((c) => c.noisy && (only == null || only.split(',').contains(c.id)))) {
+      noisyRef = File('${out.path}/reference-noisy.wav');
+      final r = await Process.run(python, [
+        '${repo.path}/tools/make_noisy_speech.py', ref.path, noisyRef.path, '--snr', '10', '--seed', '1',
+      ]);
+      if (r.exitCode != 0 || !noisyRef.existsSync()) fail('could not make the noisy speech: ${r.stderr}');
+      _log('noisy reference ${noisyRef.path}: ${(r.stdout as String).trim()}');
+    }
 
     // Clock check: how many 10 ms blocks the capture hook gets per second of wall clock with the
     // plain microphone (only counters are read, nothing is recorded). 100 is real time.
@@ -338,9 +379,11 @@ void main() {
 
       await rtc.HubbubAudio.setNoiseSuppression(c.hook);
       await rtc.HubbubAudio.setInputGain(c.gain);
-      await rtc.HubbubTaps.injectLoad(ref.path); // the microphone is silent from here on
+      await rtc.HubbubAudio.setTailMode(classic: c.classic);
+      // the microphone is silent from here on; the noisy suite injects the noisy speech
+      await rtc.HubbubTaps.injectLoad(c.noisy ? noisyRef!.path : ref.path);
       final mic = await LocalAudioTrack.create(captureOptionsFor(null, noiseSuppression: c.ns));
-      await local.publishAudioTrack(mic);
+      await local.publishAudioTrack(mic, publishOptions: c.publish);
       final remote = await rig.waitRemoteAudio(notSid: lastSid);
       if (remote == null) {
         await mic.stop();
@@ -391,39 +434,84 @@ void main() {
       final legA = await compare('reference -> sent (hook out)', ref.path, proc, '${c.id}-leg-capture');
       final legB = await compare('sent (hook out) -> received', proc, rcv, '${c.id}-leg-network');
       final legMix = await compare('reference -> playout mix', ref.path, mix, '${c.id}-leg-mix');
-      final tag = '${c.ns.label}, gain ${(c.gain * 100).round()} %';
+      final tag = c.title;
       for (final leg in [overall, legA, legB, legMix]) {
-        rows.add(leg.row(tag));
+        (c.noisy ? noisyRows : rows).add(leg.row(tag));
+      }
+      if (c.noisy) {
+        // reference here is the clean speech: the share of endings the pipeline cut
+        noisySummary.add('| $tag | ${_f(((overall.at(['endings', 'share_truncated']) ?? 0) * 100), 0)} % '
+            '| ${_f(overall.at(['endings', 'mean_truncated_ms']), 0)} ms '
+            '| ${_f(overall.at(['endings', 'mean_tail_loss_db']))} dB '
+            '| ${_f(overall.at(['scores', 'pesq_wb']), 2)} | ${_f(overall.at(['scores', 'stoi']), 3)} |');
       }
       _log('${c.id}: ${overall.row(tag)}');
     }
 
-    // ---- the baseline
-    final md = StringBuffer()
-      ..writeln('# Audio pipeline baseline (${DateTime.now().toIso8601String().substring(0, 16)})')
-      ..writeln()
-      ..writeln('Harness: `app/integration_test/audio_quality_test.dart`; reference: Windows SAPI speech '
-          '(`tools/make-speech-ref.ps1`), injected at the capture post-processing hook, sent to a second room on a '
-          'local LiveKit with E2EE, received audio taken from the remote track sink; playout muted at the render hook. '
-          'Compared with `tools/audio_compare.py`. Files: `${out.path}`.')
-      ..writeln()
-      ..writeln(hookLayout ?? '')
-      ..writeln()
-      ..writeln('Legs: *reference -> received* is the whole path; *reference -> sent* is the capture hook only '
-          '(RNNoise, gain, limiter; the audio engine runs the hook at its own rate, see above); *sent -> received* '
-          'is Opus + E2EE + SFU + decode; *playout mix* is the render-hook tap of the same received audio.')
-      ..writeln()
-      ..writeln('| Setting | Leg | Delay ms | Level dB | Muffled? | >4 kHz share dB | 95% roll-off Hz | Highest band Hz | Truncated segs / mean | Dropouts | PESQ-WB / STOI |')
-      ..writeln('|---|---|---|---|---|---|---|---|---|---|---|');
-    for (final r in rows) {
-      md.writeln(r);
+    // ---- the reports
+    final repoSdd = Directory('${repo.path}/.superpowers/sdd/2026-10-19-audio')..createSync(recursive: true);
+    const header = '| Setting | Leg | Delay ms | Level dB | Muffled? | >4 kHz share dB | 95% roll-off Hz | Highest band Hz | Truncated segs / mean | Dropouts | PESQ-WB / STOI |\n'
+        '|---|---|---|---|---|---|---|---|---|---|---|';
+    final summaryParts = <String>[];
+    if (rows.isNotEmpty) {
+      final md = StringBuffer()
+        ..writeln('# Audio pipeline baseline (${DateTime.now().toIso8601String().substring(0, 16)})')
+        ..writeln()
+        ..writeln('Harness: `app/integration_test/audio_quality_test.dart`; reference: Windows SAPI speech '
+            '(`tools/make-speech-ref.ps1`), injected at the capture post-processing hook, sent to a second room on a '
+            'local LiveKit with E2EE, received audio taken from the remote track sink; playout muted at the render hook. '
+            'Compared with `tools/audio_compare.py`. Files: `${out.path}`.')
+        ..writeln()
+        ..writeln(hookLayout ?? '')
+        ..writeln()
+        ..writeln('Legs: *reference -> received* is the whole path; *reference -> sent* is the capture hook only '
+            '(RNNoise, gain, limiter; the audio engine runs the hook at its own rate, see above); *sent -> received* '
+            'is Opus + E2EE + SFU + decode; *playout mix* is the render-hook tap of the same received audio.')
+        ..writeln()
+        ..writeln(header);
+      for (final r in rows) {
+        md.writeln(r);
+      }
+      for (final n in notes) {
+        md.writeln('\n$n');
+      }
+      File('${repoSdd.path}/baseline.md').writeAsStringSync(md.toString());
+      summaryParts.add(md.toString());
     }
-    for (final n in notes) {
-      md.writeln('\n$n');
+    if (noisyRows.isNotEmpty) {
+      final md = StringBuffer()
+        ..writeln('# Noisy speech comparison (${DateTime.now().toIso8601String().substring(0, 16)})')
+        ..writeln()
+        ..writeln('Injected at the capture hook: the SAPI speech mixed with seeded noise at 10 dB SNR (pink noise, fan hum, '
+            'keyboard clicks; `tools/make_noisy_speech.py`, seed 1). Every comparison is against the CLEAN speech, so '
+            'an ending the suppressor removed counts as truncated. Opus at 64 kbps; RNNoise classic = upstream gain '
+            'smoothing, new = gain floor -20 dB and 200 ms hold. Files: `${out.path}`.')
+        ..writeln()
+        ..writeln(hookLayout ?? '')
+        ..writeln()
+        ..writeln('Caveat: the noise itself is above the tool\'s speech threshold when it is not suppressed, so the '
+            'no-suppression control cannot show truncation; read it for PESQ and STOI only. Where the suppressor works, '
+            'a truncated ending means the tail fell under the threshold (40 dB below the 98th percentile level).')
+        ..writeln()
+        ..writeln('Whole path (clean speech -> received):')
+        ..writeln()
+        ..writeln('| Setting | Truncated endings | Mean truncation | Mean tail loss | PESQ-WB | STOI |')
+        ..writeln('|---|---|---|---|---|---|');
+      for (final r in noisySummary) {
+        md.writeln(r);
+      }
+      md
+        ..writeln()
+        ..writeln('All legs:')
+        ..writeln()
+        ..writeln(header);
+      for (final r in noisyRows) {
+        md.writeln(r);
+      }
+      File('${repoSdd.path}/noisy-comparison.md').writeAsStringSync(md.toString());
+      summaryParts.add(md.toString());
     }
-    final baseline = File('${repo.path}/.superpowers/sdd/2026-10-19-audio/baseline.md');
-    baseline.parent.createSync(recursive: true);
-    baseline.writeAsStringSync(md.toString());
-    _log('==== SUMMARY ====\n$md\n=================');
+    await rtc.HubbubAudio.setTailMode(classic: false); // leave the default behaviour behind
+    _log('==== SUMMARY ====\n${summaryParts.join('\n')}\n=================');
   }, timeout: const Timeout(Duration(minutes: 25)));
 }

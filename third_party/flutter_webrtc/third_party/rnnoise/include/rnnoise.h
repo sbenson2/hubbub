@@ -91,6 +91,13 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
  *
  * in and out must be at least rnnoise_get_frame_size() large.
  */
+/* Hubbub patch: tail hold. mode 0 = upstream gain smoothing (0.6 decay per
+ * frame, no floor). mode 1 = gain floor (linear), hold for hold_frames 10 ms
+ * frames after the speech probability drops below 0.5, then decay by factor
+ * `release` per frame. Call after rnnoise_init/create; it is allocation free. */
+RNNOISE_EXPORT void rnnoise_set_tail(DenoiseState *st, int mode, float floor_gain,
+                                     int hold_frames, float release);
+
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
 /**

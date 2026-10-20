@@ -262,6 +262,27 @@ native test `hubbub_test/hubbub_tap_test.cc`.
   capture thread, and a Debug test run delivered late, stuttering audio (delay growing to 5 s, 13 dropouts); optimised
   it is real time (83 ms delay, no dropouts). Release builds are unchanged.
 
+## RNNoise tail floor and hold (2026-10-19)
+
+Complaint: word endings are cut off. Upstream RNNoise smooths each band gain with
+`g = max(g, 0.6 * last_g)` per 10 ms frame: no floor, no hold, so a trailing s/t/f or a fade is gone in
+about 50 ms. Patch in `third_party/rnnoise/src/denoise.c` (`rnnoise_set_tail`, declared in `rnnoise.h`;
+state fields `hb_*` in `DenoiseState`, all zero after `rnnoise_init` = upstream behaviour):
+
+- **Floor**: every band gain is at least 0.1 (-20 dB; tunable -25..-15 dB).
+- **Hold**: while the speech probability is >= 0.5 the usual 0.6 decay applies and the hold counter reloads
+  (20 frames = 200 ms; tunable 150..250 ms). Once it drops below 0.5 the gains are not allowed to fall at
+  all for the hold time, then they release by 0.92 per frame (about -7 dB per 100 ms) down to the floor.
+- Steady noise is still reduced (measured -21 dB on white noise, `TestTailSteadyNoise`; upstream -73 dB),
+  speech tails keep at least the floor (`TestTailHold`). Cost: residual noise sits about 20 dB down, not gone.
+
+`CaptureSettings` (`hubbub_audio.h`) holds `tail_classic` (default false), `tail_floor_db`, `tail_hold_ms`;
+`CapturePipeline::ApplyTail` pushes them into RNNoise at init and when they change (atomics, no allocation).
+**Classic** (upstream smoothing) exists for A/B tests only: hidden plugin method
+`hubbubSetTailMode {mode: classic|hold, floorDb?, holdMs?}` (`flutter_webrtc.cc`), Dart
+`HubbubAudio.setTailMode(classic:, floorDb:, holdMs:)`. The app never calls it; users always get "hold".
+Tests: `hubbub_test/hubbub_audio_test.cc` (`TestTailHold`, `TestTailSteadyNoise`, `TestTailSwitchLive`).
+
 ## Re-applying on an upgrade (new flutter_webrtc version)
 
 1. Copy the new pub.dev package over `third_party/flutter_webrtc` in a pristine commit (keep
