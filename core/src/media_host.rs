@@ -177,13 +177,13 @@ exit "$s"
 fn spawn_server(bin: &std::path::Path, cfg: &std::path::Path) -> std::io::Result<tokio::process::Child> {
     #[cfg(unix)]
     let mut cmd = {
-        let mut c = tokio::process::Command::new("/bin/sh");
+        let mut c = tokio::process::Command::from(crate::spawn::command("/bin/sh"));
         c.arg("-c").arg(WRAPPER).arg("sh").arg(bin).arg(cfg).stdin(std::process::Stdio::piped());
         c
     };
     #[cfg(windows)]
     let mut cmd = {
-        let mut c = tokio::process::Command::new(bin);
+        let mut c = tokio::process::Command::from(crate::spawn::command(bin));
         c.arg("--config").arg(cfg);
         c
     };
@@ -290,10 +290,10 @@ const SERVER_NAME: &str = "livekit-server.exe";
 /// Executable name of process `pid`, or None when no such process exists.
 #[cfg(any(windows, test))]
 fn process_name(pid: u32) -> Option<String> {
-    use std::process::Command;
+    use crate::spawn::command;
     #[cfg(windows)]
     {
-        let out = Command::new("tasklist")
+        let out = command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
             .ok()?;
@@ -303,7 +303,7 @@ fn process_name(pid: u32) -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        let out = Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output().ok()?;
+        let out = command("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output().ok()?;
         let comm = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if comm.is_empty() {
             return None;
@@ -315,17 +315,18 @@ fn process_name(pid: u32) -> Option<String> {
 
 #[cfg(any(windows, test))]
 fn kill_process(pid: u32, force: bool) {
-    use std::process::{Command, Stdio};
+    use crate::spawn::command;
+    use std::process::Stdio;
     #[cfg(windows)]
     let mut cmd = {
         let _ = force;
-        let mut c = Command::new("taskkill");
+        let mut c = command("taskkill");
         c.args(["/F", "/PID", &pid.to_string()]);
         c
     };
     #[cfg(not(windows))]
     let mut cmd = {
-        let mut c = Command::new("kill");
+        let mut c = command("kill");
         c.args([if force { "-KILL" } else { "-TERM" }, &pid.to_string()]);
         c
     };

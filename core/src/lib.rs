@@ -15,6 +15,7 @@ pub mod net;
 pub mod node;
 pub mod probe;
 pub mod proto;
+pub mod spawn;
 pub mod text;
 pub mod tunnel;
 pub mod upnp;
