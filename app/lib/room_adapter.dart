@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
 
+import 'audio_diagnostics.dart';
 import 'capture_options.dart';
 import 'publish_guard.dart';
 import 'src/rust/api/hubbub.dart' show AppIceServer;
@@ -458,6 +459,14 @@ abstract class RoomAdapter {
   /// The peaks of your own microphone, about twenty times a second while someone listens and
   /// you are in a call.
   Stream<MicLevels> get micLevels;
+
+  /// Diagnostics: records the call's audio (what is sent, what each person is heard as) into a
+  /// new folder under [dir] while in a call, or stops when [dir] is null. Kept across calls
+  /// until switched off. Measurement only; it does not change the audio.
+  Future<void> setAudioDiagnosticsDir(String? dir);
+
+  /// A finished recording: the call ended or the recording was switched off.
+  Stream<AudioDiagnosticsReport> get audioDiagnosticsReports;
 }
 
 /// Peaks of the microphone over about 50 ms, as the capture path measures them.
@@ -485,6 +494,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Timer? _statsTimer;
   bool _sawRemoteAudio = false;
   bool _deafened = false;
+  double _inputGain = 1;
+  String? _diagDir;
+  AudioDiagnosticsSession? _diag;
+  bool _diagStarting = false;
+  final _diagReports = StreamController<AudioDiagnosticsReport>.broadcast();
   String? _inputId;
   NoiseSuppression _ns = NoiseSuppression.rnnoise;
   String? _outputId;
@@ -577,8 +591,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> setInputGain(double v) async {
+    _inputGain = v.clamp(0.0, maxVolume);
     if (!rtc.HubbubAudio.supported) return;
-    await rtc.HubbubAudio.setInputGain(v.clamp(0.0, maxVolume));
+    await rtc.HubbubAudio.setInputGain(_inputGain);
   }
 
   @override
@@ -755,6 +770,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
           _emitParticipants();
         }
         if (track is RemoteAudioTrack) {
+          unawaited(_diagAddRemote(e.participant, track));
           if (_deafened) _setPlayback(track, false);
           unawaited(_applyVolumes(only: e.participant.identity));
         }
@@ -763,7 +779,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
           _signals.add(RoomSignal.firstRemoteAudio);
         }
       })
-      ..on<TrackUnsubscribedEvent>((_) => _emitParticipants())
+      ..on<TrackUnsubscribedEvent>((e) {
+        final t = e.track;
+        if (t is RemoteAudioTrack) unawaited(_diag?.removeTrack(t.mediaStreamTrack.id ?? ''));
+        _emitParticipants();
+      })
       ..on<ParticipantConnectedEvent>((_) => _emitParticipants())
       ..on<ParticipantDisconnectedEvent>((_) => _emitParticipants())
       ..on<ActiveSpeakersChangedEvent>((_) => _emitParticipants())
@@ -787,6 +807,82 @@ class LiveKitRoomAdapter implements RoomAdapter {
     await _applyVolumes();
     _emitParticipants();
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sampleStats());
+    if (_diagDir != null) unawaited(_startDiagnostics());
+  }
+
+  @override
+  Stream<AudioDiagnosticsReport> get audioDiagnosticsReports => _diagReports.stream;
+
+  @override
+  Future<void> setAudioDiagnosticsDir(String? dir) async {
+    _diagDir = dir;
+    if (dir == null) {
+      await _stopDiagnostics();
+    } else if (_room != null && _diag == null) {
+      await _startDiagnostics();
+    }
+  }
+
+  Future<void> _startDiagnostics() async {
+    final dir = _diagDir, room = _room;
+    if (dir == null || room == null || _diag != null || _diagStarting) return;
+    _diagStarting = true;
+    try {
+      final publish = room.roomOptions.defaultAudioPublishOptions;
+      final session = await AudioDiagnosticsSession.start(baseDir: dir, settings: {
+        'noiseSuppression': _ns.name,
+        'noiseSuppressionEffective': effectiveNoiseSuppression(_ns).name,
+        'inputGainFactor': _inputGain,
+        'inputDeviceId': _inputId,
+        'platform': defaultTargetPlatform.name,
+        'captureOptions': {
+          'echoCancellation': true,
+          'autoGainControl': defaultTargetPlatform != TargetPlatform.linux,
+          'webrtcNoiseSuppression': effectiveNoiseSuppression(_ns) == NoiseSuppression.standard,
+        },
+        'opus': {
+          'setByHubbub': false,
+          'note': 'Hubbub passes only LiveKit defaults for the audio publish options (bitrate is encoding.maxBitrate; RED is forced off under E2EE).',
+          'dtx': publish.dtx,
+          'red': publish.red,
+          'encoding': publish.encoding?.maxBitrate,
+        },
+      });
+      if (session == null) return;
+      // Stopped, or the call ended, while the folder was being made.
+      if (_diagDir == null || _room != room) {
+        unawaited(session.stop().then(_diagReports.add));
+        return;
+      }
+      _diag = session;
+      for (final p in room.remoteParticipants.values) {
+        for (final pub in p.audioTrackPublications) {
+          final t = pub.track;
+          if (t != null) await _diagAddRemote(p, t);
+        }
+      }
+    } catch (e) {
+      debugPrint('audio diagnostics did not start: $e');
+    } finally {
+      _diagStarting = false;
+    }
+  }
+
+  Future<void> _diagAddRemote(RemoteParticipant p, RemoteAudioTrack t) async {
+    final id = t.mediaStreamTrack.id;
+    if (id == null) return;
+    await _diag?.addRemote(p.name.isNotEmpty ? p.name : p.identity, id);
+  }
+
+  Future<void> _stopDiagnostics() async {
+    final s = _diag;
+    _diag = null;
+    if (s == null) return;
+    try {
+      _diagReports.add(await s.stop());
+    } catch (e) {
+      debugPrint('audio diagnostics did not stop cleanly: $e');
+    }
   }
 
   /// What is received without asking: voice, and cameras (at the low layer, see above). A
@@ -815,12 +911,14 @@ class LiveKitRoomAdapter implements RoomAdapter {
     _layoutSub = null;
     await _levels.close();
     await disconnect();
+    await _diagReports.close();
     await _signals.close();
     await _participants.close();
   }
 
   @override
   Future<void> disconnect() async {
+    await _stopDiagnostics();
     _statsTimer?.cancel();
     _statsTimer = null;
     await _listener?.dispose();

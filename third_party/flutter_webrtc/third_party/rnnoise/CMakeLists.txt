@@ -25,6 +25,9 @@ if(MSVC)
   # MSVC does not define __SSE2__; x64 always has SSE2, so select the SSE code path
   # (otherwise vec.h falls back to an Opus-only header that is not part of RNNoise).
   target_compile_definitions(rnnoise PRIVATE _CRT_SECURE_NO_WARNINGS __SSE2__=1)
-  # /O2 clashes with /RTC1 in Debug configurations (D8016), so optimise only the others.
-  target_compile_options(rnnoise PRIVATE /W1 $<$<NOT:$<CONFIG:Debug>>:/O2>)
+  # /O2 clashes with /RTC1 in Debug configurations (D8016). RNNoise runs on the real-time capture
+  # thread, and unoptimised it cannot keep up (a Debug build then delivers audio late), so drop the
+  # Debug-only flags /RTC1 /Od /Ob0 for this target (directory scope) and optimise in every configuration.
+  string(REGEX REPLACE "/(RTC[1csu]+|Od|Ob0)( |$)" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+  target_compile_options(rnnoise PRIVATE /W1 /O2)
 endif()

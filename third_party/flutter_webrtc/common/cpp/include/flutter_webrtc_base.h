@@ -17,6 +17,8 @@
 #include "rtc_audio_processing.h"
 // Hubbub patch: capture post-processor (RNNoise, input gain, peak meter).
 #include "hubbub_capture_processor.h"
+#include "hubbub_render_processor.h"
+#include "hubbub_track_tap.h"
 #include "rtc_desktop_device.h"
 #include "rtc_dtmf_sender.h"
 #include "rtc_frame_cryptor.h"
@@ -141,6 +143,11 @@ class FlutterWebRTCBase {
   std::shared_ptr<std::atomic<bool>> hubbub_alive_ =
       std::make_shared<std::atomic<bool>>(true);
   void HubbubPublishLoop();
+  // Hubbub patch: playout hook (mix tap, test mute); created on first use, never unregistered.
+  std::unique_ptr<hubbub::RenderProcessor> hubbub_render_;
+  hubbub::RenderProcessor* HubbubRender();
+  // Hubbub patch: per-track diagnostic recorders (hubbubRecordTrack), platform thread only.
+  std::map<std::string, std::unique_ptr<hubbub::TrackTap>> hubbub_track_taps_;
   RTCConfiguration configuration_;
 
   std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;

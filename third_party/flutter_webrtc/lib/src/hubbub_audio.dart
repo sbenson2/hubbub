@@ -110,3 +110,180 @@ class HubbubCamera {
   /// ends with `exit()` and so runs no native destructors.
   static Future<void> restoreExposure() => WebRTC.invokeMethod('hubbubRestoreCameraExposure');
 }
+
+/// What a diagnostic tap wrote (see [HubbubTaps]).
+@immutable
+class HubbubTapResult {
+  const HubbubTapResult({
+    required this.path,
+    required this.startMs,
+    required this.firstSampleMs,
+    this.lastSampleMs = 0,
+    this.maxGapMs = 0,
+    this.gapsOver50Ms = 0,
+    required this.samples,
+    required this.droppedChunks,
+    required this.capped,
+    required this.sourceRate,
+    this.sinkCalls = -1,
+  });
+
+  final String path;
+
+  /// Wall clock (ms since the epoch) when the tap was started.
+  final int startMs;
+
+  /// Wall clock of the first audio block (0 when none arrived).
+  final int firstSampleMs;
+
+  /// Wall clock of the last audio block. (lastSampleMs - firstSampleMs) against [seconds] shows
+  /// whether the audio arrived faster or slower than real time.
+  final int lastSampleMs;
+
+  /// Longest wait between two audio blocks (ms), and how many waits were over 50 ms. A healthy
+  /// 10 ms capture or playout clock stays below about 30 ms.
+  final int maxGapMs;
+  final int gapsOver50Ms;
+
+  /// 48 kHz samples in the file.
+  final int samples;
+
+  /// Blocks lost because the writer fell behind (should be 0).
+  final int droppedChunks;
+
+  /// The 10 minute cap was reached.
+  final bool capped;
+
+  /// Sample rate the audio had before it was resampled to 48 kHz.
+  final int sourceRate;
+
+  /// For track recordings: how often the sink was called (-1 for the send taps).
+  final int sinkCalls;
+
+  double get seconds => samples / 48000.0;
+
+  static HubbubTapResult? fromMap(Object? m) {
+    if (m is! Map) return null;
+    int i(Object? v) => v is num ? v.toInt() : 0;
+    return HubbubTapResult(
+      path: m['path'] is String ? m['path'] as String : '',
+      startMs: i(m['startMs']),
+      firstSampleMs: i(m['firstSampleMs']),
+      lastSampleMs: i(m['lastSampleMs']),
+      maxGapMs: i(m['maxGapMs']),
+      gapsOver50Ms: i(m['gapsOver50Ms']),
+      samples: i(m['samples']),
+      droppedChunks: i(m['droppedChunks']),
+      capped: m['capped'] == true,
+      sourceRate: i(m['sourceRate']),
+      sinkCalls: m['sinkCalls'] is num ? i(m['sinkCalls']) : -1,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+        'path': path,
+        'startMs': startMs,
+        'firstSampleMs': firstSampleMs,
+        'lastSampleMs': lastSampleMs,
+        'maxGapMs': maxGapMs,
+        'gapsOver50Ms': gapsOver50Ms,
+        'samples': samples,
+        'seconds': seconds,
+        'droppedChunks': droppedChunks,
+        'capped': capped,
+        'sourceRate': sourceRate,
+        if (sinkCalls >= 0) 'sinkCalls': sinkCalls,
+      };
+}
+
+/// Which send-side signal a tap records.
+enum HubbubSendTap {
+  /// The capture signal as Hubbub's hook receives it: after the audio engine's echo
+  /// cancellation, noise suppression and gain control (and after an injected file).
+  input('sendInput'),
+
+  /// The signal leaving the hook, after RNNoise, input gain and the limiter. This is
+  /// what the Opus encoder gets (the engine resamples it to 48 kHz after the hook).
+  processed('sendProcessed');
+
+  const HubbubSendTap(this.wire);
+  final String wire;
+}
+
+/// Diagnostic audio taps (measurement only, off unless started). Each writes a mono 48 kHz WAV,
+/// capped at 10 minutes, on a background thread. Windows and Linux only.
+class HubbubTaps {
+  HubbubTaps._();
+
+  static bool get supported => HubbubAudio.supported;
+
+  /// Starts recording a send-side tap to [path]. Returns the wall clock start (ms since epoch).
+  static Future<int> start(HubbubSendTap tap, String path, {double? maxSeconds}) async {
+    final r = await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>('hubbubTapStart', <String, dynamic>{
+      'kind': tap.wire,
+      'path': path,
+      if (maxSeconds != null) 'maxSeconds': maxSeconds,
+    });
+    final v = r?['startMs'];
+    return v is num ? v.toInt() : 0;
+  }
+
+  static Future<HubbubTapResult?> stop(HubbubSendTap tap) async => HubbubTapResult.fromMap(
+      await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+          'hubbubTapStop', <String, dynamic>{'kind': tap.wire}));
+
+  /// Records the decoded audio of one track (a remote participant's, before the playout mix).
+  /// Returns the wall clock start (ms since epoch).
+  static Future<int> recordTrack(String trackId, String path) async {
+    final r = await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+        'hubbubRecordTrack', <String, dynamic>{'trackId': trackId, 'path': path});
+    final v = r?['startMs'];
+    return v is num ? v.toInt() : 0;
+  }
+
+  static Future<HubbubTapResult?> stopTrack(String trackId) async => HubbubTapResult.fromMap(
+      await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+          'hubbubStopRecordTrack', <String, dynamic>{'trackId': trackId}));
+
+  /// Test only: replaces the capture signal at the hook with a WAV file. [injectLoad] makes the
+  /// microphone silent until [injectPlay]; [injectStop] gives the microphone back.
+  static Future<void> injectLoad(String path) => WebRTC.invokeMethod(
+      'hubbubInject', <String, dynamic>{'action': 'load', 'path': path});
+
+  /// Starts the injected file from its first sample. Returns the wall clock start (ms).
+  static Future<int> injectPlay() async {
+    final r = await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+        'hubbubInject', <String, dynamic>{'action': 'play'});
+    final v = r?['startMs'];
+    return v is num ? v.toInt() : 0;
+  }
+
+  static Future<void> injectStop() =>
+      WebRTC.invokeMethod('hubbubInject', <String, dynamic>{'action': 'stop'});
+
+  /// The final playout mix of all remote audio, at the render hook. The first call registers the
+  /// hook with the audio engine; before that a call does not touch the render path at all.
+  static Future<int> playoutTapStart(String path) async {
+    final r = await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+        'hubbubPlayout', <String, dynamic>{'action': 'tapStart', 'path': path});
+    final v = r?['startMs'];
+    return v is num ? v.toInt() : 0;
+  }
+
+  static Future<HubbubTapResult?> playoutTapStop() async => HubbubTapResult.fromMap(
+      await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+          'hubbubPlayout', <String, dynamic>{'action': 'tapStop'}));
+
+  /// Test only: silences the playout (the remote tracks and the mix tap still get the audio).
+  static Future<void> setPlayoutMuted(bool on) => WebRTC.invokeMethod(
+      'hubbubPlayout', <String, dynamic>{'action': 'mute', 'on': on});
+
+  /// `muted`, `tap`, `rate`, `channels`, `calls` of the render hook.
+  static Future<Map<dynamic, dynamic>?> playoutStatus() =>
+      WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
+          'hubbubPlayout', <String, dynamic>{'action': 'status'});
+
+  /// `sendProcessed`, `sendInput`, `injectActive`, `injectFinished`, `rate`.
+  static Future<Map<dynamic, dynamic>?> status() =>
+      WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>('hubbubTapStatus');
+}

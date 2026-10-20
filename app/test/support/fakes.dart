@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:hubbub/app_shell.dart';
+import 'package:hubbub/audio_diagnostics.dart';
 import 'package:hubbub/capture_options.dart';
 import 'package:hubbub/hub_api.dart';
 import 'package:hubbub/links.dart';
@@ -248,6 +249,14 @@ class FakeRoom implements RoomAdapter {
     inputGain = v;
     micCalls.add('gain:$v');
   }
+
+  /// The folder the diagnostics recorder was last pointed at (null: off).
+  String? diagnosticsDir;
+  final diagnosticsReports = StreamController<AudioDiagnosticsReport>.broadcast();
+  @override
+  Future<void> setAudioDiagnosticsDir(String? dir) async => diagnosticsDir = dir;
+  @override
+  Stream<AudioDiagnosticsReport> get audioDiagnosticsReports => diagnosticsReports.stream;
 
   bool lowLightFullFrameRate = false;
   @override

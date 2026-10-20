@@ -6,6 +6,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'atomic_file.dart';
+import 'audio_diagnostics.dart';
 import 'capture_options.dart';
 import 'room_adapter.dart';
 
@@ -84,6 +85,9 @@ class AudioPrefsStore {
   final String? _path;
   AudioPrefs? _memory;
 
+  /// The folder this machine's settings live in (null for the in-memory store).
+  String? get dataDir => _path == null ? null : File(_path).parent.path;
+
   Future<AudioPrefs> load() async {
     final path = _path;
     if (path == null) return _memory!;
@@ -110,12 +114,29 @@ class AudioPrefsStore {
 
 /// The output volumes and input processing, saved choices, and pushing them to the media room.
 class AudioSettings extends ChangeNotifier {
-  AudioSettings(this._room, this._store);
+  AudioSettings(this._room, this._store, {String? diagnosticsDir, bool? diagnosticsSupported})
+      : diagnosticsSupported = diagnosticsSupported ?? const PluginTapBackend().supported,
+        _diagnosticsBase = diagnosticsDir ??
+            '${_store.dataDir ?? Directory.systemTemp.path}${Platform.pathSeparator}audio-diagnostics' {
+    _reports = _room.audioDiagnosticsReports.listen((r) {
+      _lastReport = r;
+      _reportSerial++;
+      if (!_disposed) notifyListeners();
+    });
+  }
 
   final RoomAdapter _room;
   final AudioPrefsStore _store;
   AudioPrefs _prefs = const AudioPrefs();
   bool _disposed = false;
+
+  // Diagnostics recorder: deliberately NOT in [AudioPrefs]. It is never saved, so it is off
+  // again after every restart (privacy: nobody leaves call recording on by accident).
+  final String _diagnosticsBase;
+  late final StreamSubscription<AudioDiagnosticsReport> _reports;
+  bool _recordDiagnostics = false;
+  AudioDiagnosticsReport? _lastReport;
+  int _reportSerial = 0;
 
   // Sliders fire many changes a second; the room hears at most one per key every 50 ms, and
   // the last value is always delivered (by the timer, or at once by [commit]).
@@ -131,6 +152,28 @@ class AudioSettings extends ChangeNotifier {
   double get inputGain => _prefs.inputGain;
   NoiseSuppression get noiseSuppression => _prefs.noiseSuppression;
   bool get lowLightFullFrameRate => _prefs.lowLightFullFrameRate;
+
+  /// The recorder needs the desktop plugin (Windows, Linux); elsewhere the setting is hidden.
+  final bool diagnosticsSupported;
+
+  /// Whether call audio is being recorded to files for diagnostics. Off at every start.
+  bool get recordDiagnostics => _recordDiagnostics;
+
+  /// Where the recordings go.
+  String get diagnosticsBase => _diagnosticsBase;
+
+  /// The latest finished recording, and a counter that changes with each new one.
+  AudioDiagnosticsReport? get lastReport => _lastReport;
+  int get reportSerial => _reportSerial;
+
+  /// Switches the diagnostics recorder. While on, the call's audio is written to a new folder
+  /// under [diagnosticsBase]; switching it off (or the call ending) produces a report.
+  Future<void> setRecordDiagnostics(bool on) async {
+    if (on == _recordDiagnostics) return;
+    _recordDiagnostics = on;
+    notifyListeners();
+    await _push(() => _room.setAudioDiagnosticsDir(on ? _diagnosticsBase : null));
+  }
 
   /// The peaks of your own microphone for the settings meter.
   Stream<MicLevels> get micLevels => _room.micLevels;
@@ -242,6 +285,11 @@ class AudioSettings extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    if (_recordDiagnostics) {
+      _recordDiagnostics = false;
+      unawaited(_room.setAudioDiagnosticsDir(null).catchError((Object _) {}));
+    }
+    unawaited(_reports.cancel());
     _flushTimer?.cancel();
     super.dispose();
   }

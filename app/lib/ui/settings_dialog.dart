@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../audio_diagnostics.dart' show openFolder;
 import '../audio_settings.dart';
 import '../capture_options.dart';
 import '../device_settings.dart';
@@ -329,6 +330,41 @@ class _VoiceVideo extends StatelessWidget {
                 value: audio.lowLightFullFrameRate,
                 onChanged: audio.setLowLightFullFrameRate,
               ),
+            if (audio.diagnosticsSupported) ...[
+              const SizedBox(height: 24),
+              const Text('ADVANCED', style: HubText.category),
+              SwitchListTile(
+                key: const Key('record-diagnostics'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: HubColors.red,
+                title: const Text('Record call audio for diagnostics (saves to a folder)',
+                    style: HubText.message),
+                subtitle: const Text(
+                    'Saves what you send and what you hear, as WAV files on this PC only, to find out why '
+                    'a voice sounds muffled or cut off. A red "Recording audio" badge shows while it is on. '
+                    'It switches itself off when Hubbub restarts.',
+                    style: TextStyle(fontFamily: hubFont, fontSize: 14, height: 1.3, color: HubColors.muted)),
+                value: audio.recordDiagnostics,
+                onChanged: audio.setRecordDiagnostics,
+              ),
+              if (audio.lastReport != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(children: [
+                    Expanded(
+                      child: SelectableText('Last recording: ${audio.lastReport!.directory}',
+                          key: const Key('last-recording'),
+                          style: const TextStyle(
+                              fontFamily: hubFont, fontSize: 13, color: HubColors.muted)),
+                    ),
+                    TextButton(
+                      key: const Key('last-recording-open'),
+                      onPressed: () => openFolder(audio.lastReport!.directory),
+                      child: const Text('Open folder'),
+                    ),
+                  ]),
+                ),
+            ],
           ],
         ),
       );

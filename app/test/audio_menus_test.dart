@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hubbub/audio_diagnostics.dart';
 import 'package:hubbub/audio_settings.dart';
 import 'package:hubbub/capture_options.dart';
 import 'package:hubbub/device_settings.dart';
@@ -484,6 +485,31 @@ void main() {
       expect(room.lowLightFullFrameRate, isFalse);
       expect((await audioStore.load()).lowLightFullFrameRate, isFalse);
       debugDefaultTargetPlatformOverride = null; // the framework checks this before tearDowns
+    });
+
+    testWidgets('the_diagnostics_switch_turns_on_a_red_badge_and_records_through_the_room',
+        (tester) async {
+      await pumpShell(tester);
+      expect(find.text('Recording audio'), findsNothing);
+      await openVoice(tester);
+      final sw = find.byKey(const Key('record-diagnostics'));
+      expect(sw, findsOneWidget);
+      expect(find.text('Record call audio for diagnostics (saves to a folder)'), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(sw).value, isFalse);
+      await tester.ensureVisible(sw);
+      await tester.tap(sw);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(sw).value, isTrue);
+      expect(room.diagnosticsDir, isNotNull);
+      expect(find.text('Recording audio'), findsWidgets, reason: 'badge in the header and the column');
+      expect((await audioStore.load()).toJson().keys, isNot(contains('recordDiagnostics')));
+      // The call ends: the dialog says where the files are.
+      room.diagnosticsReports
+          .add(const AudioDiagnosticsReport(directory: r'C:\x\call-audio-1', files: ['session.json']));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('recording-saved')), findsOneWidget);
+      expect(find.text(r'C:\x\call-audio-1'), findsOneWidget);
+      expect(find.byKey(const Key('recording-open-folder')), findsOneWidget);
     });
 
     testWidgets('the_low_light_switch_is_not_shown_off_windows', (tester) async {

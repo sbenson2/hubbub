@@ -36,6 +36,7 @@ import 'settings_dialog.dart';
 import 'text_channel_view.dart';
 import 'video_view.dart';
 import 'theme.dart';
+import 'recording_indicator.dart';
 import 'user_panel.dart';
 import 'voice_channel_view.dart';
 
@@ -253,6 +254,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     unawaited(_devices.start());
     _audio = AudioSettings(widget.room, widget.audioStore ?? AudioPrefsStore.memory());
     unawaited(_audio.start());
+    _audio.addListener(_onAudioChanged);
     WidgetsBinding.instance.addObserver(this);
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
@@ -425,9 +427,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  int _reportsShown = 0;
+
+  /// A diagnostics recording finished: say where the files are.
+  void _onAudioChanged() {
+    final r = _audio.lastReport;
+    if (r == null || _audio.reportSerial == _reportsShown || !mounted) return;
+    _reportsShown = _audio.reportSerial;
+    unawaited(showRecordingSavedDialog(context, r));
+  }
+
   @override
   void dispose() {
     _devices.dispose();
+    _audio.removeListener(_onAudioChanged);
     _audio.dispose();
     _inCall.dispose();
     _watchGrace?.cancel();
@@ -1136,6 +1149,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ),
               ),
             ),
+            RecordingIndicator(audio: _audio, compact: true),
             if (_call != null)
               VoiceConnectedBar(
                 channel: _call!.channel,
@@ -1194,6 +1208,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           Expanded(
             child: Text(v.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: HubText.title),
           ),
+          RecordingIndicator(audio: _audio),
           if (!v.isVoice && !narrow)
             PanelButton(
               tooltip: _memberList ? 'Hide Member List' : 'Show Member List',

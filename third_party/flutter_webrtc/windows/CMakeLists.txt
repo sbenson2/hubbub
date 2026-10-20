@@ -20,6 +20,14 @@ add_definitions(-DRTC_DESKTOP_DEVICE)
 # post-processor.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rnnoise" "${CMAKE_CURRENT_BINARY_DIR}/rnnoise")
 
+# Hubbub patch: hubbub_audio.cc (the resampler and limiter) runs on the real-time capture thread;
+# unoptimised it makes a Debug build deliver audio late. /O2 clashes with /RTC1 and /Od, so drop those
+# Debug flags for this plugin and optimise that one file in every configuration.
+if(MSVC)
+  string(REGEX REPLACE "/(RTC[1csu]+|Od|Ob0)( |$)" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+  set_source_files_properties("../common/cpp/src/hubbub_audio.cc" PROPERTIES COMPILE_OPTIONS "/O2")
+endif()
+
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_common.cc"
   "../common/cpp/src/flutter_data_channel.cc"

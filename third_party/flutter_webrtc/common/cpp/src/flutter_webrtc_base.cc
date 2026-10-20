@@ -59,6 +59,7 @@ FlutterWebRTCBase::~FlutterWebRTCBase() {
   // unregister-null), and it keeps the raw pointer, so the inert processor is
   // left alive on purpose until the process ends (a few KB plus the RNNoise
   // state).
+  hubbub_track_taps_.clear();  // removes the sinks, closes the WAV files
   hubbub_alive_->store(false);
   hubbub_stop_.store(true);
   if (hubbub_publisher_.joinable()) hubbub_publisher_.join();
@@ -66,9 +67,21 @@ FlutterWebRTCBase::~FlutterWebRTCBase() {
     hubbub_processor_->Shutdown();
     (void)hubbub_processor_.release();
   }
+  if (hubbub_render_) {  // same reasoning: registered with the library, so left alive, inert
+    hubbub_render_->Shutdown();
+    (void)hubbub_render_.release();
+  }
   if (webrtc_initialized_) {
     LibWebRTC::Terminate();
   }
+}
+
+hubbub::RenderProcessor* FlutterWebRTCBase::HubbubRender() {
+  if (!hubbub_render_ && audio_processing_) {
+    hubbub_render_ = std::make_unique<hubbub::RenderProcessor>();
+    audio_processing_->SetRenderPreProcessing(hubbub_render_.get());
+  }
+  return hubbub_render_.get();
 }
 
 void FlutterWebRTCBase::EnsureWebRTCInitialized(bool enable_warp,

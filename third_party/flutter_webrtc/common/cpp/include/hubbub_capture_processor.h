@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "hubbub_audio.h"
+#include "hubbub_tap.h"
 #include "rtc_audio_processing.h"
 
 namespace hubbub {
@@ -70,6 +71,14 @@ class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing 
   bool rnnoise() const { return settings_.rnnoise.load(); }
   float gain() const { return settings_.gain.load(); }
 
+  // Diagnostic taps (hubbub_tap.h), all off by default. "In" is the signal as the
+  // hook receives it (after the APM's echo cancellation, noise suppression and AGC;
+  // after the injected file when injecting); "out" is what leaves the hook, which is
+  // what the encoder gets.
+  WavTap& tap_in() { return tap_in_; }
+  WavTap& tap_out() { return tap_out_; }
+  WavInject& inject() { return inject_; }
+
   // Latest levels, written by the audio thread, polled by the publisher.
   const LevelsSlot& levels() const { return levels_; }
 
@@ -108,6 +117,9 @@ class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing 
     shutdown_.store(true);
     for (int i = 0; i < 1000 && busy_.load() > 0; ++i)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    tap_in_.Stop(nullptr);
+    tap_out_.Stop(nullptr);
+    inject_.Unload();
   }
 
   // CustomProcessing (audio thread).
@@ -159,8 +171,12 @@ class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing 
       LogLine("apm layout: buffer_size=%d holds fewer than ch=%d x frames=%d; using Initialize's channel count",
               buffer_size, ch, num_frames);
     }
+    // Diagnostics (off: three relaxed loads).
+    if (inject_.active()) inject_.Fill(buffer, (size_t)num_frames, (size_t)ch, rate_.load(std::memory_order_relaxed));
+    if (tap_in_.active()) tap_in_.PushFloat(buffer, (size_t)num_frames, rate_.load(std::memory_order_relaxed));
     for (int c = 0; c < ch; ++c)
       pipes_[c]->Process(buffer + (size_t)c * num_frames, (size_t)num_frames);
+    if (tap_out_.active()) tap_out_.PushFloat(buffer, (size_t)num_frames, rate_.load(std::memory_order_relaxed));
     processed_.fetch_add(1, std::memory_order_relaxed);
   }
 
@@ -190,6 +206,8 @@ class CaptureProcessor : public libwebrtc::RTCAudioProcessing::CustomProcessing 
   }
 
   CaptureSettings settings_;
+  WavTap tap_in_, tap_out_;
+  WavInject inject_;
   LevelsSlot levels_;
   std::vector<std::unique_ptr<CapturePipeline>> pipes_;  // audio thread only
   bool logged_skip_ = false, logged_mismatch_ = false;   // audio thread only

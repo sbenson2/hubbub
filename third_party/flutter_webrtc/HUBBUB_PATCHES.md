@@ -103,7 +103,7 @@ delivered once. Test: `hubbub_test/task_runner_test.cc` (real runner; watchdog t
 | `third_party/rnnoise/` | new: RNNoise v0.2 (BSD-3-Clause, `COPYING`), own `CMakeLists.txt`; `src/rnnoise_data.c` is the upstream model, 29 MB of C arrays |
 | `lib/src/hubbub_audio.dart`, `lib/flutter_webrtc.dart` | new `HubbubAudio` (setNoiseSuppression, setInputGain, status, levels, layout), exported |
 | `windows/task_runner_windows.cc`, `linux/task_runner_linux.{h,cc}` | tasks run with the queue mutex released (see Threads); upstream re-entrant `EnqueueTask` deadlocked |
-| `hubbub_test/` | native tests (`hubbub_audio_test`, `hubbub_processor_test`), the runtime probe (`apm_probe`) and `pulse_tone.c` (virtual tone microphone for Linux/WSLg) |
+| `hubbub_test/` | native tests (`hubbub_audio_test`, `hubbub_processor_test`, `hubbub_tap_test`), the runtime probe (`apm_probe`) and `pulse_tone.c` (virtual tone microphone for Linux/WSLg) |
 | `example/` | removed (1.4 MB, not needed; done in the pristine commit `24913d5`) |
 | `third_party/rnnoise/CMakeLists.txt` | own file; for MSVC it defines `__SSE2__=1` (MSVC does not define it, RNNoise's x86 code selects its SSE paths with it) |
 | `windows/CMakeLists.txt` | upstream is CRLF and stays CRLF; the diff against `24913d5` is the 6 added lines only |
@@ -221,6 +221,41 @@ at 15 fps in a dark room; with 0 it captures at 30. New files `windows/hubbub_ca
 - Not unit tested (C++ has no test setup here): covered by the harness
   `app/integration_test/video_fps_test.dart` (priority 0 while running, 1 after stop, quit path,
   dynacast paused layers) and manual runs. The crash-recovery path was not run live.
+
+## Diagnostic audio taps (2026-10-19, measurement only)
+
+Off by default and zero cost when off (a relaxed atomic load per 10 ms block); no audio processing changed.
+Written for "my voice sounds muffled / cuts off at the end": record both sides and compare
+(`tools/audio_compare.py`, `app/integration_test/audio_quality_test.dart`, the app's Settings > Voice >
+Advanced recorder). New files: `common/cpp/include/hubbub_tap.h` (`WavTap`, `WavInject`),
+`hubbub_track_tap.h`, `hubbub_render_processor.h`; Dart `HubbubTaps` in `lib/src/hubbub_audio.dart`;
+native test `hubbub_test/hubbub_tap_test.cc`.
+
+- **WavTap**: the audio thread copies samples into a 4 MiB lock-free ring; a writer thread downmixes,
+  resamples to 48 kHz mono 16-bit and writes the WAV (header fixed every second and at stop). Capped at
+  10 minutes, ring overflow is counted (`droppedChunks`), per-tap `maxGapMs` shows a stalled clock.
+- **What I send** (`hubbubTapStart/Stop {kind}`): `sendProcessed` is the buffer leaving the capture hook
+  (after RNNoise, gain, limiter), which is what the engine resamples to 48 kHz and hands to Opus; `sendInput`
+  is the buffer as the hook receives it. Both are at the APM rate (16 kHz on Windows), so the 48 kHz file has
+  a bandwidth of at most 8 kHz by construction. `sourceRate` in the result says so.
+- **Raw microphone: not reachable.** The hook sits after the APM's echo cancellation, noise suppression and AGC,
+  and the wrapper has no custom audio device module. An `AddSink` on the local mic track delivers the processed
+  signal, not the raw one (measured: identical to `sendProcessed`).
+- **What I hear**: `hubbubRecordTrack {trackId, path}` / `hubbubStopRecordTrack` use `RTCAudioTrack::AddSink` on any
+  track (remote: decoded audio of one participant, 48 kHz, after NetEq and the per-track volume). The final playout
+  mix is available through `hubbubPlayout {action: tapStart|tapStop}` at the render pre-processing hook (16 kHz,
+  2 channels on this PC). That hook is registered with the engine only by the first `hubbubPlayout` call and never
+  unregistered (same crash as above); until then the render path is untouched.
+- **Inject** (`hubbubInject {action: load|play|stop, path}`, test only): replaces the buffer at the start of the
+  hook (silence after `load`, the file after `play`). It is after the APM stages, so the engine's own NS/AGC cannot
+  be exercised by it; RNNoise, gain, limiter, the hook's sample rate, Opus, E2EE and the SFU are.
+- **Test-only playout mute** (`hubbubPlayout {action: mute, on}`): zeroes the playout mix at the render hook after the
+  per-track sinks, so a harness can receive audio without playing it (checked with `tools/output-peak.ps1`, which shows
+  no audio session of the test process).
+- Debug builds: `third_party/rnnoise/CMakeLists.txt` and `windows/CMakeLists.txt` now drop `/RTC1 /Od /Ob0` and
+  optimise RNNoise and `hubbub_audio.cc` also in Debug. Unoptimised, RNNoise ran at about 85 % of real time on the
+  capture thread, and a Debug test run delivered late, stuttering audio (delay growing to 5 s, 13 dropouts); optimised
+  it is real time (83 ms delay, no dropouts). Release builds are unchanged.
 
 ## Re-applying on an upgrade (new flutter_webrtc version)
 

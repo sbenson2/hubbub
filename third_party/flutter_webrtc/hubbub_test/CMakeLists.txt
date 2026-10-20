@@ -44,6 +44,16 @@ if(MSVC)
   target_compile_definitions(hubbub_audio_test PRIVATE _USE_MATH_DEFINES)
 endif()
 
+# Diagnostic taps (WAV writer, ring buffer, injection).
+add_executable(hubbub_tap_test hubbub_tap_test.cc "${PLUGIN_COMMON}/src/hubbub_audio.cc")
+target_include_directories(hubbub_tap_test PRIVATE "${PLUGIN_COMMON}/include")
+target_link_libraries(hubbub_tap_test PRIVATE rnnoise)
+if(NOT MSVC)
+  target_link_libraries(hubbub_tap_test PRIVATE pthread)
+else()
+  target_compile_definitions(hubbub_tap_test PRIVATE _USE_MATH_DEFINES)
+endif()
+
 # Adapter tests (layouts, threads, teardown). Needs only libwebrtc's headers.
 if(EXISTS "${LIBWEBRTC_DIR}/include/rtc_audio_processing.h")
   add_executable(hubbub_processor_test hubbub_processor_test.cc "${PLUGIN_COMMON}/src/hubbub_audio.cc")

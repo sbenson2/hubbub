@@ -606,6 +606,226 @@ void FlutterWebRTC::HandleMethodCall(
     hubbub::CameraExposureRestoreAll();
 #endif
     result->Success();
+  } else if (method_call.method_name().compare("hubbubTapStart") == 0 ||
+             method_call.method_name().compare("hubbubTapStop") == 0 ||
+             method_call.method_name().compare("hubbubTapStatus") == 0) {
+    // Hubbub patch: diagnostic taps (hubbub_tap.h). kind "sendProcessed" is the
+    // signal leaving the capture hook (what the encoder gets), "sendInput" the
+    // signal as the hook receives it. Off by default.
+    auto args = method_call.arguments();
+    if (!hubbub_processor_) {
+      result->Error("hubbubTap", "processor not installed");
+      return;
+    }
+    const std::string method = method_call.method_name();
+    EncodableMap params;
+    if (args && TypeIs<EncodableMap>(*args)) params = GetValue<EncodableMap>(*args);
+    auto statsMap = [](const hubbub::TapStats& st) {
+      EncodableMap m;
+      m[EncodableValue("path")] = st.path;
+      m[EncodableValue("startMs")] = (int64_t)st.start_ms;
+      m[EncodableValue("firstSampleMs")] = (int64_t)st.first_sample_ms;
+      m[EncodableValue("lastSampleMs")] = (int64_t)st.last_sample_ms;
+      m[EncodableValue("maxGapMs")] = (int64_t)st.max_gap_ms;
+      m[EncodableValue("gapsOver50Ms")] = (int64_t)st.gaps_over_50ms;
+      m[EncodableValue("samples")] = (int64_t)st.samples;
+      m[EncodableValue("droppedChunks")] = (int64_t)st.dropped_chunks;
+      m[EncodableValue("capped")] = st.capped;
+      m[EncodableValue("sourceRate")] = st.source_rate;
+      return m;
+    };
+    if (method == "hubbubTapStatus") {
+      EncodableMap m;
+      m[EncodableValue("sendProcessed")] = hubbub_processor_->tap_out().active();
+      m[EncodableValue("sendInput")] = hubbub_processor_->tap_in().active();
+      m[EncodableValue("injectActive")] = hubbub_processor_->inject().active();
+      m[EncodableValue("injectFinished")] = hubbub_processor_->inject().finished();
+      m[EncodableValue("rate")] = hubbub_processor_->rate();
+      result->Success(EncodableValue(m));
+      return;
+    }
+    const std::string kind = findString(params, "kind");
+    hubbub::WavTap* tap = kind == "sendProcessed" ? &hubbub_processor_->tap_out()
+                          : kind == "sendInput"   ? &hubbub_processor_->tap_in()
+                                                  : nullptr;
+    if (!tap) {
+      result->Error("Bad Arguments", method + "() unknown kind");
+      return;
+    }
+    if (method == "hubbubTapStart") {
+      const std::string path = findString(params, "path");
+      std::optional<double> maxSeconds = maybeFindDouble(params, "maxSeconds");
+      double cap = maxSeconds.has_value() && std::isfinite(*maxSeconds) && *maxSeconds > 0
+                       ? (*maxSeconds < 600.0 ? *maxSeconds : 600.0)
+                       : 600.0;
+      std::string err;
+      if (path.empty() || !tap->Start(path, &err, cap)) {
+        result->Error("hubbubTapStart", path.empty() ? "no path" : err);
+        return;
+      }
+      EncodableMap m;
+      m[EncodableValue("startMs")] = (int64_t)hubbub::EpochMs();
+      result->Success(EncodableValue(m));
+    } else {
+      hubbub::TapStats st;
+      if (!tap->Stop(&st)) {
+        result->Success();
+        return;
+      }
+      result->Success(EncodableValue(statsMap(st)));
+    }
+  } else if (method_call.method_name().compare("hubbubRecordTrack") == 0 ||
+             method_call.method_name().compare("hubbubStopRecordTrack") == 0) {
+    // Hubbub patch: record one audio track (a remote participant, or a local
+    // track) to a 48 kHz mono WAV through AddSink.
+    auto args = method_call.arguments();
+    if (!args || !TypeIs<EncodableMap>(*args)) {
+      result->Error("Bad Arguments", "hubbubRecordTrack() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::string trackId = findString(params, "trackId");
+    if (method_call.method_name() == "hubbubStopRecordTrack") {
+      auto it = hubbub_track_taps_.find(trackId);
+      if (it == hubbub_track_taps_.end()) {
+        result->Success();
+        return;
+      }
+      hubbub::TapStats st;
+      int calls = it->second->calls();
+      it->second->Stop(&st);
+      hubbub_track_taps_.erase(it);
+      EncodableMap m;
+      m[EncodableValue("path")] = st.path;
+      m[EncodableValue("startMs")] = (int64_t)st.start_ms;
+      m[EncodableValue("firstSampleMs")] = (int64_t)st.first_sample_ms;
+      m[EncodableValue("lastSampleMs")] = (int64_t)st.last_sample_ms;
+      m[EncodableValue("maxGapMs")] = (int64_t)st.max_gap_ms;
+      m[EncodableValue("gapsOver50Ms")] = (int64_t)st.gaps_over_50ms;
+      m[EncodableValue("samples")] = (int64_t)st.samples;
+      m[EncodableValue("droppedChunks")] = (int64_t)st.dropped_chunks;
+      m[EncodableValue("capped")] = st.capped;
+      m[EncodableValue("sourceRate")] = st.source_rate;
+      m[EncodableValue("sinkCalls")] = calls;
+      result->Success(EncodableValue(m));
+      return;
+    }
+    const std::string path = findString(params, "path");
+    RTCMediaTrack* track = trackId.empty() ? nullptr : MediaTrackForId(trackId);
+    if (!track || path.empty() || track->kind().std_string() != "audio") {
+      result->Error("hubbubRecordTrack", "audio track or path not found");
+      return;
+    }
+    if (hubbub_track_taps_.count(trackId)) {
+      result->Error("hubbubRecordTrack", "already recording this track");
+      return;
+    }
+    auto rec = std::make_unique<hubbub::TrackTap>();
+    std::string err;
+    if (!rec->Start(scoped_refptr<RTCAudioTrack>(static_cast<RTCAudioTrack*>(track)), path, &err)) {
+      result->Error("hubbubRecordTrack", err);
+      return;
+    }
+    hubbub_track_taps_[trackId] = std::move(rec);
+    EncodableMap m;
+    m[EncodableValue("startMs")] = (int64_t)hubbub::EpochMs();
+    result->Success(EncodableValue(m));
+  } else if (method_call.method_name().compare("hubbubPlayout") == 0) {
+    // Hubbub patch (diagnostics): the playout mix of all remote audio, at the render
+    // pre-processing hook. action "tapStart" {path}, "tapStop", "mute" {on}, "status".
+    // The hook is only registered with the library by the first call here.
+    auto args = method_call.arguments();
+    if (!args || !TypeIs<EncodableMap>(*args)) {
+      result->Error("Bad Arguments", "hubbubPlayout() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::string action = findString(params, "action");
+    hubbub::RenderProcessor* rp = HubbubRender();
+    if (!rp) {
+      result->Error("hubbubPlayout", "audio processing not available");
+      return;
+    }
+    if (action == "tapStart") {
+      std::string err;
+      const std::string path = findString(params, "path");
+      if (path.empty() || !rp->tap().Start(path, &err)) {
+        result->Error("hubbubPlayout", path.empty() ? "no path" : err);
+        return;
+      }
+      EncodableMap m;
+      m[EncodableValue("startMs")] = (int64_t)hubbub::EpochMs();
+      result->Success(EncodableValue(m));
+    } else if (action == "tapStop") {
+      hubbub::TapStats st;
+      if (!rp->tap().Stop(&st)) {
+        result->Success();
+        return;
+      }
+      EncodableMap m;
+      m[EncodableValue("path")] = st.path;
+      m[EncodableValue("startMs")] = (int64_t)st.start_ms;
+      m[EncodableValue("firstSampleMs")] = (int64_t)st.first_sample_ms;
+      m[EncodableValue("lastSampleMs")] = (int64_t)st.last_sample_ms;
+      m[EncodableValue("maxGapMs")] = (int64_t)st.max_gap_ms;
+      m[EncodableValue("gapsOver50Ms")] = (int64_t)st.gaps_over_50ms;
+      m[EncodableValue("samples")] = (int64_t)st.samples;
+      m[EncodableValue("droppedChunks")] = (int64_t)st.dropped_chunks;
+      m[EncodableValue("capped")] = st.capped;
+      m[EncodableValue("sourceRate")] = st.source_rate;
+      result->Success(EncodableValue(m));
+    } else if (action == "mute") {
+      EncodableValue on = findEncodableValue(params, "on");
+      if (on.IsNull() || !TypeIs<bool>(on)) {
+        result->Error("Bad Arguments", "hubbubPlayout() on must be a bool");
+        return;
+      }
+      rp->SetMuted(GetValue<bool>(on));
+      result->Success();
+    } else if (action == "status") {
+      EncodableMap m;
+      m[EncodableValue("muted")] = rp->muted();
+      m[EncodableValue("tap")] = rp->tap().active();
+      m[EncodableValue("rate")] = rp->rate();
+      m[EncodableValue("channels")] = rp->channels();
+      m[EncodableValue("calls")] = (int64_t)rp->calls();
+      result->Success(EncodableValue(m));
+    } else {
+      result->Error("Bad Arguments", "hubbubPlayout() unknown action");
+    }
+  } else if (method_call.method_name().compare("hubbubInject") == 0) {
+    // Hubbub patch (test only): replace the capture signal at the hook with a WAV
+    // file. action "load" (mic becomes silence), "play" (from the first sample),
+    // "stop" (mic back).
+    auto args = method_call.arguments();
+    if (!args || !TypeIs<EncodableMap>(*args) || !hubbub_processor_) {
+      result->Error("Bad Arguments", "hubbubInject() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    const std::string action = findString(params, "action");
+    auto& inj = hubbub_processor_->inject();
+    if (action == "load") {
+      std::string err;
+      if (!inj.Load(findString(params, "path"), &err)) {
+        result->Error("hubbubInject", err);
+        return;
+      }
+      result->Success();
+    } else if (action == "play") {
+      if (!inj.active()) {
+        result->Error("hubbubInject", "nothing loaded");
+        return;
+      }
+      EncodableMap m;
+      m[EncodableValue("startMs")] = (int64_t)inj.Play();
+      result->Success(EncodableValue(m));
+    } else if (action == "stop") {
+      inj.Unload();
+      result->Success();
+    } else {
+      result->Error("Bad Arguments", "hubbubInject() unknown action");
+    }
   } else if (method_call.method_name().compare("hubbubGetStatus") == 0) {
     // Hubbub patch: what the processor has seen, for the app's log.
     if (!hubbub_processor_) {
