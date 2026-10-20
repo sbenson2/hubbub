@@ -325,6 +325,13 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> setVideoQuality(String participantId, String trackSid, {required bool high}) async =>
       calls.add('quality:$participantId:$trackSid:${high ? 'high' : 'low'}');
+
+  /// Every [setVideoShown] call, as `shown:<windowVisible>:<sorted hidden sids>`; kept apart
+  /// from [calls] so call-flow tests stay exact.
+  final shownCalls = <String>[];
+  @override
+  Future<void> setVideoShown({required bool windowVisible, required Set<String> hiddenSids}) async =>
+      shownCalls.add('shown:$windowVisible:${(hiddenSids.toList()..sort()).join(',')}');
 }
 
 /// The screens and windows the share picker offers; [error] makes the platform refuse.

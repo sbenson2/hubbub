@@ -14,21 +14,33 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
-import 'package:hubbub/room_adapter.dart' show fitShareToCapture;
+import 'package:hubbub/room_adapter.dart' show fitShareStep, videoTxFromReports;
 import 'package:hubbub/video_options.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 const _key = 'devkey';
 const _secret = 'hubbub-fps-test-secret-0123456789abcdef';
-const _signalPort = 17880;
-const _udpPort = 17882;
 const _ramp = Duration(seconds: 5);
 const _samples = 10;
 
 void _log(String s) {
   // ignore: avoid_print
   print('fps-it: $s');
+}
+
+/// A port nothing listens on right now (TCP for the signal port, UDP for media).
+Future<int> _freePort({required bool udp}) async {
+  if (udp) {
+    final s = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = s.port;
+    s.close();
+    return port;
+  }
+  final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = s.port;
+  await s.close();
+  return port;
 }
 
 String _b64(List<int> b) => base64Url.encode(b).replaceAll('=', '');
@@ -105,6 +117,10 @@ class _Row {
 
 class _Rig {
   Process? server;
+  File? cfg;
+  int signalPort = 0;
+  Timer? fitTimer;
+  final tracks = <LocalVideoTrack>[];
   Room? sender;
   Room? viewer;
   final prevTx = <String, (num, num)>{}; // report id -> (bytes, timestamp us)
@@ -117,10 +133,13 @@ class _Rig {
     // so LiveKit advertises this PC's own LAN address; the packets still never leave the PC.
     final ip = await _localIp();
     _log('advertising $ip');
-    final cfg = File('${Directory.systemTemp.path}/hubbub-fps-livekit.yaml');
-    cfg.writeAsStringSync('port: $_signalPort\n'
+    signalPort = await _freePort(udp: false);
+    final udpPort = await _freePort(udp: true);
+    // Its own file per run, deleted at teardown.
+    final cfg = this.cfg = File('${Directory.systemTemp.path}/hubbub-fps-livekit-$pid-$signalPort.yaml');
+    cfg.writeAsStringSync('port: $signalPort\n'
         'bind_addresses: ["127.0.0.1"]\n'
-        'rtc:\n  tcp_port: 0\n  udp_port: $_udpPort\n  use_external_ip: false\n'
+        'rtc:\n  tcp_port: 0\n  udp_port: $udpPort\n  use_external_ip: false\n'
         '  node_ip: $ip\n  ips:\n    includes: ["$ip/32"]\n'
         'keys:\n  $_key: $_secret\n'
         'logging:\n  level: ${Platform.environment['HUBBUB_FPS_VERBOSE'] == '1' ? 'debug' : 'warn'}\n');
@@ -133,16 +152,18 @@ class _Rig {
     proc.stdout.listen(echo);
     proc.stderr.listen(echo);
     final end = DateTime.now().add(const Duration(seconds: 15));
-    while (DateTime.now().isBefore(end)) {
+    var up = false;
+    while (!up && DateTime.now().isBefore(end)) {
       try {
-        final s = await Socket.connect('127.0.0.1', _signalPort,
+        final s = await Socket.connect('127.0.0.1', signalPort,
             timeout: const Duration(milliseconds: 500));
         s.destroy();
-        break;
+        up = true;
       } catch (_) {
         await Future<void>.delayed(const Duration(milliseconds: 300));
       }
     }
+    if (!up) fail('livekit-server did not listen on 127.0.0.1:$signalPort within 15 s (run with HUBBUB_FPS_VERBOSE=1)');
     final keys = BaseKeyProvider.create();
     Future<Room> join(String id) async {
       final kp = await keys;
@@ -154,7 +175,7 @@ class _Rig {
           e2eeOptions: E2EEOptions(keyProvider: kp),
         ),
       );
-      await room.connect('ws://127.0.0.1:$_signalPort', _token(id),
+      await room.connect('ws://127.0.0.1:$signalPort', _token(id),
           connectOptions: const ConnectOptions(autoSubscribe: true));
       return room;
     }
@@ -165,9 +186,21 @@ class _Rig {
   }
 
   Future<void> stop() async {
-    await sender?.disconnect();
-    await viewer?.disconnect();
+    fitTimer?.cancel();
+    for (final t in tracks) {
+      try {
+        await t.stop();
+      } catch (_) {}
+    }
+    tracks.clear();
+    try {
+      await sender?.disconnect();
+      await viewer?.disconnect();
+    } catch (_) {}
     server?.kill();
+    try {
+      cfg?.deleteSync();
+    } catch (_) {}
   }
 
   /// The remote publication for [source] on the viewer, once the sender has published it.
@@ -278,14 +311,33 @@ void main() {
     final screen = await LocalVideoTrack.createScreenShareTrack(screenCaptureOptionsFor(sources.first.id));
     final dims = screen.currentOptions.params.dimensions;
     _log('screen source ${sources.first.name}; constraint ${dims.width}x${dims.height}');
+    rig.tracks.add(screen);
     await rig.sender!.localParticipant!
         .publishVideoTrack(screen, publishOptions: screenPublishOptionsFor());
-    // What the app does after publishing a share; set HUBBUB_FPS_NOFIT=1 to see it without.
-    if (Platform.environment['HUBBUB_FPS_NOFIT'] != '1') unawaited(fitShareToCapture(screen));
+    // What the app does on its stats tick after publishing a share (the same ShareFit step);
+    // set HUBBUB_FPS_NOFIT=1 to see it without.
+    if (Platform.environment['HUBBUB_FPS_NOFIT'] != '1') {
+      final fit = ShareFit();
+      var busy = false;
+      rig.fitTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+        if (busy || fit.done) return;
+        busy = true;
+        try {
+          final reports = await screen.sender?.getStats();
+          if (reports == null) return;
+          final sample = videoTxFromReports('screen', reports, <String, (num, num)>{},
+              nowMs: DateTime.now().millisecondsSinceEpoch);
+          await fitShareStep(fit, screen, sample);
+        } finally {
+          busy = false;
+        }
+      });
+    }
     final screenPub = await rig.waitRemote(TrackSource.screenShareVideo);
     expect(screenPub, isNotNull, reason: 'viewer never subscribed to the screen share');
     await screenPub!.setVideoQuality(VideoQuality.HIGH);
     summary.add(await rig.measure('screen @HIGH', screen, screenPub.track!));
+    rig.fitTimer?.cancel();
     await rig.sender!.localParticipant!.unpublishAllTracks();
     await screen.stop();
 
@@ -297,6 +349,7 @@ void main() {
     } else {
       _log('camera ${cams.first.label}');
       final cam = await LocalVideoTrack.createCameraTrack(cameraCaptureOptionsFor(null));
+      rig.tracks.add(cam);
       await rig.sender!.localParticipant!.publishVideoTrack(cam, publishOptions: cameraPublishOptions);
       final camPub = await rig.waitRemote(TrackSource.camera);
       expect(camPub, isNotNull, reason: 'viewer never subscribed to the camera');

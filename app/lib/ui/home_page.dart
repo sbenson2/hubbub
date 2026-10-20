@@ -155,6 +155,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _focus = null;
       _rx.clear();
       _tx.clear();
+      _highSent.clear();
+      _hiddenTiles = const {};
+      _shownSent = null;
     }
     _inCall.value = c != null;
     widget.updates?.callActive.value = c != null;
@@ -247,8 +250,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _attach();
     _signalSub = widget.room.signals.listen(_onSignal);
     _peopleSub = widget.room.participants.listen((p) {
-      setState(() => _people = p);
+      setState(() {
+        _people = p;
+        _pruneStats();
+      });
       _syncWatching(p);
+      _syncQuality();
+      _syncShown();
     });
     _openFirstChannel();
     if (widget.controller != null && !_node.started) {
@@ -286,6 +294,80 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _multi) unawaited(_checkClipboard());
+    // Minimized or hidden to the tray: nobody sees the video, so stop receiving it.
+    _windowVisible = state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+    _syncShown();
+  }
+
+  /// Whether the window is showing (not minimized or hidden to the tray).
+  bool _windowVisible = true;
+
+  /// Strip tiles scrolled out of view ([StageItem.key]s).
+  Set<String> _hiddenTiles = const {};
+
+  /// What the room was last told to receive, so it is only told when it changes.
+  (bool, Set<String>)? _shownSent;
+
+  /// The tracks asked for at the best layer (sid to member id): the focused tile's.
+  final _highSent = <String, String>{};
+
+  /// Tells the room which remote video to receive: none while the window is away, and not the
+  /// strip tiles that are scrolled out of view.
+  void _syncShown() {
+    final hidden = <String>{};
+    for (final p in _people) {
+      if (p.isLocal) continue;
+      final cam = p.camera?.sid, share = p.share?.sid;
+      if (cam != null && _hiddenTiles.contains('user:${p.id}')) hidden.add(cam);
+      if (share != null && _hiddenTiles.contains('stream:${p.id}')) hidden.add(share);
+    }
+    final last = _shownSent;
+    if (last != null && last.$1 == _windowVisible && last.$2.length == hidden.length && last.$2.containsAll(hidden)) {
+      return;
+    }
+    _shownSent = (_windowVisible, hidden);
+    unawaited(widget.room.setVideoShown(windowVisible: _windowVisible, hiddenSids: hidden));
+  }
+
+  /// Forgets stats for streams that are gone, so the panel never shows a stopped one as live.
+  void _pruneStats() => pruneVideoStats(_rx, _tx,
+      sharing: _sharing,
+      cameraOn: _cameraOn,
+      cameraFrom: {for (final m in _people) if (m.camera != null) m.id},
+      shareFrom: {for (final m in _people) if (m.share != null && _watching.contains(m.id)) m.id});
+
+  void _onHiddenTiles(Set<String> keys) {
+    _hiddenTiles = keys;
+    if (mounted) _syncShown();
+  }
+
+  /// One rule for cameras and shares: the focused tile is received at its best layer, every
+  /// other tile (grid or strip) at the small one ([wantsHighVideo]).
+  void _syncQuality() {
+    final want = <String, String>{};
+    for (final p in _people) {
+      if (p.isLocal) continue;
+      final cam = p.camera?.sid, share = p.share?.sid;
+      if (cam != null && wantsHighVideo('user:${p.id}', _focus)) want[cam] = p.id;
+      if (share != null && _watching.contains(p.id) && wantsHighVideo('stream:${p.id}', _focus)) want[share] = p.id;
+    }
+    final known = {
+      for (final p in _people) ...{
+        if (p.camera != null) p.camera!.sid,
+        if (p.share != null) p.share!.sid,
+      }
+    };
+    for (final e in _highSent.entries.toList()) {
+      if (want.containsKey(e.key)) continue;
+      _highSent.remove(e.key);
+      if (known.contains(e.key)) unawaited(widget.room.setVideoQuality(e.value, e.key, high: false));
+    }
+    for (final e in want.entries) {
+      if (_highSent[e.key] == null) {
+        _highSent[e.key] = e.value;
+        unawaited(widget.room.setVideoQuality(e.value, e.key, high: true));
+      }
+    }
   }
 
   /// Offers an invite on the clipboard once; it never joins by itself.
@@ -565,6 +647,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _focus = 'stream:${m.id}';
     });
     _lastSid[m.id] = sid;
+    _syncQuality();
     if (_requested.add(sid)) await widget.room.subscribeVideo(m.id, sid, true);
   }
 
@@ -576,6 +659,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (_focus == 'stream:$id') _focus = null;
       _rx.remove(id);
     });
+    _syncQuality();
     if (sid != null) {
       _requested.remove(sid);
       await widget.room.subscribeVideo(id, sid, false);
@@ -599,27 +683,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _requested.removeWhere((r) => r == _lastSid[id]);
           if (_focus == 'stream:$id') _focus = null;
         });
+        _syncQuality();
       }
     }
   }
 
-  /// A camera focused is received at its best layer, and back at the grid's layer when closed.
+  /// The focused tile is received at its best layer, and back at the grid's layer when closed.
   void _setFocus(String? key) {
-    final old = _focus;
     setState(() => _focus = key);
-    unawaited(_cameraQuality(old, high: false));
-    unawaited(_cameraQuality(key, high: true));
-  }
-
-  Future<void> _cameraQuality(String? key, {required bool high}) async {
-    if (key == null || !key.startsWith('user:')) return;
-    final id = key.substring(5);
-    for (final p in _people) {
-      final sid = p.camera?.sid;
-      if (p.id == id && !p.isLocal && sid != null) {
-        await widget.room.setVideoQuality(id, sid, high: high);
-      }
-    }
+    _syncQuality();
   }
 
   void _closeFocused(StageItem item) {
@@ -1128,6 +1200,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
     }
     if (v.isVoice) {
+      _pruneStats();
       final here = _callHere == v.name;
       return VoiceChannelView(
         channel: v.name,
@@ -1156,6 +1229,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             final f? when f.startsWith('user:') => _rx['${f.substring(5)}/camera'],
             _ => null,
           },
+          onHidden: _onHiddenTiles,
           tx: [
             if (_sharing && _tx['screen'] != null) _tx['screen']!,
             if (_cameraOn && _tx['camera'] != null) _tx['camera']!,

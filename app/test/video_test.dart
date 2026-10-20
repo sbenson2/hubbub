@@ -609,7 +609,7 @@ void main() {
       );
       expect(formatVideoTx(tx),
           'video_tx src=screen capture=1920x1080@59.8 rtt=3ms f=1920x1080@29.6/5400kbps/cpu/OpenH264 q=640x360@15.0/0kbps/-/-');
-      expect(formatVideoTx(const VideoTxSample()), 'video_tx src=screen capture=0x0@0.0 rtt=0ms');
+      expect(formatVideoTx(const VideoTxSample()), 'video_tx src=screen capture=0x0@0.0 rtt=-');
     });
 
     test('tx_reports_reduce_to_capture_layers_rtt_and_bitrate', () {
@@ -625,6 +625,7 @@ void main() {
           });
       final rest = [
         rtc.StatsReport('m', 'media-source', 0, {'kind': 'video', 'width': 1920, 'height': 1080, 'framesPerSecond': 30.0}),
+        rtc.StatsReport('t', 'transport', 0, {'selectedCandidatePairId': 'c'}),
         rtc.StatsReport('c', 'candidate-pair', 0, {'nominated': true, 'currentRoundTripTime': 0.012}),
       ];
       final prev = <String, (num, num)>{};
@@ -746,7 +747,7 @@ void main() {
       } finally {
         debugPrint = old;
       }
-      expect(lines, contains('hubbub: video_tx src=camera capture=0x0@30.0 rtt=0ms'));
+      expect(lines, contains('hubbub: video_tx src=camera capture=0x0@30.0 rtt=-'));
     });
   });
 
@@ -843,6 +844,115 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('1920x1080'), findsNothing);
       expect(find.text('Waiting for video…'), findsOneWidget);
+    });
+  });
+  group('fix round 2', () {
+    const stream = VideoFeed('TR_s');
+
+    testWidgets('a_watched_share_is_high_only_while_focused_and_low_when_not', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream, bobCamera: const VideoFeed('TR_cam'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      List<String> q() => room.calls.where((c) => c.startsWith('quality:')).toList();
+      // Watching focuses the share: it is asked for at its best layer before it is subscribed.
+      expect(q(), ['quality:bbbb:TR_s:high']);
+      expect(room.calls.indexOf('quality:bbbb:TR_s:high'), lessThan(room.calls.indexOf('video:bbbb:TR_s:true')));
+
+      // Focusing the camera hands the best layer over: the share (now in the strip) goes low.
+      await tester.tap(find.byKey(const ValueKey('tile:bbbb')));
+      await tester.pumpAndSettle();
+      expect(q(), containsAll(['quality:bbbb:TR_s:low', 'quality:bbbb:TR_cam:high']));
+    });
+
+    testWidgets('a_hidden_window_stops_all_remote_video_and_showing_it_resumes', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobCamera: const VideoFeed('TR_cam'));
+      await tester.pumpAndSettle();
+      room.shownCalls.clear();
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await tester.pump();
+      expect(room.shownCalls, ['shown:false:']);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(room.shownCalls, ['shown:false:', 'shown:true:']);
+    });
+
+    testWidgets('strip_tiles_scrolled_out_of_view_stop_receiving', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      // Ten cameras: the focused one is large, nine tiles in a strip far wider than the window.
+      room.emitParticipants([
+        RoomParticipant(id: me.id, name: 'Shawn', speaking: false, isLocal: true),
+        for (var i = 0; i < 10; i++)
+          RoomParticipant(
+              id: 'p$i', name: 'P$i', speaking: false, isLocal: false, camera: VideoFeed('TR_$i')),
+      ]);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('tile:p0')));
+      await tester.pumpAndSettle();
+      final hidden = room.shownCalls.last;
+      expect(hidden, startsWith('shown:true:TR_'));
+      expect(hidden, contains('TR_9'));
+      expect(hidden, isNot(contains('TR_1,')));
+      expect(hidden, isNot(contains('TR_0')), reason: 'the focused tile is not in the strip');
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(room.shownCalls.last, 'shown:true:');
+    });
+
+    testWidgets('a_camera_that_stops_drops_its_stats_and_a_stopped_share_its_tx', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobCamera: const VideoFeed('TR_cam'));
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoRx(VideoRxSample(
+          participantId: 'bbbb', source: 'camera', width: 1280, height: 720, framesPerSecond: 30, kbps: 2000)));
+      await tester.pumpAndSettle();
+      callWith(tester); // Bob's camera goes off
+      await tester.pumpAndSettle();
+      callWith(tester, bobCamera: const VideoFeed('TR_cam2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('tile:bbbb')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.text('1280x720'), findsNothing);
+      expect(find.text('Waiting for video…'), findsOneWidget);
+    });
+
+    testWidgets('your_own_send_stats_show_on_your_own_focused_tile_and_never_as_0x0', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Turn On Camera'));
+      await tester.pumpAndSettle();
+      room.emitParticipants([
+        RoomParticipant(id: me.id, name: 'Shawn', speaking: false, isLocal: true, camera: const VideoFeed('TR_me')),
+        RoomParticipant(id: 'bbbb', name: 'Bob', speaking: false, isLocal: false),
+      ]);
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoTx(VideoTxSample(source: 'camera')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('tile:${me.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Sending'), findsNothing, reason: 'no picture yet, so no 0x0 line');
+      room.emitSignal(const RoomVideoTx(VideoTxSample(source: 'camera', layers: [
+        VideoTxLayer(rid: 'f', width: 1280, height: 720, framesPerSecond: 30, limitation: 'cpu'),
+        VideoTxLayer(rid: 'q', width: 640, height: 360, framesPerSecond: 0, limitation: 'bandwidth'),
+      ])));
+      await tester.pumpAndSettle();
+      expect(find.text('Sending camera 1280x720 30 fps'), findsOneWidget);
+      expect(find.text('limited by cpu'), findsOneWidget);
+      expect(find.text('limited by bandwidth'), findsNothing, reason: 'that layer is paused');
     });
   });
 }

@@ -142,23 +142,30 @@ String formatVideoTx(VideoTxSample s) {
   return [
     'video_tx src=${s.source}',
     'capture=${s.captureWidth ?? 0}x${s.captureHeight ?? 0}@${(s.captureFps ?? 0).toStringAsFixed(1)}',
-    'rtt=${(s.rttMs ?? 0).round()}ms',
+    s.rttMs == null ? 'rtt=-' : 'rtt=${s.rttMs!.round()}ms',
     ...layers,
   ].join(' ');
 }
 
 /// Reduces a sender's raw WebRTC stats to a [VideoTxSample]. [prev] holds the bytes sent and
-/// the time ([nowMs], milliseconds) per layer from the last call, and is updated, for the layer bitrates.
+/// the time ([nowMs], milliseconds) per layer from the last call, and is updated, for the layer
+/// bitrates. Every outbound report id met goes into [seen], so the caller can prune [prev].
+/// The round trip comes from the transport's selected candidate pair and stays null when the
+/// platform reports none.
 VideoTxSample videoTxFromReports(
   String source,
   Iterable<rtc.StatsReport> reports,
   Map<String, (num, num)> prev, {
   required num nowMs,
+  Set<String>? seen,
 }) {
   num? n(Object? v) => v is num ? v : (v == null ? null : num.tryParse('$v'));
+  String? str(Object? v) => v is String ? v : null;
   int? capW, capH;
-  double? capFps, rtt;
+  double? capFps;
   final layers = <VideoTxLayer>[];
+  String? selectedPair;
+  final pairs = <String, Map<dynamic, dynamic>>{};
   for (final r in reports) {
     final v = r.values;
     if (r.type == 'media-source' && v['kind'] == 'video') {
@@ -166,6 +173,7 @@ VideoTxSample videoTxFromReports(
       capH = n(v['height'])?.toInt();
       capFps = n(v['framesPerSecond'])?.toDouble();
     } else if (r.type == 'outbound-rtp' && v['kind'] == 'video') {
+      seen?.add(r.id);
       final bytes = n(v['bytesSent']);
       // Report timestamps are not in one unit across platforms, so the caller's clock times it.
       final at = nowMs;
@@ -176,71 +184,111 @@ VideoTxSample videoTxFromReports(
         prev[r.id] = (bytes, at);
       }
       layers.add(VideoTxLayer(
-        rid: v['rid'] as String?,
+        rid: str(v['rid']),
         width: n(v['frameWidth'])?.toInt(),
         height: n(v['frameHeight'])?.toInt(),
         framesPerSecond: n(v['framesPerSecond'])?.toDouble(),
         kbps: kbps,
-        limitation: v['qualityLimitationReason'] as String?,
-        encoder: v['encoderImplementation'] as String?,
+        limitation: str(v['qualityLimitationReason']),
+        encoder: str(v['encoderImplementation']),
       ));
-    } else if (r.type == 'candidate-pair' && (v['nominated'] == true || v['state'] == 'succeeded')) {
-      final t = n(v['currentRoundTripTime']);
-      if (t != null) rtt = t * 1000.0;
+    } else if (r.type == 'transport') {
+      selectedPair = str(v['selectedCandidatePairId']) ?? selectedPair;
+    } else if (r.type == 'candidate-pair') {
+      pairs[r.id] = v;
     }
   }
+  // The transport names the pair in use. Without that, the pair the platform marks selected, or
+  // else the only nominated one; never just any pair that once succeeded.
+  Map<dynamic, dynamic>? pair = selectedPair == null ? null : pairs[selectedPair];
+  pair ??= pairs.values.where((v) => v['selected'] == true).firstOrNull;
+  if (pair == null) {
+    final nominated = pairs.values.where((v) => v['nominated'] == true && v['state'] == 'succeeded').toList();
+    if (nominated.length == 1) pair = nominated.single;
+  }
+  final t = pair == null ? null : n(pair['currentRoundTripTime']);
   return VideoTxSample(
     source: source,
     captureWidth: capW,
     captureHeight: capH,
     captureFps: capFps,
-    rttMs: rtt,
+    rttMs: t == null ? null : t * 1000.0,
     layers: layers,
   );
 }
 
-/// Scales a published share's layers down by the real capture size ([captureDownscale]).
-/// The size is read from the top layer's first encoded frames (`media-source` carries none
-/// in this libwebrtc) times that layer's current scale, so running it twice changes nothing
-/// more; it is applied once per track.
-Future<void> fitShareToCapture(LocalVideoTrack t) async {
+/// Drops the stats the screen no longer has a stream for: a received sample whose camera or
+/// watched share is gone ([cameraFrom] and [shareFrom] are member ids that have one), and an
+/// outbound sample of a share or camera that is off. Receive samples are keyed as
+/// [VideoRxSample.key]: a share by member id, a camera by `id/camera`.
+void pruneVideoStats(
+  Map<String, VideoRxSample> rx,
+  Map<String, VideoTxSample> tx, {
+  required bool sharing,
+  required bool cameraOn,
+  required Set<String> cameraFrom,
+  required Set<String> shareFrom,
+}) {
+  rx.removeWhere((k, _) => k.endsWith('/camera') ? !cameraFrom.contains(k.substring(0, k.length - 7)) : !shareFrom.contains(k));
+  if (!sharing) tx.remove('screen');
+  if (!cameraOn) tx.remove('camera');
+}
+
+/// Joins a sender's encodings with the layers' last reported frame sizes, matched by rid (a
+/// lone unnamed encoding takes the lone unnamed layer).
+List<FitLayer> fitLayersFrom(List<rtc.RTCRtpEncoding> encodings, List<VideoTxLayer> reported) {
+  VideoTxLayer? statsFor(rtc.RTCRtpEncoding e) {
+    for (final l in reported) {
+      if (l.rid == e.rid) return l;
+    }
+    return encodings.length == 1 && reported.length == 1 ? reported.single : null;
+  }
+
+  return [
+    for (final e in encodings)
+      FitLayer(
+        rid: e.rid,
+        scale: e.scaleResolutionDownBy,
+        active: e.active,
+        frameWidth: statsFor(e)?.width,
+        frameHeight: statsFor(e)?.height,
+      ),
+  ];
+}
+
+/// One step of fitting a published share's layers to the real capture ([ShareFit]), run from
+/// the stats tick until it has applied once. The sender's parameters are read again right
+/// before the write and only `scaleResolutionDownBy` is changed, so the `active` flags
+/// dynacast sets (it writes through the same sender) are never overwritten with stale ones.
+Future<void> fitShareStep(ShareFit fit, LocalVideoTrack t, VideoTxSample sample) async {
+  if (fit.done) return;
+  final sender = t.sender;
+  final encodings = sender?.parameters.encodings;
+  if (sender == null || encodings == null || encodings.isEmpty) return;
+  final plan = fit.plan(fitLayersFrom(encodings, sample.layers));
+  if (plan == null) return;
+  final params = sender.parameters;
+  final fresh = params.encodings;
+  if (fresh == null) return;
+  final before = [for (final e in fresh) e.scaleResolutionDownBy];
+  for (final e in fresh) {
+    final v = plan[e.rid ?? ''];
+    if (v != null) e.scaleResolutionDownBy = v;
+  }
   try {
-    for (var i = 0; i < 30; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      final sender = t.sender;
-      if (sender == null) return;
-      final params = sender.parameters;
-      final encodings = params.encodings;
-      if (encodings == null || encodings.isEmpty) continue;
-      // The top layer is the one scaled the least.
-      final top = encodings.reduce((a, b) => (a.scaleResolutionDownBy ?? 1) <= (b.scaleResolutionDownBy ?? 1) ? a : b);
-      // The sender's parameters carry no rids on Windows, so the top layer is found as the
-      // largest outbound picture and the one encoding scaled the least.
-      int? w, h;
-      for (final r in await sender.getStats()) {
-        if (r.type != 'outbound-rtp' || r.values['kind'] != 'video') continue;
-        final fw = r.values['frameWidth'], fh = r.values['frameHeight'];
-        if (fw is num && fh is num && fw > 0 && fh > 0 && fw * fh > (w ?? 0) * (h ?? 0)) {
-          w = fw.toInt();
-          h = fh.toInt();
-        }
-      }
-      if (w == null || h == null) continue;
-      final scale = top.scaleResolutionDownBy ?? 1;
-      final factor = captureDownscale(w * scale, h * scale);
-      if (factor <= 1.001) return;
-      final scaled = scaledLayers([for (final e in encodings) e.scaleResolutionDownBy], factor);
-      for (var k = 0; k < encodings.length; k++) {
-        encodings[k].scaleResolutionDownBy = scaled[k];
-      }
-      params.encodings = encodings;
-      final ok = await sender.setParameters(params);
-      debugPrint('hubbub: share setParameters -> $ok');
-      debugPrint('hubbub: share capture ${(w * scale).round()}x${(h * scale).round()}, layers scaled down by ${factor.toStringAsFixed(2)}');
+    final ok = await sender.setParameters(params);
+    debugPrint('hubbub: share setParameters -> $ok, layers fitted to the capture');
+    if (ok) {
+      fit.markApplied();
       return;
     }
   } catch (e) {
     debugPrint('hubbub: fitting the share layers failed: $e');
+  }
+  // Refused: put the cached scales back, so the next try starts from what the sender has.
+  fit.failures++;
+  for (var i = 0; i < fresh.length; i++) {
+    fresh[i].scaleResolutionDownBy = before[i];
   }
 }
 
@@ -358,9 +406,16 @@ abstract class RoomAdapter {
   Future<void> releaseHeldScreenShare();
   Future<void> subscribeVideo(String participantId, String trackSid, bool on);
 
-  /// Picks the simulcast layer for a subscribed video track: the 360p15 layer ([high] false,
-  /// grid tiles) or the best one ([high] true, a focused tile).
+  /// Picks the simulcast layer for a remote video track, camera or share: the 360p layer
+  /// ([high] false, grid and strip tiles) or the best one ([high] true, the focused tile).
+  /// Remembered, so a track that is subscribed later still gets it.
   Future<void> setVideoQuality(String participantId, String trackSid, {required bool high});
+
+  /// Stops receiving remote video nobody sees: all of it while the window is not showing
+  /// ([windowVisible] false: minimized or hidden to the tray), and the tracks in [hiddenSids]
+  /// (tiles scrolled out of view). The rest is received. Cheap to switch, so it is called
+  /// again on every change.
+  Future<void> setVideoShown({required bool windowVisible, required Set<String> hiddenSids});
   Stream<RoomSignal> get signals;
   Stream<List<RoomParticipant>> get participants;
 
@@ -661,8 +716,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
       roomOptions: RoomOptions(
         // Off: with it on, the layer follows the size of the view, so a watched share in a
         // normal window got 720p30 whatever setVideoQuality said. The app picks the layer
-        // itself (grid cameras LOW, a focused camera and every watched share HIGH) and
-        // already subscribes only to what is on screen.
+        // itself: only the focused tile, camera or share, gets HIGH ([wantsHighVideo]), and
+        // [setVideoShown] pauses what nobody sees.
         adaptiveStream: false,
         dynacast: true,
         defaultAudioCaptureOptions: captureOptionsFor(_inputId, noiseSuppression: _ns),
@@ -680,14 +735,12 @@ class LiveKitRoomAdapter implements RoomAdapter {
       ..on<TrackSubscribedEvent>((e) {
         final track = e.track;
         if (track is VideoTrack) {
-          // Grid tiles take the 360p15 layer; a focused tile asks for more.
-          if (e.publication.source == TrackSource.camera) {
-            unawaited(e.publication.setVideoQuality(
-                _highVideo.contains(e.publication.sid) ? VideoQuality.HIGH : VideoQuality.LOW));
-          } else if (e.publication.source == TrackSource.screenShareVideo) {
-            // A share is only subscribed while watched, and a watched share gets its best
-            // layer whatever size its view is.
-            unawaited(e.publication.setVideoQuality(VideoQuality.HIGH));
+          // The layer the tile needs right now: grid and strip tiles take the 360p layer, the
+          // focused one asks for more. Cameras and shares follow the same rule.
+          final pub = e.publication;
+          if (pub.source == TrackSource.camera || pub.source == TrackSource.screenShareVideo) {
+            unawaited(pub.setVideoQuality(_highVideo.contains(pub.sid) ? VideoQuality.HIGH : VideoQuality.LOW));
+            if (!_shown(pub)) unawaited(pub.disable());
           }
           _emitParticipants();
         }
@@ -763,6 +816,10 @@ class LiveKitRoomAdapter implements RoomAdapter {
     await _listener?.dispose();
     _listener = null;
     _watchedShares.clear();
+    _fits.clear();
+    _rxPrev.clear();
+    _txPrev.clear();
+    _hiddenSids = const {};
     final room = _room;
     _room = null;
     if (room != null) {
@@ -859,7 +916,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
               t.simulcastCodecs.clear();
               t.encodingBackups.clear();
               final sid = (await local.publishVideoTrack(t, publishOptions: publish)).sid;
-              unawaited(fitShareToCapture(t));
+              _fits[sid] = ShareFit();
               return sid;
             }
             return (await local.publishAudioTrack(t as LocalAudioTrack)).sid;
@@ -911,7 +968,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
           publish: () async {
             if (t is! LocalVideoTrack) return (await local.publishAudioTrack(t as LocalAudioTrack)).sid;
             final sid = (await local.publishVideoTrack(t, publishOptions: publish)).sid;
-            unawaited(fitShareToCapture(t));
+            _fits[sid] = ShareFit();
             return sid;
           },
           stop: t.stop,
@@ -948,6 +1005,28 @@ class LiveKitRoomAdapter implements RoomAdapter {
     final pub = _room?.remoteParticipants[participantId]?.trackPublications[trackSid];
     if (pub is RemoteTrackPublication) {
       await pub.setVideoQuality(high ? VideoQuality.HIGH : VideoQuality.LOW);
+    }
+  }
+
+  bool _windowVisible = true;
+  Set<String> _hiddenSids = const {};
+
+  /// Whether nobody is looking at [pub]: the window is away or its tile is out of view.
+  bool _shown(RemoteTrackPublication pub) =>
+      receivesVideo(windowVisible: _windowVisible, tileOnScreen: !_hiddenSids.contains(pub.sid));
+
+  @override
+  Future<void> setVideoShown({required bool windowVisible, required Set<String> hiddenSids}) async {
+    _windowVisible = windowVisible;
+    _hiddenSids = hiddenSids;
+    // adaptiveStream is off, so nothing else pauses video. A publication's enable and disable
+    // only tell the SFU to stop or start forwarding: no resubscribe, so it resumes at once.
+    for (final p in _room?.remoteParticipants.values ?? const <RemoteParticipant>[]) {
+      for (final pub in p.videoTrackPublications) {
+        if (pub.source != TrackSource.camera && pub.source != TrackSource.screenShareVideo) continue;
+        if (!pub.subscribed) continue;
+        await (_shown(pub) ? pub.enable() : pub.disable());
+      }
     }
   }
 
@@ -1000,6 +1079,13 @@ class LiveKitRoomAdapter implements RoomAdapter {
   /// Bytes sent and the report time per outbound layer, for [videoTxFromReports].
   final _txPrev = <String, (num, num)>{};
 
+  /// The layer fit of each share this client publishes (by publication sid), run from the
+  /// stats tick until it has applied. A new publish (also a resume) starts a new one.
+  final _fits = <String, ShareFit>{};
+
+  /// A sampling pass still running: the timer does not wait for it.
+  bool _sampling = false;
+
   static String? _videoSource(TrackSource source) => switch (source) {
         TrackSource.screenShareVideo => 'screen',
         TrackSource.camera => 'camera',
@@ -1011,7 +1097,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
   /// the public API has no RTT.
   Future<void> _sampleStats() async {
     final room = _room;
-    if (room == null) return;
+    if (room == null || _sampling) return;
+    _sampling = true;
     try {
       double? jitter;
       int? lost;
@@ -1060,13 +1147,22 @@ class LiveKitRoomAdapter implements RoomAdapter {
           ));
         }
       }
+      final txSeen = <String>{};
+      final localSids = <String>{};
       for (final pub in room.localParticipant?.videoTrackPublications ?? <LocalTrackPublication<LocalVideoTrack>>[]) {
         final source = _videoSource(pub.source);
+        localSids.add(pub.sid);
         final reports = await pub.track?.sender?.getStats();
         if (source == null || reports == null) continue;
-        sent.add(videoTxFromReports(source, reports, _txPrev, nowMs: DateTime.now().millisecondsSinceEpoch));
+        final sample =
+            videoTxFromReports(source, reports, _txPrev, nowMs: DateTime.now().millisecondsSinceEpoch, seen: txSeen);
+        sent.add(sample);
+        final fit = _fits[pub.sid], track = pub.track;
+        if (fit != null && track != null) await fitShareStep(fit, track, sample);
       }
-      _rxPrev.removeWhere((sid, _) => !live.contains(sid));
+      pruneKeys(_rxPrev, live);
+      pruneKeys(_txPrev, txSeen);
+      pruneKeys(_fits, localSids);
       _signals.add(RoomStats(StatsSample(audioJitterMs: jitter, audioPacketsLost: lost)));
       for (final v in videos) {
         _signals.add(RoomVideoRx(v));
@@ -1076,6 +1172,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
       }
     } catch (e) {
       debugPrint('stats sample failed: $e');
+    } finally {
+      _sampling = false;
     }
   }
 }

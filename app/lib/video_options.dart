@@ -96,5 +96,93 @@ double captureDownscale(num width, num height) {
   return s;
 }
 
-/// [scales] (each layer's `scaleResolutionDownBy`, null meaning 1) multiplied by [factor].
-List<double> scaledLayers(List<double?> scales, double factor) => [for (final s in scales) (s ?? 1) * factor];
+/// [bases] (each layer's `scaleResolutionDownBy` as LiveKit published it, null meaning 1)
+/// multiplied by [factor]. Always from the base, never from a value already scaled.
+List<double> scaledLayers(List<double?> bases, double factor) => [for (final s in bases) (s ?? 1) * factor];
+
+/// One simulcast layer of a share as [ShareFit] needs it: the sender's current encoding
+/// (`scale`, `active`) joined with the layer's last reported frame size.
+class FitLayer {
+  const FitLayer({this.rid, this.scale, this.active = true, this.frameWidth, this.frameHeight});
+
+  final String? rid;
+
+  /// The encoding's `scaleResolutionDownBy` right now (null means 1).
+  final double? scale;
+
+  /// False while the layer is paused (dynacast, or no viewer).
+  final bool active;
+
+  /// The last encoded frame size of this layer, null while it has produced none.
+  final int? frameWidth;
+  final int? frameHeight;
+
+  /// The key a layer is filed under in a plan: its rid, `''` for a single unnamed layer.
+  String get key => rid ?? '';
+}
+
+/// Scales one published screen share's layers down by the real capture size
+/// ([captureDownscale]), once. Idempotent by construction: the layers' scales as LiveKit
+/// published them are recorded the first time they are seen, the capture size comes from any
+/// active layer's frame times that layer's scale, and each layer is set to its base times the
+/// factor, never to its current value times it. After the plan has been written
+/// ([markApplied]) it plans nothing more, so a stale frame size cannot scale twice.
+class ShareFit {
+  final _base = <String, double>{};
+  int? _capW, _capH;
+
+  /// Whether the layers already fit (written, or small enough to need nothing).
+  bool applied = false;
+
+  /// Writes that came back refused, so a build that never accepts them stops being retried.
+  int failures = 0;
+
+  /// Gives up retrying after this many refused writes.
+  static const maxFailures = 5;
+
+  bool get done => applied || failures >= maxFailures;
+
+  /// The absolute `scaleResolutionDownBy` per [FitLayer.key] to write, or null when there is
+  /// nothing to write now (already applied, no layer has produced a frame yet, or the capture
+  /// fits).
+  Map<String, double>? plan(List<FitLayer> layers) {
+    if (done || layers.isEmpty) return null;
+    for (final l in layers) {
+      _base.putIfAbsent(l.key, () => l.scale ?? 1);
+    }
+    var capW = _capW, capH = _capH;
+    if (capW == null || capH == null) {
+      var area = 0;
+      for (final l in layers) {
+        final w = l.frameWidth, h = l.frameHeight;
+        if (!l.active || w == null || h == null || w <= 0 || h <= 0 || w * h <= area) continue;
+        area = w * h;
+        final s = l.scale ?? 1;
+        capW = (w * s).round();
+        capH = (h * s).round();
+      }
+      if (capW == null || capH == null) return null;
+      // Kept: once known, a refused write that left the cached scales changed cannot skew it.
+      _capW = capW;
+      _capH = capH;
+    }
+    final factor = captureDownscale(capW, capH);
+    if (factor <= 1.001) {
+      applied = true;
+      return null;
+    }
+    return {for (final l in layers) l.key: scaledLayers([_base[l.key]], factor).first};
+  }
+
+  void markApplied() => applied = true;
+}
+
+/// Whether a tile shows the picture at its best layer: only the focused one does; grid and
+/// strip tiles, for cameras and shares alike, take the 360p layer.
+bool wantsHighVideo(String tileKey, String? focusKey) => focusKey != null && tileKey == focusKey;
+
+/// Whether a remote video is received at all: the window must be showing and the tile on screen.
+bool receivesVideo({required bool windowVisible, required bool tileOnScreen}) => windowVisible && tileOnScreen;
+
+/// Removes from [m] every key not in [live]. For the per-track byte counters.
+void pruneKeys<V>(Map<String, V> m, Set<String> live) => m.removeWhere((k, _) => !live.contains(k));

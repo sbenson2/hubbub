@@ -39,6 +39,7 @@ class StageActions {
     required this.onToggleStats,
     this.rx,
     this.tx = const [],
+    this.onHidden,
   });
 
   /// Whose streams are being watched (member ids).
@@ -60,6 +61,28 @@ class StageActions {
 
   /// Your own outbound video (screen share and camera) while it is on, shown under the stats.
   final List<VideoTxSample> tx;
+
+  /// Told the [StageItem.key]s of the strip tiles that are scrolled out of view (empty when
+  /// none are, or there is no strip), so their video can stop being received.
+  final void Function(Set<String> keys)? onHidden;
+}
+
+/// Which of [count] tiles of [tileWidth], [gap] apart in a row, are entirely outside the
+/// [viewport] wide window scrolled to [offset]. A row that fits has none.
+Set<int> hiddenTiles({
+  required int count,
+  required double tileWidth,
+  required double gap,
+  required double offset,
+  required double viewport,
+}) {
+  final hidden = <int>{};
+  if (viewport <= 0) return hidden;
+  for (var i = 0; i < count; i++) {
+    final left = i * (tileWidth + gap) - offset;
+    if (left + tileWidth <= 0 || left >= viewport) hidden.add(i);
+  }
+  return hidden;
 }
 
 /// Whether [item] has pictures to show large: a camera, a stream you watch, or your own.
@@ -90,19 +113,22 @@ class CallStage extends StatelessWidget {
     final others = [for (final i in items) if (i != focus) i];
     // Stats exist for anything you receive: a watched stream or someone else's camera.
     final statsTile = !focus.member.isMe;
+    // Your own picture has no received stats, but what you send is still worth showing.
+    final statsPanel = actions.showStats && (statsTile || actions.tx.isNotEmpty);
+    final statsButton = statsTile || actions.tx.isNotEmpty;
     return Column(children: [
       Expanded(
         child: KeyedSubtree(
           key: const ValueKey('focused'),
           child: Stack(children: [
             Positioned.fill(child: _tile(focus, large: true)),
-            if (statsTile && actions.showStats)
-              Positioned(left: 8, top: 40, child: _StatsPanel(actions.rx, actions.tx)),
+            if (statsPanel)
+              Positioned(left: 8, top: 40, child: _StatsPanel(statsTile ? actions.rx : null, actions.tx, receiving: statsTile)),
             Positioned(
               top: 8,
               right: 8,
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (statsTile) ...[
+                if (statsButton) ...[
                   _OverlayButton(
                     tooltip: 'Stream Stats',
                     icon: Icons.bar_chart_rounded,
@@ -128,20 +154,10 @@ class CallStage extends StatelessWidget {
       ),
       if (others.isNotEmpty) ...[
         const SizedBox(height: 8),
-        SizedBox(
-          key: const ValueKey('strip'),
-          height: 120,
-          child: Center(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                for (final i in others) ...[
-                  SizedBox(width: 120 * 16 / 9, height: 120, child: _tile(i)),
-                  if (i != others.last) const SizedBox(width: 8),
-                ],
-              ]),
-            ),
-          ),
+        _Strip(
+          items: others,
+          tileFor: _tile,
+          onHidden: actions.onHidden,
         ),
       ],
     ]);
@@ -165,23 +181,103 @@ class CallStage extends StatelessWidget {
   }
 }
 
+/// The row of small tiles under the focused one. It scrolls when they do not fit, and tells
+/// [onHidden] which tiles are out of view.
+class _Strip extends StatefulWidget {
+  const _Strip({required this.items, required this.tileFor, this.onHidden});
+
+  final List<StageItem> items;
+  final Widget Function(StageItem) tileFor;
+  final void Function(Set<String> keys)? onHidden;
+
+  @override
+  State<_Strip> createState() => _StripState();
+}
+
+class _StripState extends State<_Strip> {
+  static const _tileWidth = 120 * 16 / 9, _gap = 8.0;
+  final _scroll = ScrollController();
+  Set<String> _reported = const {};
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_report);
+  }
+
+  void _report() {
+    final cb = widget.onHidden;
+    if (cb == null || !_scroll.hasClients) return;
+    final hidden = hiddenTiles(
+      count: widget.items.length,
+      tileWidth: _tileWidth,
+      gap: _gap,
+      offset: _scroll.offset,
+      viewport: _scroll.position.viewportDimension,
+    );
+    final keys = {for (final i in hidden) widget.items[i].key};
+    if (keys.length == _reported.length && keys.containsAll(_reported)) return;
+    _reported = keys;
+    cb(keys);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    if (_reported.isNotEmpty) widget.onHidden?.call(const {});
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _report();
+    });
+    final items = widget.items;
+    return SizedBox(
+      key: const ValueKey('strip'),
+      height: 120,
+      child: Center(
+        child: SingleChildScrollView(
+          controller: _scroll,
+          scrollDirection: Axis.horizontal,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            for (final i in items) ...[
+              SizedBox(width: _tileWidth, height: 120, child: widget.tileFor(i)),
+              if (i != items.last) const SizedBox(width: _gap),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
 /// The received resolution, frame rate and bitrate of the stream or camera on screen, then one line
 /// for each of your own outgoing videos.
 class _StatsPanel extends StatelessWidget {
-  const _StatsPanel(this.rx, this.tx);
+  const _StatsPanel(this.rx, this.tx, {this.receiving = true});
 
   final VideoRxSample? rx;
   final List<VideoTxSample> tx;
 
-  /// `Sending screen 1920x1080 60 fps`, plus `limited by cpu` when libwebrtc holds it back.
+  /// Whether the focused tile is something received (so a missing sample means waiting).
+  final bool receiving;
+
+  /// `Sending screen 1920x1080 60 fps`, plus `limited by cpu` when libwebrtc holds an active
+  /// layer back. Nothing at all while there is no picture to report.
   static List<String> _txLines(VideoTxSample t) {
     final top = t.layers.isEmpty
         ? null
         : t.layers.reduce((a, b) => (a.width ?? 0) * (a.height ?? 0) >= (b.width ?? 0) * (b.height ?? 0) ? a : b);
     final w = top?.width ?? t.captureWidth ?? 0;
     final h = top?.height ?? t.captureHeight ?? 0;
+    if (w <= 0 || h <= 0) return const [];
     final fps = top?.framesPerSecond ?? t.captureFps ?? 0;
-    final why = t.layers.map((l) => l.limitation).firstWhere((l) => l != null && l != 'none', orElse: () => null);
+    final why = t.layers
+        .where((l) => (l.framesPerSecond ?? 0) > 0)
+        .map((l) => l.limitation)
+        .firstWhere((l) => l != null && l != 'none', orElse: () => null);
     return [
       'Sending ${t.source} ${w}x$h ${fps.round()} fps',
       if (why != null) 'limited by $why',
@@ -191,7 +287,9 @@ class _StatsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final r = rx;
-    final lines = r == null
+    final lines = !receiving
+        ? const <String>[]
+        : r == null
         ? const ['Waiting for video…']
         : [
             '${r.width ?? 0}x${r.height ?? 0}',
@@ -199,6 +297,7 @@ class _StatsPanel extends StatelessWidget {
             '${(r.kbps ?? 0).round()} kbps',
           ];
     final own = [for (final t in tx) ..._txLines(t)];
+    if (lines.isEmpty && own.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(color: const Color(0xB3000000), borderRadius: BorderRadius.circular(4)),
