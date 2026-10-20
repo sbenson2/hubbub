@@ -113,6 +113,7 @@ void main() {
 
   group('wayland screen share', () {
     const cancelled = 'Screen sharing was cancelled';
+    const noScreen = 'No screen was chosen';
 
     Future<void> pressShare(WidgetTester tester) async {
       await tester.tap(find.byTooltip('Share Your Screen'));
@@ -165,14 +166,15 @@ void main() {
       expect(find.byTooltip('Share Your Screen'), findsOneWidget);
     });
 
-    testWidgets('no_pick_in_time_shares_nothing_and_says_it_was_cancelled', (tester) async {
+    testWidgets('no_pick_in_time_shares_nothing_and_says_no_screen_was_chosen', (tester) async {
       await pumpShell(tester, portalShare: true);
       await joinLobby(tester);
       portal.error = TimeoutException('nobody chose');
       await pressShare(tester);
       await tester.pumpAndSettle();
       expect(room.calls, isEmpty);
-      expect(find.text(cancelled), findsOneWidget);
+      expect(find.text(noScreen), findsOneWidget);
+      expect(find.text(cancelled), findsNothing);
       expect(find.byTooltip('Share Your Screen'), findsOneWidget);
     });
 
@@ -196,6 +198,75 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
       expect(shares.checks, 0);
       expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+    });
+
+    testWidgets('a_host_change_keeps_the_portal_stream_and_never_asks_for_the_dead_id', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:true:portal-1']);
+      room.calls.clear();
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:hold', 'disconnect', 'connect', 'mic:true', 'deafened:false', 'screen:resume']);
+      expect(room.calls.where((c) => c.startsWith('screen:true')), isEmpty,
+          reason: 'the placeholder id is dead: asking for it opens a surprise system prompt');
+      expect(portal.calls, 1, reason: 'no second system prompt');
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Stop Streaming'));
+      await tester.pumpAndSettle();
+      expect(room.calls.last, 'screen:false');
+    });
+
+    testWidgets('a_portal_share_that_cannot_resume_says_to_choose_again', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      room.calls.clear();
+      room.resumeError = StateError('publish timed out');
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c.startsWith('screen:true')), isEmpty);
+      expect(find.text('Your screen share stopped when the call moved. Choose a screen to share again.'),
+          findsOneWidget);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+      expect(portal.calls, 1, reason: 'the user chooses again by pressing Share, not by a surprise prompt');
+    });
+
+    testWidgets('a_rejoin_that_fails_stops_the_kept_portal_stream', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      room.calls.clear();
+      room.connectError = StateError('host gone');
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(room.calls, contains('screen:hold'));
+      expect(room.calls, contains('screen:release'), reason: 'a kept capture must not run on with no call');
+    });
+
+    testWidgets('a_picker_share_is_not_held_across_a_host_change', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Screen 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Go Live'));
+      await tester.pumpAndSettle();
+      room.calls.clear();
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pumpAndSettle();
+      expect(room.calls, ['disconnect', 'connect', 'mic:true', 'deafened:false', 'screen:true:screen:0:0']);
     });
 
     testWidgets('the_picker_flow_is_unchanged_when_not_in_portal_mode', (tester) async {

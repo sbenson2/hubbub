@@ -146,6 +146,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (c == null) {
       _cameraOn = _sharing = false;
       _shareSource = null;
+      _releaseHeldShare();
       _watching.clear();
       _requested.clear();
       _seenSharing.clear();
@@ -166,6 +167,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _deafened = false;
   bool _cameraOn = false;
   bool _sharing = false;
+
+  /// The running share was picked in the system's own prompt (Wayland): its id is a
+  /// placeholder that dies with the share, so a rejoin keeps the stream instead of restarting it.
+  bool _shareInPortal = false;
+
+  /// A rejoin took the portal share off the old room and has not yet put it on the new one.
+  bool _shareHeld = false;
 
   /// The screen or window being shared, so a host change can share it again.
   String? _shareSource;
@@ -330,6 +338,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _inCall.dispose();
     _watchGrace?.cancel();
     _shareWatch?.cancel();
+    _releaseHeldShare();
     WidgetsBinding.instance.removeObserver(this);
     _links?.dispose();
     _hub.removeListener(_refresh);
@@ -409,6 +418,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _requireIce(c);
       // The old room is gone: drop it first, so the device choices below are not applied to
       // (and capture restarted on) a room that is about to die anyway.
+      if (_sharing && _shareInPortal) {
+        try {
+          await widget.room.holdScreenShare();
+          _shareHeld = true;
+        } catch (e) {
+          debugPrint('hubbub: keeping the screen share across the rejoin failed: $e');
+        }
+      }
       await widget.room.disconnect();
       await _devices.applyForJoin();
       await _audio.applyForJoin();
@@ -433,6 +450,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     } catch (e) {
       _toast('Could not rejoin ${call.channel}: $e');
+      _releaseHeldShare();
       // Do not leave a half-connected room live while the UI shows no call.
       try {
         await widget.room.disconnect();
@@ -456,7 +474,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (mounted) setState(() => _cameraOn = false);
       }
     }
-    if (_sharing) {
+    if (_sharing && _shareInPortal) {
+      // The placeholder id is dead (asking for it would open a surprise system prompt), so the
+      // same stream goes onto the new room. If that fails the user is told to pick again.
+      _shareHeld = false;
+      try {
+        await widget.room.resumeScreenShare();
+      } catch (e) {
+        debugPrint('hubbub: resuming the screen share failed: $e');
+        _toast(portalShareMoved);
+        if (mounted) {
+          setState(() {
+            _sharing = false;
+            _shareInPortal = false;
+            _shareSource = null;
+          });
+        }
+      }
+    } else if (_sharing) {
       try {
         await widget.room.setScreenShareEnabled(true, sourceId: _shareSource);
       } catch (e) {
@@ -464,6 +499,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (mounted) setState(() => _sharing = false);
       }
     }
+  }
+
+  /// Stops a portal share a rejoin kept but never put back (the rejoin failed, or the call ended).
+  void _releaseHeldShare() {
+    if (!_shareHeld) return;
+    _shareHeld = false;
+    unawaited(widget.room.releaseHeldScreenShare().catchError((Object e) {
+      debugPrint('hubbub: releasing the kept screen share failed: $e');
+    }));
   }
 
   Future<void> _toggleCamera() async {
@@ -602,6 +646,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() {
         _sharing = true;
         _shareSource = source;
+        _shareInPortal = portal;
       });
       try {
         await widget.room.setScreenShareEnabled(true, sourceId: source);
@@ -625,8 +670,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final pick = await showPortalWait(context, widget.portalSource);
     if (pick.id != null) return pick.id;
     final error = pick.error;
-    if (error == null || error is TimeoutException) {
+    if (error == null) {
       _toast(portalShareCancelled);
+    } else if (error is TimeoutException) {
+      _toast(portalShareNoScreen);
     } else {
       _toast('Could not start the stream: $error');
     }
@@ -661,6 +708,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       _sharing = false;
       _shareSource = null;
+      _shareInPortal = false;
     });
     try {
       await widget.room.setScreenShareEnabled(false);

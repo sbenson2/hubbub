@@ -152,6 +152,18 @@ abstract class RoomAdapter {
   Future<void> setDeafened(bool on);
   Future<void> setCameraEnabled(bool on);
   Future<void> setScreenShareEnabled(bool on, {String? sourceId});
+
+  /// Before a rejoin: takes the running screen share off this room without stopping its
+  /// capture, so [resumeScreenShare] can put the same stream on the next room (a Wayland
+  /// share cannot be restarted without asking the user again). Does nothing when none runs.
+  Future<void> holdScreenShare();
+
+  /// Publishes the share kept by [holdScreenShare] on the current room. Throws when nothing
+  /// is held or the publish fails (the capture is then stopped).
+  Future<void> resumeScreenShare();
+
+  /// Stops the capture kept by [holdScreenShare], when there is one.
+  Future<void> releaseHeldScreenShare();
   Future<void> subscribeVideo(String participantId, String trackSid, bool on);
 
   /// Picks the simulcast layer for a subscribed video track: the 360p15 layer ([high] false,
@@ -608,9 +620,70 @@ class LiveKitRoomAdapter implements RoomAdapter {
     ], unpublish: local.removePublishedTrack);
   }
 
+  /// The screen share tracks [holdScreenShare] took off the old room.
+  List<LocalTrack>? _heldShare;
+
+  @override
+  Future<void> holdScreenShare() async {
+    final local = _room?.localParticipant;
+    if (local == null) return;
+    final held = <LocalTrack>[];
+    for (final source in [TrackSource.screenShareVideo, TrackSource.screenShareAudio]) {
+      final pub = local.getTrackPublicationBySource(source);
+      final track = pub?.track;
+      if (pub == null || track == null) continue;
+      // Not removePublishedTrack: that stops the capture. The room is about to be closed, which
+      // takes the sender with it; LiveKit's own re-publish after a reconnect reuses tracks the
+      // same way.
+      local.trackPublications.remove(pub.sid);
+      held.add(track);
+    }
+    // A second hold (a rejoin that restarted) finds nothing published and keeps the first.
+    if (held.isNotEmpty) _heldShare = held;
+  }
+
+  @override
+  Future<void> resumeScreenShare() async {
+    final held = _heldShare;
+    _heldShare = null;
+    final local = _room?.localParticipant;
+    if (held == null || local == null) throw StateError('no screen share to resume');
+    final publish = screenPublishOptionsFor();
+    await publishAllOrNone([
+      for (final t in held)
+        PublishStep(
+          publish: () async {
+            if (t is LocalVideoTrack) {
+              // Senders of the old room's connection: LiveKit clears them the same way (its
+              // internal clearSimulcastState) before it re-publishes after a reconnect.
+              t.simulcastCodecs.clear();
+              t.encodingBackups.clear();
+              return (await local.publishVideoTrack(t, publishOptions: publish)).sid;
+            }
+            return (await local.publishAudioTrack(t as LocalAudioTrack)).sid;
+          },
+          stop: t.stop,
+        ),
+    ], unpublish: local.removePublishedTrack);
+  }
+
+  @override
+  Future<void> releaseHeldScreenShare() async {
+    final held = _heldShare;
+    _heldShare = null;
+    for (final t in held ?? const <LocalTrack>[]) {
+      try {
+        await t.stop();
+      } catch (e) {
+        debugPrint('hubbub: stopping the kept screen share failed: $e');
+      }
+    }
+  }
+
   @override
   Future<void> setScreenShareEnabled(bool on, {String? sourceId}) async {
     final local = _room?.localParticipant;
+    await releaseHeldScreenShare();
     if (local == null) return;
     for (final source in [TrackSource.screenShareVideo, TrackSource.screenShareAudio]) {
       final old = local.getTrackPublicationBySource(source);

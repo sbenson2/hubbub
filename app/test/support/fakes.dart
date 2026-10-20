@@ -302,6 +302,17 @@ class FakeRoom implements RoomAdapter {
   @override
   Future<void> setScreenShareEnabled(bool on, {String? sourceId}) async =>
       calls.add(on ? 'screen:true:${sourceId ?? ''}' : 'screen:false');
+  /// Makes [resumeScreenShare] fail, as a refused publish does.
+  Object? resumeError;
+  @override
+  Future<void> holdScreenShare() async => calls.add('screen:hold');
+  @override
+  Future<void> resumeScreenShare() async {
+    calls.add('screen:resume');
+    if (resumeError != null) throw resumeError!;
+  }
+  @override
+  Future<void> releaseHeldScreenShare() async => calls.add('screen:release');
   @override
   Future<void> subscribeVideo(String participantId, String trackSid, bool on) async =>
       calls.add('video:$participantId:$trackSid:$on');

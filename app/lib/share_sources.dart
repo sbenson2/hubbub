@@ -56,37 +56,77 @@ typedef PortalScreenSource = Future<String?> Function(PortalCancel cancel);
 const portalPollInterval = Duration(milliseconds: 500);
 const portalPickTimeout = Duration(minutes: 2);
 
+/// This many thumbnail calls in a row that the plugin answers with an error end the wait: the
+/// portal session is not coming up, so there is no point waiting out the full timeout.
+const portalMaxErrors = 5;
+
 /// [PortalScreenSource] for the desktop. Asks for Screen sources only (a Window listing is
 /// not available through the portal). Listing the Screen sources is what opens the system
 /// dialog, so it happens once. The one source is a placeholder; the user's pick is known once
 /// the portal stream delivers a picture, so a non-empty thumbnail means the pick was made.
+///
+/// Every attempt starts a fresh system session (the plugin drops the old one when Screen
+/// sources are listed), and none leaves one behind: unless a pick is returned, [release] closes
+/// the session (and so the system dialog) on cancel, timeout and error. A failing [release] is
+/// logged and ignored.
 Future<String?> portalScreenSource(
   PortalCancel cancel, {
   Future<List<ShareSource>> Function()? list,
   Future<Uint8List?> Function(String id)? thumbnail,
+  Future<void> Function()? release,
   Duration interval = portalPollInterval,
   Duration timeout = portalPickTimeout,
 }) async {
-  final sources = await (list ?? _portalSources)();
+  var picked = false;
+  try {
+    final id = await _waitForPick(cancel, list ?? _portalSources, thumbnail ?? _portalThumbnail, interval, timeout);
+    picked = id != null;
+    return id;
+  } finally {
+    if (!picked) {
+      try {
+        await (release ?? releasePortalScreen)();
+      } catch (e) {
+        debugPrint('hubbub: closing the screen share session failed: $e');
+      }
+    }
+  }
+}
+
+Future<String?> _waitForPick(
+  PortalCancel cancel,
+  Future<List<ShareSource>> Function() list,
+  Future<Uint8List?> Function(String id) getThumbnail,
+  Duration interval,
+  Duration timeout,
+) async {
+  final sources = await list();
   if (cancel.cancelled) return null;
   if (sources.isEmpty) throw StateError('The system share prompt offered no screen');
   final id = sources.first.id;
-  final getThumbnail = thumbnail ?? _portalThumbnail;
   var waited = Duration.zero;
+  var errors = 0;
   while (!cancel.cancelled) {
     try {
       final picture = await getThumbnail(id);
+      errors = 0;
       if (picture != null && picture.isNotEmpty && !cancel.cancelled) return id;
     } catch (e) {
-      // Not ready yet (or the dialog is still open): look again.
+      // Usually not ready yet (the dialog is still open): look again. Several in a row mean
+      // the session is dead, and the error is the answer.
+      if (++errors >= portalMaxErrors) rethrow;
     }
     if (cancel.cancelled) break;
-    if (waited >= timeout) throw TimeoutException('Nobody chose a screen in the system dialog', timeout);
+    if (waited >= timeout) throw TimeoutException('No screen was chosen in the system dialog', timeout);
     await Future<void>.delayed(interval);
     waited += interval;
   }
   return null;
 }
+
+/// Closes the portal session of the Screen list the plugin keeps (and with it the system
+/// dialog, if it is still open). Does nothing on the other platforms and sessions.
+Future<void> releasePortalScreen() => rtc.WebRTC.invokeMethod<bool, void>('hubbubReleasePortalScreen');
 
 Future<List<ShareSource>> _portalSources() async {
   final all = await rtc.desktopCapturer.getSources(types: [rtc.SourceType.Screen]);

@@ -7,6 +7,8 @@ import '../theme.dart';
 import 'dialog_shell.dart';
 
 const portalShareCancelled = 'Screen sharing was cancelled';
+const portalShareNoScreen = 'No screen was chosen';
+const portalShareMoved = 'Your screen share stopped when the call moved. Choose a screen to share again.';
 
 /// What the wait ended with: the chosen source [id], or neither when the user cancelled in
 /// Hubbub, or an [error] (a timeout, or the system share prompt failing).
