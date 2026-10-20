@@ -1,4 +1,7 @@
 #include "flutter_webrtc.h"
+#ifdef _WIN32
+#include "hubbub_camera.h"
+#endif
 
 #include <cmath>
 #include "flutter_data_channel.h"
@@ -573,6 +576,27 @@ void FlutterWebRTC::HandleMethodCall(
       result->Error("Bad Arguments", "hubbubSetInputGain() gain must be a finite number");
       return;
     }
+    result->Success();
+  } else if (method_call.method_name().compare(
+                 "hubbubSetLowLightFullFrameRate") == 0) {
+    // Hubbub patch (Windows): "Keep full frame rate in low light". Read by the
+    // next camera start; also restores a camera change a crash left behind.
+#ifdef _WIN32
+    auto args = method_call.arguments();
+    if (!args || !TypeIs<EncodableMap>(*args)) {
+      result->Error("Bad Arguments",
+                    "hubbubSetLowLightFullFrameRate() no arguments");
+      return;
+    }
+    const EncodableMap params = GetValue<EncodableMap>(*args);
+    EncodableValue on = findEncodableValue(params, "on");
+    if (on.IsNull() || !TypeIs<bool>(on)) {
+      result->Error("Bad Arguments",
+                    "hubbubSetLowLightFullFrameRate() on must be a bool");
+      return;
+    }
+    hubbub::CameraExposureSetEnabled(GetValue<bool>(on));
+#endif
     result->Success();
   } else if (method_call.method_name().compare("hubbubGetStatus") == 0) {
     // Hubbub patch: what the processor has seen, for the app's log.

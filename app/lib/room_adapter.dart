@@ -451,6 +451,10 @@ abstract class RoomAdapter {
   /// the WebRTC suppressor has to change), else kept for the next [connect].
   Future<void> setNoiseSuppression(NoiseSuppression ns);
 
+  /// "Keep full frame rate in low light" (Windows): read by the next camera start, not by a
+  /// camera that already runs.
+  Future<void> setLowLightFullFrameRate(bool on);
+
   /// The peaks of your own microphone, about twenty times a second while someone listens and
   /// you are in a call.
   Stream<MicLevels> get micLevels;
@@ -575,6 +579,12 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Future<void> setInputGain(double v) async {
     if (!rtc.HubbubAudio.supported) return;
     await rtc.HubbubAudio.setInputGain(v.clamp(0.0, maxVolume));
+  }
+
+  @override
+  Future<void> setLowLightFullFrameRate(bool on) async {
+    if (!rtc.HubbubCamera.supported) return;
+    await rtc.HubbubCamera.setLowLightFullFrameRate(on);
   }
 
   @override

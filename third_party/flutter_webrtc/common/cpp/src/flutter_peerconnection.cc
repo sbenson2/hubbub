@@ -782,20 +782,48 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
     EncodableMap newParameters,
     scoped_refptr<RTCRtpParameters> parameters) {
   EncodableList encodings = findList(newParameters, "encodings");
-  auto encoding = encodings.begin();
-  // Hubbub: only fields that differ are written (an unchanged field written
-  // back, such as an empty scalabilityMode, can fail the whole set_parameters).
+  // Hubbub: a Dart encoding is matched to the sender's encoding by rid when it
+  // has one and the sender has that rid; otherwise by position. An encoding
+  // that matches nothing (or an encoding matched twice) is an error: null is
+  // returned and the caller reports false, nothing is dropped silently.
+  // Only fields that differ are written (an unchanged field written back, such
+  // as an empty scalabilityMode, can fail the whole set_parameters). The rid is
+  // never written: it is fixed once the sender exists.
   auto params = parameters->encodings();
-  for (auto param : params.std_vector()) {
-    if (encoding != encodings.end()) {
-      EncodableMap map = GetValue<EncodableMap>(*encoding);
+  auto senderEncodings = params.std_vector();
+  std::vector<bool> used(senderEncodings.size(), false);
+  for (size_t index = 0; index < encodings.size(); index++) {
+    EncodableMap map = GetValue<EncodableMap>(encodings[index]);
+    std::string dartRid;
+    EncodableValue ridValue = findEncodableValue(map, "rid");
+    if (!ridValue.IsNull() && TypeIs<std::string>(ridValue)) {
+      dartRid = GetValue<std::string>(ridValue);
+    }
+    int match = -1;
+    if (!dartRid.empty()) {
+      for (size_t i = 0; i < senderEncodings.size(); i++) {
+        if (senderEncodings[i]->rid().std_string() == dartRid) {
+          match = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+    if (match < 0 && (dartRid.empty() ||
+                      senderEncodings.empty() ||
+                      senderEncodings[0]->rid().std_string().empty())) {
+      // No rid on one side: by position.
+      match = static_cast<int>(index);
+    }
+    if (match < 0 || match >= static_cast<int>(senderEncodings.size()) ||
+        used[match]) {
+      return scoped_refptr<RTCRtpParameters>();
+    }
+    used[match] = true;
+    auto param = senderEncodings[match];
+    {
       EncodableValue value = findEncodableValue(map, "active");
       if (!value.IsNull()) {
         if (param->active() != GetValue<bool>(value)) param->set_active(GetValue<bool>(value));
-      }
-      value = findEncodableValue(map, "rid");
-      if (!value.IsNull()) {
-        if (param->rid().std_string() != GetValue<std::string>(value)) param->set_rid(GetValue<std::string>(value));
       }
       // Hubbub: the ssrc is read-only (the sender owns it); writing the 0 Dart
       // sends back made libwebrtc reject every change as a modified SSRC.
@@ -813,27 +841,34 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
       if (!value.IsNull()) {
         if (static_cast<int>(param->max_framerate()) != GetValue<int>(value)) param->set_max_framerate(GetValue<int>(value));
       }
+      // Hubbub: getParameters does not report numTemporalLayers, so Dart's
+      // default of 1 is not a request: only a value above 1 that differs is
+      // written (a 1 would turn temporal layers off).
       value = findEncodableValue(map, "numTemporalLayers");
       if (!value.IsNull()) {
-        if (param->num_temporal_layers() != GetValue<int>(value)) param->set_num_temporal_layers(GetValue<int>(value));
+        int layers = GetValue<int>(value);
+        if (layers > 1 && param->num_temporal_layers() != layers) param->set_num_temporal_layers(layers);
       }
       value = findEncodableValue(map, "scaleResolutionDownBy");
       if (!value.IsNull()) {
         if (param->scale_resolution_down_by() != GetValue<double>(value)) param->set_scale_resolution_down_by(GetValue<double>(value));
       }
+      // Hubbub: an empty scalabilityMode is "not sent", never a request.
       value = findEncodableValue(map, "scalabilityMode");
       if (!value.IsNull()) {
-        if (param->scalability_mode().std_string() != GetValue<std::string>(value)) param->set_scalability_mode(GetValue<std::string>(value));
+        const std::string mode = GetValue<std::string>(value);
+        if (!mode.empty() && param->scalability_mode().std_string() != mode) param->set_scalability_mode(mode);
       }
       value = findEncodableValue(map, "priority");
       if (!value.IsNull()) {
-        param->set_bitrate_priority(stringToBitratePriority(GetValue<std::string>(value)));
+        auto priority = stringToBitratePriority(GetValue<std::string>(value));
+        if (param->bitrate_priority() != priority) param->set_bitrate_priority(priority);
       }
       value = findEncodableValue(map, "networkPriority");
       if (!value.IsNull()) {
-        param->set_network_priority(stringToRTCPriority(GetValue<std::string>(value)));
+        auto priority = stringToRTCPriority(GetValue<std::string>(value));
+        if (param->network_priority() != priority) param->set_network_priority(priority);
       }
-      encoding++;
     }
   }
   // Hubbub: encodings() hands back wrapper objects over copies of the
@@ -878,7 +913,8 @@ void FlutterPeerConnection::RtpSenderSetParameters(
 
   auto param = sender->parameters();
   param = updateRtpParameters(parameters, param);
-  bool success = sender->set_parameters(param);
+  // Hubbub: null means a Dart encoding matched no sender encoding.
+  bool success = param.get() != nullptr && sender->set_parameters(param);
 
   EncodableMap map;
   map[EncodableValue("result")] = EncodableValue(success);

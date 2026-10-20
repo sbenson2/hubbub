@@ -65,6 +65,36 @@ void main() {
     });
   });
 
+  group('low light frame rate setting', () {
+    test('is_on_by_default_and_for_old_files_and_junk', () {
+      expect(const AudioPrefs().lowLightFullFrameRate, isTrue);
+      expect(AudioPrefs.fromJson({'master': 0.5}).lowLightFullFrameRate, isTrue);
+      expect(AudioPrefs.fromJson({'lowLightFullFrameRate': 'no'}).lowLightFullFrameRate, isTrue);
+      expect(AudioPrefs.fromJson({'lowLightFullFrameRate': false}).lowLightFullFrameRate, isFalse);
+    });
+
+    test('off_is_saved_and_loaded_and_handed_to_the_room_at_start_and_every_join', () async {
+      final room = FakeRoom();
+      final store = AudioPrefsStore.memory();
+      final audio = AudioSettings(room, store);
+      await audio.start();
+      expect(room.lowLightFullFrameRate, isTrue);
+      await audio.setLowLightFullFrameRate(false);
+      expect(room.lowLightFullFrameRate, isFalse);
+      expect((await store.load()).lowLightFullFrameRate, isFalse);
+      expect(AudioPrefs.fromJson((await store.load()).toJson()).lowLightFullFrameRate, isFalse);
+
+      final room2 = FakeRoom();
+      final again = AudioSettings(room2, store);
+      await again.start();
+      expect(again.lowLightFullFrameRate, isFalse);
+      expect(room2.lowLightFullFrameRate, isFalse);
+      room2.lowLightFullFrameRate = true;
+      await again.applyForJoin();
+      expect(room2.lowLightFullFrameRate, isFalse);
+    });
+  });
+
   group('audio settings', () {
     test('the_input_volume_slider_reaches_the_room_and_is_saved_on_commit', () async {
       final room = FakeRoom();

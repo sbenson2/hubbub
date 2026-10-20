@@ -35,6 +35,7 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_webrtc_base.cc"
   "../common/cpp/src/hubbub_audio.cc"
   "application_loopback_capturer.cc"
+  "hubbub_camera.cc"
   "loopback_capturer_factory.cc"
   "flutter_webrtc_plugin.cc"
   "task_runner_windows.cc"
@@ -65,7 +66,9 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
   ksuser.lib
   mmdevapi.lib
   ole32.lib
+  oleaut32.lib
   runtimeobject.lib
+  strmiids.lib
   uuid.lib
   winmm.lib
 )

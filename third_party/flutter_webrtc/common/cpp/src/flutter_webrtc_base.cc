@@ -2,6 +2,9 @@
 
 #include "flutter_data_channel.h"
 #include "flutter_peerconnection.h"
+#ifdef _WIN32
+#include "hubbub_camera.h"
+#endif
 
 #include <chrono>
 #include <string>
@@ -45,6 +48,10 @@ FlutterWebRTCBase::FlutterWebRTCBase(BinaryMessenger* messenger,
 }
 
 FlutterWebRTCBase::~FlutterWebRTCBase() {
+#ifdef _WIN32
+  // Hubbub patch: give every webcam its own auto-exposure priority back.
+  hubbub::CameraExposureRestoreAll();
+#endif
   // Hubbub patch: stop the publisher, then make the processor inert (Shutdown
   // also waits for a Process call that is still running). It is NOT unregistered:
   // the prebuilt libwebrtc (m150) crashes in SetCapturePostProcessing(nullptr)

@@ -18,6 +18,7 @@ class AudioPrefs {
     this.muted = const {},
     this.inputGain = 1,
     this.noiseSuppression = NoiseSuppression.rnnoise,
+    this.lowLightFullFrameRate = true,
   });
   final double master;
   final Map<String, double> volumes;
@@ -27,12 +28,16 @@ class AudioPrefs {
   final double inputGain;
   final NoiseSuppression noiseSuppression;
 
+  /// Windows webcams: stop the camera slowing down in dim light (on by default).
+  final bool lowLightFullFrameRate;
+
   AudioPrefs copyWith({
     double? master,
     Map<String, double>? volumes,
     Set<String>? muted,
     double? inputGain,
     NoiseSuppression? noiseSuppression,
+    bool? lowLightFullFrameRate,
   }) =>
       AudioPrefs(
         master: master ?? this.master,
@@ -40,6 +45,7 @@ class AudioPrefs {
         muted: muted ?? this.muted,
         inputGain: inputGain ?? this.inputGain,
         noiseSuppression: noiseSuppression ?? this.noiseSuppression,
+        lowLightFullFrameRate: lowLightFullFrameRate ?? this.lowLightFullFrameRate,
       );
 
   Map<String, Object?> toJson() => {
@@ -48,6 +54,7 @@ class AudioPrefs {
         'muted': muted.toList(),
         'inputGain': inputGain,
         'noiseSuppression': noiseSuppression.name,
+        'lowLightFullFrameRate': lowLightFullFrameRate,
       };
 
   static AudioPrefs fromJson(Object? j) {
@@ -58,6 +65,7 @@ class AudioPrefs {
       master: level(j['master']),
       inputGain: level(j['inputGain']),
       noiseSuppression: NoiseSuppression.fromName(j['noiseSuppression']),
+      lowLightFullFrameRate: j['lowLightFullFrameRate'] is bool ? j['lowLightFullFrameRate'] as bool : true,
       volumes: volumes is Map
           ? {for (final e in volumes.entries) if (e.key is String) e.key as String: level(e.value)}
           : const {},
@@ -122,6 +130,7 @@ class AudioSettings extends ChangeNotifier {
 
   double get inputGain => _prefs.inputGain;
   NoiseSuppression get noiseSuppression => _prefs.noiseSuppression;
+  bool get lowLightFullFrameRate => _prefs.lowLightFullFrameRate;
 
   /// The peaks of your own microphone for the settings meter.
   Stream<MicLevels> get micLevels => _room.micLevels;
@@ -171,6 +180,13 @@ class AudioSettings extends ChangeNotifier {
     await commit(); // a choice, not a drag
   }
 
+  Future<void> setLowLightFullFrameRate(bool on) async {
+    _prefs = _prefs.copyWith(lowLightFullFrameRate: on);
+    notifyListeners();
+    await _push(() => _room.setLowLightFullFrameRate(on));
+    await commit();
+  }
+
   /// Saves what the sliders now show; called when a drag ends.
   Future<void> commit() async {
     await _flush();
@@ -204,6 +220,7 @@ class AudioSettings extends ChangeNotifier {
   /// adapter keeps them across calls too; this makes a fresh room agree with the saved state.
   Future<void> applyForJoin() async {
     await _push(() => _room.setNoiseSuppression(noiseSuppression));
+    await _push(() => _room.setLowLightFullFrameRate(lowLightFullFrameRate));
     await _push(() => _room.setInputGain(inputGain));
     await _push(() => _room.setMasterVolume(master));
     for (final e in _prefs.volumes.entries) {

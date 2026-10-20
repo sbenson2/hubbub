@@ -93,3 +93,16 @@ class HubbubAudio {
       .where((l) => l != null)
       .cast<HubbubLevels>();
 }
+
+/// Camera settings of the native capture. Only Windows has them.
+class HubbubCamera {
+  HubbubCamera._();
+
+  static bool get supported => WebRTC.platformIsWindows;
+
+  /// Whether the next camera capture may switch the webcam's auto-exposure priority off, so
+  /// it does not drop to half the frame rate in dim light. The native side restores the camera's
+  /// own value when the capture stops. Takes effect at the next camera start.
+  static Future<void> setLowLightFullFrameRate(bool on) =>
+      WebRTC.invokeMethod('hubbubSetLowLightFullFrameRate', <String, dynamic>{'on': on});
+}

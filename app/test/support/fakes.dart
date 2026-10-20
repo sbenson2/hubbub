@@ -244,6 +244,10 @@ class FakeRoom implements RoomAdapter {
     micCalls.add('gain:$v');
   }
 
+  bool lowLightFullFrameRate = false;
+  @override
+  Future<void> setLowLightFullFrameRate(bool on) async => lowLightFullFrameRate = on;
+
   @override
   Future<void> setNoiseSuppression(NoiseSuppression ns) async {
     noiseSuppression = ns;

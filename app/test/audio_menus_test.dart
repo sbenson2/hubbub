@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -461,6 +462,33 @@ void main() {
       expect(on(NoiseSuppression.standard), findsOneWidget);
       expect(on(NoiseSuppression.rnnoise), findsNothing);
       expect((await audioStore.load()).noiseSuppression, NoiseSuppression.standard);
+    });
+
+    testWidgets('windows_has_a_low_light_frame_rate_switch_on_by_default_that_is_saved',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      await pumpShell(tester);
+      expect(room.lowLightFullFrameRate, isTrue, reason: 'handed to the plugin at start');
+      await openVoice(tester);
+      final sw = find.byKey(const Key('low-light-full-frame-rate'));
+      expect(sw, findsOneWidget);
+      expect(find.text('Keep full frame rate in low light'), findsOneWidget);
+      expect(find.text('Stops the webcam slowing down in dim light. The picture may be darker.'),
+          findsOneWidget);
+      expect(tester.widget<SwitchListTile>(sw).value, isTrue);
+      await tester.ensureVisible(sw);
+      await tester.tap(sw);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(sw).value, isFalse);
+      expect(room.lowLightFullFrameRate, isFalse);
+      expect((await audioStore.load()).lowLightFullFrameRate, isFalse);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('the_low_light_switch_is_not_shown_off_windows', (tester) async {
+      await pumpShell(tester);
+      await openVoice(tester);
+      expect(find.byKey(const Key('low-light-full-frame-rate')), findsNothing);
     });
 
     testWidgets('saved_choices_are_shown_and_given_to_the_room_at_start', (tester) async {

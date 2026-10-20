@@ -155,19 +155,55 @@ Measured with `app/integration_test/video_fps_test.dart` (4K monitor, C920, loca
   `updateRtpParameters`). Three bugs hid each other. The encodings the wrapper hands back are
   copies, so the setters never reached the parameters: `set_encodings` writes them back. The
   `ssrc` Dart sends back is 0 (the sender owns it and it is read-only), and writing it made
-  libwebrtc reject every change as a modified SSRC, so it is no longer written. Fields are only
-  written when they differ. `getParameters` also reports `rid` now. Effect: `scaleResolutionDownBy`
+  libwebrtc reject every change as a modified SSRC, so it is no longer written. `getParameters`
+  also reports `rid` now.
+  Follow-ups (2026-10-19, B2): a Dart encoding is matched to the sender's encoding by `rid` when it
+  has one and the sender has that rid, otherwise by position (when either side has no rids). An
+  encoding that matches nothing, or matches an already used one, makes the function return null and
+  `RtpSenderSetParameters` answers `result: false`; nothing is dropped silently. The `rid` is never
+  written (fixed once the sender exists). A field is written only when it differs from what the
+  sender reports: `active`, `maxBitrate`, `minBitrate`, `maxFramerate`, `scaleResolutionDownBy`,
+  `priority`, `networkPriority`. `numTemporalLayers` and `scalabilityMode` are not reported by
+  `getParameters`, so Dart's default `numTemporalLayers: 1` and an empty `scalabilityMode` are not
+  requests: only a `numTemporalLayers` above 1, or a non-empty `scalabilityMode`, that differs from
+  the sender is written. Effect: `scaleResolutionDownBy`
   and `active` updates after publish take effect (a 4K share's layers went from 3840x2160 /
   2560x1440 / 1280x720 at 16-27 fps to 1920x1080 / 1280x720 / 640x360 at 30-36 fps).
 - **getUserMedia constraints** (`common/cpp/src/flutter_media_stream.cc`, `getConstrainInt`;
   macOS `FlutterRTCMediaStream.m`, unbuilt): width, height and frameRate accept a number or a map
   of `exact`, `ideal`, `max`, `min`. exact, ideal and max are the target (in that order), min only
-  when none is given. LiveKit sends `frameRate: {max: N}`, which was ignored, so the capture fell
+  when none is given. Behaviour change for width and height: `max` (and `ideal`) now set the
+  requested capture size, where only a plain number, `minWidth`/`minHeight` or the mandatory map
+  did before. A fraction such as `0.5` counts as 1, and a width, height or frameRate below 1 (such
+  as `{exact: 0}`) falls back to the default (1280x720, 30 fps), so fps 0 never reaches the
+  capturer. LiveKit sends `frameRate: {max: N}`, which was ignored, so the capture fell
   back to `DEFAULT_FPS` and the C920 delivered 15 fps at 1280x720; it now delivers 30. macOS also
   stops `selectFpsForFormat` returning 0 when there is no target (`CMTimeMake(1, 0)`).
 - **Tried and dropped:** the field trial `WebRTC-VideoEncoderSettings/encoder_thread_limit:N/`.
   It is a cap on the cores the encoders are told about, not a way to add threads, and made no
   difference (16 cores, OpenH264 already gets 8 threads at 4K).
+
+## Keep full frame rate in low light (Windows, 2026-10-19)
+
+A C920 with DirectShow `KSPROPERTY_CAMERACONTROL_AUTO_EXPOSURE_PRIORITY` = 1 (its default) captures
+at 15 fps in a dark room; with 0 it captures at 30. New files `windows/hubbub_camera.cc` and
+`common/cpp/include/hubbub_camera.h` (`strmiids.lib`, `oleaut32.lib` added to `windows/CMakeLists.txt`).
+
+- Method `hubbubSetLowLightFullFrameRate {on: bool}` (flutter_webrtc.cc), Dart
+  `HubbubCamera.setLowLightFullFrameRate`. On by default. A change applies at the next camera start,
+  not to a camera that already runs.
+- `GetUserVideo` (flutter_media_stream.cc), before `RTCVideoDevice::Create`: find the DirectShow
+  device with the same name (and the same ordinal among same-named devices as libwebrtc lists it),
+  read the priority through `IKsPropertySet`, and when it is 1 set it to 0. The filter is opened
+  only for the get or set and released at once; the capture is never held open or touched. A
+  camera without the control (the get fails) or with a value other than 1 is left alone.
+- The original is restored when the track's capturer stops (`MediaStreamDispose`,
+  `MediaStreamTrackDispose`), when `Create` fails, and in the `FlutterWebRTCBase` destructor. Users
+  of one device are counted.
+- Crash safety: before the change, `HKCU\Software\Hubbub\CameraExposureRestore\<device>#<n>` =
+  `<original>;<pid>` is written. The first `hubbubSetLowLightFullFrameRate` call (or camera start)
+  of the next run restores records whose process is gone (and only if the value is still 0), then
+  deletes them.
 
 ## Re-applying on an upgrade (new flutter_webrtc version)
 

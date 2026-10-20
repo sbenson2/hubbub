@@ -1,6 +1,9 @@
 #include "flutter_media_stream.h"
 
 #include "flutter_utf8_sanitize.h"
+#ifdef _WIN32
+#include "hubbub_camera.h"
+#endif
 
 #define DEFAULT_WIDTH 1280
 #define DEFAULT_HEIGHT 720
@@ -304,7 +307,9 @@ static EncodableValue constrainNumber(const EncodableValue& v) {
     return v;
   }
   if (TypeIs<double>(v)) {
-    return EncodableValue(static_cast<int>(GetValue<double>(v)));
+    // Hubbub: a fraction such as 0.5 is at least 1, never truncated to 0.
+    double d = GetValue<double>(v);
+    return EncodableValue(d > 0 && d < 1 ? 1 : static_cast<int>(d));
   }
   return EncodableValue();
 }
@@ -379,15 +384,37 @@ void FlutterMediaStream::GetUserVideo(const EncodableMap& constraints,
   char strGuidUTF8[256];
   int nb_video_devices = base_->video_device_->NumberOfDevices();
 
+  // Hubbub: 0 (or less) is the same as missing; fps 0 reached the capturer before.
   int32_t width = toInt(widthValue, DEFAULT_WIDTH);
   int32_t height = toInt(heightValue, DEFAULT_HEIGHT);
   int32_t fps = toInt(fpsValue, DEFAULT_FPS);
+  if (width < 1) width = DEFAULT_WIDTH;
+  if (height < 1) height = DEFAULT_HEIGHT;
+  if (fps < 1) fps = DEFAULT_FPS;
+
+  // Hubbub (Windows): "Keep full frame rate in low light". Before the camera is
+  // opened, its auto-exposure priority goes from 1 to 0; the original value comes
+  // back when the track's capture stops (see hubbub_camera.cc).
+  std::string exposure_key;
+  auto begin_exposure = [&](int index, const char* name) {
+#ifdef _WIN32
+    int ordinal = 0;
+    for (int j = 0; j < index; j++) {
+      char other[256];
+      char otherGuid[256];
+      base_->video_device_->GetDeviceName(j, other, 256, otherGuid, 256);
+      if (strcmp(other, name) == 0) ordinal++;
+    }
+    exposure_key = hubbub::CameraExposureBegin(name, ordinal);
+#endif
+  };
 
   for (int i = 0; i < nb_video_devices; i++) {
     base_->video_device_->GetDeviceName(i, strNameUTF8, 256, strGuidUTF8, 256);
     if (sourceId != "" &&
         sourceId ==
             SanitizeDeviceIdFromVideoBuffers(strNameUTF8, strGuidUTF8)) {
+      begin_exposure(i, strNameUTF8);
       video_capturer =
           base_->video_device_->Create(strNameUTF8, i, width, height, fps);
       break;
@@ -400,12 +427,17 @@ void FlutterMediaStream::GetUserVideo(const EncodableMap& constraints,
   if (!video_capturer.get()) {
     base_->video_device_->GetDeviceName(0, strNameUTF8, 128, strGuidUTF8, 128);
     sourceId = SanitizeDeviceIdFromVideoBuffers(strNameUTF8, strGuidUTF8);
+    begin_exposure(0, strNameUTF8);
     video_capturer =
         base_->video_device_->Create(strNameUTF8, 0, width, height, fps);
   }
 
-  if (!video_capturer.get())
+  if (!video_capturer.get()) {
+#ifdef _WIN32
+    hubbub::CameraExposureEnd(exposure_key);
+#endif
     return;
+  }
 
   video_capturer->StartCapture();
 
@@ -441,6 +473,9 @@ void FlutterMediaStream::GetUserVideo(const EncodableMap& constraints,
 
   base_->local_tracks_[track->id().std_string()] = track;
   base_->video_capturers_[track->id().std_string()] = video_capturer;
+#ifdef _WIN32
+  hubbub::CameraExposureBind(track->id().std_string(), exposure_key);
+#endif
 }
 
 void FlutterMediaStream::GetSources(std::unique_ptr<MethodResultProxy> result) {
@@ -616,6 +651,9 @@ void FlutterMediaStream::MediaStreamDispose(
         video_capture->StopCapture();
       }
       base_->video_capturers_.erase(track->id().std_string());
+#ifdef _WIN32
+      hubbub::CameraExposureEndTrack(track->id().std_string());
+#endif
     }
   }
 
@@ -671,6 +709,9 @@ void FlutterMediaStream::MediaStreamTrackDispose(
             video_capture->StopCapture();
           }
           base_->video_capturers_.erase(track_id);
+#ifdef _WIN32
+          hubbub::CameraExposureEndTrack(track_id);
+#endif
         }
       }
     }

@@ -318,6 +318,17 @@ class _VoiceVideo extends StatelessWidget {
               _NoiseChoice(n, audio.noiseSuppression == n, () => audio.setNoiseSuppression(n)),
             const SizedBox(height: 24),
             _DevicePicker('CAMERA', const Key('device-camera'), devices, DeviceKind.videoInput),
+            if (defaultTargetPlatform == TargetPlatform.windows)
+              SwitchListTile(
+                key: const Key('low-light-full-frame-rate'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: HubColors.accent,
+                title: const Text('Keep full frame rate in low light', style: HubText.message),
+                subtitle: const Text('Stops the webcam slowing down in dim light. The picture may be darker.',
+                    style: TextStyle(fontFamily: hubFont, fontSize: 14, height: 1.3, color: HubColors.muted)),
+                value: audio.lowLightFullFrameRate,
+                onChanged: audio.setLowLightFullFrameRate,
+              ),
           ],
         ),
       );

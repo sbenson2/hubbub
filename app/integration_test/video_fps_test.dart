@@ -348,17 +348,31 @@ void main() {
       summary.add('camera: skipped, no videoinput device');
     } else {
       _log('camera ${cams.first.label}');
+      // HUBBUB_FPS_LOWLIGHT=0/1 sets "Keep full frame rate in low light" (default: on).
+      // HUBBUB_CAMDIAG=<camdiag.exe> logs the camera's auto-exposure priority while it runs and
+      // after it stopped (it must read 0 then 1 with the setting on).
+      final lowLight = Platform.environment['HUBBUB_FPS_LOWLIGHT'];
+      if (lowLight != null) await rtc.HubbubCamera.setLowLightFullFrameRate(lowLight == '1');
+      final camdiag = Platform.environment['HUBBUB_CAMDIAG'];
+      Future<String> priority() async {
+        if (camdiag == null) return 'n/a';
+        final r = await Process.run(camdiag, ['info']);
+        return (r.stdout as String).split('\n').where((l) => l.contains('priority')).join().trim();
+      }
       final cam = await LocalVideoTrack.createCameraTrack(cameraCaptureOptionsFor(null));
       rig.tracks.add(cam);
       await rig.sender!.localParticipant!.publishVideoTrack(cam, publishOptions: cameraPublishOptions);
       final camPub = await rig.waitRemote(TrackSource.camera);
       expect(camPub, isNotNull, reason: 'viewer never subscribed to the camera');
+      summary.add('camera setting low-light=${lowLight ?? 'default(on)'}; while running: ${await priority()}');
       await camPub!.setVideoQuality(VideoQuality.HIGH);
       summary.add(await rig.measure('camera @HIGH', cam, camPub.track!));
       await camPub.setVideoQuality(VideoQuality.LOW);
       summary.add(await rig.measure('camera @LOW', cam, camPub.track!));
       await rig.sender!.localParticipant!.unpublishAllTracks();
       await cam.stop();
+      await Future<void>.delayed(const Duration(seconds: 1));
+      summary.add('after the camera stopped: ${await priority()}');
     }
 
     _log('==== SUMMARY ====\n${summary.join('\n')}\n=================');
