@@ -33,6 +33,22 @@ package is missing, that client's update may fail (we have not tested this), and
 later; a copy that cannot get deltas needs the full package of the newest version, so
 at least always upload the newest `-full.nupkg`.
 
+## Prerelease for testers (Windows)
+
+For a beta that friends install by hand, without touching the update feed:
+
+1. Bump `version:` in `app/pubspec.yaml` to `x.y.z-beta.N+B` (for example `0.1.2-beta.1+3`).
+   `tools/package-windows.ps1` accepts a SemVer prerelease; Velopack orders `0.1.2-beta.1` below `0.1.2`.
+2. `cd app` then `flutter build windows --release`. Its CMake step checks the libwebrtc zip against
+   the sha256 in `third_party/flutter_webrtc/third_party/libwebrtc_version.ini` (our 48 kHz build; see
+   `third_party/libwebrtc-hubbub/README.md` for its zip prerelease tag and how to publish a new one).
+3. `powershell -File tools\package-windows.ps1 -OutDir dist\windows-beta`. A separate folder keeps
+   `dist\windows`, the real feed history, clean.
+4. `gh release create vX.Y.Z-beta.N --prerelease --latest=false` with `dist\windows-beta\HubbubSetup.exe`
+   and the full nupkg (`Hubbub-X.Y.Z-beta.N-full.nupkg`). Do not upload `releases.win.json`.
+5. Testers download `HubbubSetup.exe` from that page. The feed stays on the latest normal release, so
+   beta installs only move when the next normal release ships (a higher version than the beta).
+
 ## Linux (manual download, no self-update yet)
 
 In WSL: `cd ~/dev/hubbub/app && flutter build linux --release`, then `tools/package-linux.sh`.

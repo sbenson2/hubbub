@@ -15,13 +15,14 @@ $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Source) { $Source = Join-Path $repo 'app\build\windows\x64\runner\Release' }
 if (-not $OutDir) { $OutDir = Join-Path $repo 'dist\windows' }
 
-# The version comes from app/pubspec.yaml ("0.1.0+1" -> 0.1.0); -Version overrides it.
+# The version comes from app/pubspec.yaml ("0.1.0+1" -> 0.1.0, "0.1.2-beta.1+3" -> 0.1.2-beta.1);
+# -Version overrides it. A SemVer prerelease suffix is accepted.
 if (-not $Version) {
-  $line = Select-String -Path (Join-Path $repo 'app\pubspec.yaml') -Pattern '^version:\s*(\d+\.\d+\.\d+)' | Select-Object -First 1
+  $line = Select-String -Path (Join-Path $repo 'app\pubspec.yaml') -Pattern '^version:\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)' | Select-Object -First 1
   if (-not $line) { throw 'no semver version: line in app\pubspec.yaml' }
   $Version = $line.Matches[0].Groups[1].Value
 }
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "version '$Version' is not major.minor.patch" }
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') { throw "version '$Version' is not major.minor.patch or major.minor.patch-prerelease" }
 
 foreach ($f in 'hubbub.exe', 'hubbub_app.dll', 'flutter_windows.dll', 'livekit-server.exe') {
   if (-not (Test-Path (Join-Path $Source $f))) { throw "$f missing from $Source; run: flutter build windows --release (and tools/fetch-livekit.sh windows amd64)" }
