@@ -129,6 +129,9 @@ void FlutterWebRTC::HandleMethodCall(
     } else {
       result->Error("Bad Arguments", "Bad arguments received");
     }
+  } else if (method_call.method_name().compare("hubbubReleasePortalScreen") ==
+             0) {
+    ReleasePortalScreen(std::move(result));
   } else if (method_call.method_name().compare("getSources") == 0) {
     GetSources(std::move(result));
   } else if (method_call.method_name().compare("selectAudioInput") == 0) {

@@ -24,6 +24,31 @@ static bool IsWaylandPortalSession() {
 FlutterScreenCapture::FlutterScreenCapture(FlutterWebRTCBase* base)
     : base_(base) {}
 
+bool FlutterScreenCapture::DropPortalScreen() {
+#ifdef __linux__
+  // Hubbub: on a Wayland portal session the cached Screen media list owns a portal session
+  // (GNOME's share prompt). Erasing the list closes that session, whether it is live,
+  // cancelled or still waiting for the user. Only Screen entries leave sources_.
+  if (!IsWaylandPortalSession()) return false;
+  for (auto it = sources_.begin(); it != sources_.end();) {
+    if ((*it)->type() == kScreen) {
+      it = sources_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return medialist_.erase(DesktopType::kScreen) > 0;
+#else
+  return false;
+#endif
+}
+
+void FlutterScreenCapture::ReleasePortalScreen(
+    std::unique_ptr<MethodResultProxy> result) {
+  DropPortalScreen();
+  result->Success(EncodableValue(true));
+}
+
 bool FlutterScreenCapture::BuildDesktopSourcesList(const EncodableList& types,
                                                    bool force_reload) {
   size_t size = types.size();
@@ -67,6 +92,17 @@ bool FlutterScreenCapture::BuildDesktopSourcesList(const EncodableList& types,
 void FlutterScreenCapture::GetDesktopSources(
     const EncodableList& types,
     std::unique_ptr<MethodResultProxy> result) {
+#ifdef __linux__
+  // Hubbub: every Screen listing on a portal session starts from a fresh portal session. A
+  // cached list whose session was cancelled or failed never recovers and would never prompt
+  // again. Only here: UpdateDesktopSources and thumbnails must keep the list they have.
+  for (const auto& t : types) {
+    if (TypeIs<std::string>(t) && GetValue<std::string>(t) == "screen") {
+      DropPortalScreen();
+      break;
+    }
+  }
+#endif
   if (!BuildDesktopSourcesList(types, true)) {
     result->Error("Bad Arguments", "Failed to get desktop sources");
     return;
@@ -329,7 +365,9 @@ void FlutterScreenCapture::GetDisplayMedia(
   if (!source.get() && !sources_.empty() && source_id == "0") {
     source = sources_.front();
   }
-  if (!source.get()) {
+  // Hubbub: not on a portal session. There an unknown id is a stale placeholder, and
+  // rebuilding the list would start a new capturer and open a surprise share prompt.
+  if (!source.get() && !IsWaylandPortalSession()) {
     EncodableList types;
     types.push_back(EncodableValue(std::string("screen")));
     BuildDesktopSourcesList(types, true);
@@ -345,6 +383,7 @@ void FlutterScreenCapture::GetDisplayMedia(
 #endif
 
   if (!source.get()) {
+    DropPortalScreen();
     result->Error("Bad Arguments", "source not found!");
     return;
   }
@@ -353,6 +392,7 @@ void FlutterScreenCapture::GetDisplayMedia(
       base_->desktop_device_->CreateDesktopCapturer(source, show_cursor);
 
   if (!desktop_capturer.get()) {
+    DropPortalScreen();
     result->Error("Bad Arguments", "CreateDesktopCapturer failed!");
     return;
   }
@@ -392,14 +432,11 @@ void FlutterScreenCapture::GetDisplayMedia(
   // Hubbub: on a Wayland portal session the cached Screen media list keeps its own portal
   // session open (GNOME's "sharing" indicator stays on, and the next share would reuse it
   // without asking). The user already chose in that session, and the capturer above started
-  // with its restore token. Drop the list so the portal session closes; the next share builds
-  // a fresh list and so asks again. Nothing else points at the list: a MediaSourceImpl holds a
-  // raw pointer to it, but only UpdateThumbnail() uses that, and it is reached only through
-  // sources_, which is cleared here. The capturer keeps just a refptr to its source.
-  if (IsWaylandPortalSession()) {
-    sources_.clear();
-    medialist_.erase(DesktopType::kScreen);
-  }
+  // with its restore token. Drop the list so the portal session closes. Nothing else points
+  // at the list: a MediaSourceImpl holds a raw pointer to it, but only UpdateThumbnail() uses
+  // that, and it is reached only through sources_, which DropPortalScreen() clears of Screen
+  // entries. The capturer keeps just a refptr to its source.
+  DropPortalScreen();
 #endif
 
   result->Success(EncodableValue(params));

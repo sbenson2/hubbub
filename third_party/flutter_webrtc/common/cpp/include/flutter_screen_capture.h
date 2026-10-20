@@ -28,12 +28,18 @@ class FlutterScreenCapture : public MediaListObserver,
   void UpdateDesktopSources(const EncodableList& types,
                             std::unique_ptr<MethodResultProxy> result);
 
+  // Hubbub: closes the Wayland portal session of the cached Screen list (Linux only; does
+  // nothing elsewhere).
+  void ReleasePortalScreen(std::unique_ptr<MethodResultProxy> result);
+
   void GetDesktopSourceThumbnail(std::string source_id,
                                  int width,
                                  int height,
                                  std::unique_ptr<MethodResultProxy> result);
 
  protected:
+  bool DropPortalScreen();
+
   void OnMediaSourceAdded(scoped_refptr<MediaSource> source) override;
 
   void OnMediaSourceRemoved(scoped_refptr<MediaSource> source) override;

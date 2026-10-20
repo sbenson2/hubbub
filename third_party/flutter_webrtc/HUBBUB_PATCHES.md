@@ -130,6 +130,23 @@ step). `RTCDesktopCapturerImpl` holds a `scoped_refptr<MediaSource>` for `source
 `UpdateThumbnail()`, so dropping the list while the capture runs is safe. The list's destructor stops its
 own thread and capturer, which closes only the list's portal session.
 
+### Fix round 1: every attempt starts fresh, nothing is left behind
+
+Review findings C1/C2/I1. Still Linux plus `IsWaylandPortalSession()` only; Windows, macOS and X11 take the
+same paths as before (the new helper does nothing there).
+
+- `GetDesktopSources` (the `getDesktopSources` call) drops the cached Screen list before building when the
+  request includes `screen`. A list whose portal session was cancelled or failed never recovers (its
+  capturer is permanently failed), so reusing it meant no prompt ever again. Only here: `UpdateDesktopSources`
+  and the thumbnail path keep the list they have.
+- New method-channel call `hubbubReleasePortalScreen` (`ReleasePortalScreen`, dispatched in
+  `flutter_webrtc.cc`) drops the cached Screen list and its Screen entries in `sources_`. Destroying the list
+  closes its portal session, so GNOME's dialog closes. The app calls it on cancel, timeout and error.
+- `GetDisplayMedia`: in a portal session an unknown id fails with "source not found!" and no longer runs the
+  Linux rebuild fallback (which started a new capturer, opened a surprise prompt and left a live session
+  cached). The "source not found" and "CreateDesktopCapturer failed" paths also drop the list.
+- All drops go through `DropPortalScreen()`, so the lifetime reasoning above covers them.
+
 ## Re-applying on an upgrade (new flutter_webrtc version)
 
 1. Copy the new pub.dev package over `third_party/flutter_webrtc` in a pristine commit (keep
