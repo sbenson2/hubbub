@@ -305,7 +305,13 @@ class FakeRoom implements RoomAdapter {
   /// Makes [resumeScreenShare] fail, as a refused publish does.
   Object? resumeError;
   @override
-  Future<void> holdScreenShare() async => calls.add('screen:hold');
+  Future<void> holdScreenShare() async {
+    calls.add('screen:hold');
+    await holdGate?.future;
+  }
+
+  /// When set, a hold waits for this to complete.
+  Completer<void>? holdGate;
   @override
   Future<void> resumeScreenShare() async {
     calls.add('screen:resume');

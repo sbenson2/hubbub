@@ -21,7 +21,8 @@ void main() {
   late List<bool> fullscreen;
 
   Future<void> pumpShell(WidgetTester tester,
-      {DevicePrefs prefs = const DevicePrefs(), bool screenShare = true, bool portalShare = false}) async {
+      {DevicePrefs prefs = const DevicePrefs(), bool screenShare = true,
+      bool portalShare = false}) async {
     shares = FakeShareSources();
     portal = FakePortalSource();
     fullscreen = [];
@@ -251,6 +252,44 @@ void main() {
       await tester.pumpAndSettle();
       expect(room.calls, contains('screen:hold'));
       expect(room.calls, contains('screen:release'), reason: 'a kept capture must not run on with no call');
+    });
+
+    testWidgets('a_call_that_ends_while_the_stream_is_being_kept_does_not_leave_it_running', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      room.calls.clear();
+      room.holdGate = Completer<void>();
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Disconnect').first);
+      await tester.pump();
+      room.holdGate!.complete();
+      await tester.pumpAndSettle();
+      expect(room.calls.where((c) => c == 'screen:release'), hasLength(1),
+          reason: 'the call ended before the hold finished: nobody is left to resume the capture');
+      expect(room.calls, isNot(contains('screen:resume')));
+    });
+
+    testWidgets('a_rejoin_that_gives_way_to_a_newer_host_keeps_the_stream_for_the_next_rejoin', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      room.calls.clear();
+      room.connectFailures = 1;
+
+      events.add(AppNodeEvent.hostChanged(host: 'bbbb', term: BigInt.from(2), isMe: false));
+      await tester.pump(const Duration(seconds: 1));
+      // A third host appears while the first retry waits: the retry gives way to it.
+      events.add(AppNodeEvent.hostChanged(host: 'cccc', term: BigInt.from(3), isMe: false));
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(room.calls, isNot(contains('screen:release')), reason: 'the next rejoin resumes it');
+      expect(room.calls.where((c) => c == 'screen:resume'), hasLength(1));
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
     });
 
     testWidgets('a_picker_share_is_not_held_across_a_host_change', (tester) async {

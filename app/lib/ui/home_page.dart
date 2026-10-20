@@ -146,6 +146,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (c == null) {
       _cameraOn = _sharing = false;
       _shareSource = null;
+      _shareInPortal = false;
       _releaseHeldShare();
       _watching.clear();
       _requested.clear();
@@ -402,6 +403,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _rejoin(_Call call) async {
     _rejoining = true;
+    // Set when this attempt gives up for a newer host: the rejoin that follows resumes the share.
+    var followUp = false;
     // The new room has new track ids: watches are asked for again as their streams show up,
     // and dropped if they do not within a few seconds.
     _requested.clear();
@@ -439,7 +442,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         // Another host took over meanwhile, so these credentials are stale: the finally below
         // follows the new host instead. (With no host at all, retry as before.)
         final now = call.node.host;
-        if (now != null && (now != c.host || call.node.term != c.term.toInt())) return;
+        if (now != null && (now != c.host || call.node.term != c.term.toInt())) {
+          followUp = true;
+          return;
+        }
         await widget.room.connect(c.url, c.token, c.e2EeKey, ice: c.ice);
       }
       await widget.room.setMicrophoneEnabled(!_muted);
@@ -458,6 +464,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted && _call == call) setState(() => _call = null);
     } finally {
       _rejoining = false;
+      // Any other way out after the hold (the call ended or became another one) has nobody
+      // left to resume the share: stop it, so the capture and the system indicator go off.
+      if (!followUp) _dropHeldShare();
       // A host change that landed meanwhile was skipped; check again.
       if (mounted) _followHost();
     }
@@ -508,6 +517,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     unawaited(widget.room.releaseHeldScreenShare().catchError((Object e) {
       debugPrint('hubbub: releasing the kept screen share failed: $e');
     }));
+  }
+
+  /// Ends a share that is still held when a rejoin is over: releases it and clears the sharing
+  /// state, as a normal stop does.
+  void _dropHeldShare() {
+    if (!_shareHeld) return;
+    _releaseHeldShare();
+    _shareWatch?.cancel();
+    _shareSource = null;
+    _shareInPortal = false;
+    if (mounted) setState(() => _sharing = false);
   }
 
   Future<void> _toggleCamera() async {
