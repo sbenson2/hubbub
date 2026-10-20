@@ -6,9 +6,14 @@
 //           C:\src\flutter\bin\flutter.bat test integration_test\audio_quality_test.dart -d windows"
 //
 // Environment (all optional):
-//   HUBBUB_AUDIO_SUITE   clean (default: SAPI speech, 3 NS modes x 2 gains), noisy, or all.
+//   HUBBUB_AUDIO_SUITE   clean (default: SAPI speech, 3 NS modes x 2 gains, and the fullband check),
+//                        noisy, fullband (only the fullband check), or all.
+//   HUBBUB_AUDIO_EXPECT_RATE  e.g. 48000: fail (at the end, after the reports) if the capture hook
+//                        rate after the call is up differs. Without it the layout is only logged.
 //   HUBBUB_AUDIO_ONLY    comma separated config ids to run, e.g. rnnoise-g100 or
 //                        noisy-rnnoise-new-dtxoff.
+//   HUBBUB_AUDIO_NATIVE_LOG  verbose, info, warning or error: write libwebrtc's own log to native.log
+//                        in the run's folder (the test's E2EE key is a fixed test key).
 // The noisy suite injects the speech mixed with seeded noise at 10 dB SNR (pink noise, fan hum,
 // keyboard clicks: tools/make_noisy_speech.py) but compares the received audio with the CLEAN
 // speech. It runs RNNoise classic (upstream gain smoothing) and new (gain floor and hold) with
@@ -26,18 +31,30 @@
 //  * The receiving room's playout is muted at the render hook, so nothing reaches the speakers;
 //    the decoded audio is still recorded from the remote track (and from the playout mix).
 //  * Two rooms (sender, receiver) live in this process, like video_fps_test.dart.
+//  * The microphone starts the stock way (LocalAudioTrack.create with captureOptionsFor, then publish).
+//    After the call is up each run logs the capture-hook layout (rate, channels, frames); the prebuilt
+//    libwebrtc opens the Windows microphone at 16 kHz.
+//  * The "fullband" config injects the speech with chirps swept 8 -> 16 kHz mixed in and reports the
+//    energy above 8 kHz and the 95 % roll-off of the received audio. The inject point is the capture
+//    hook, after the audio device module: this proves the hook and encoder path is fullband (up to about
+//    16 kHz, the APM's internal 32 kHz cap), not the microphone itself. Expect the highest band to rise
+//    from about 6.35 kHz (16 kHz capture) toward 12-16 kHz with a 48 kHz capture (a rebuilt libwebrtc).
 // The test never fails on audio quality, only on a harness error. The summary table is also
 // written to .superpowers/sdd/2026-10-19-audio/baseline.md.
-// ignore_for_file: depend_on_referenced_packages
+// ignore_for_file: depend_on_referenced_packages, implementation_imports
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:flutter_webrtc/src/native_logs_listener.dart';
 import 'package:hubbub/capture_options.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:livekit_client/livekit_client.dart';
+import 'package:logger/logger.dart';
 
 const _key = 'devkey';
 const _secret = 'hubbub-audio-test-secret-0123456789abcdef';
@@ -45,6 +62,23 @@ const _secret = 'hubbub-audio-test-secret-0123456789abcdef';
 void _log(String s) {
   // ignore: avoid_print
   print('audio-it: $s');
+}
+
+class _AllLogs extends LogFilter {
+  @override
+  bool shouldLog(LogEvent event) => true;
+}
+
+class _PlainLog extends LogPrinter {
+  @override
+  List<String> log(LogEvent event) => ['${DateTime.now().toIso8601String()} ${event.message}'];
+}
+
+class _FileLog extends LogOutput {
+  _FileLog(this.sink);
+  final IOSink sink;
+  @override
+  void output(OutputEvent event) => event.lines.forEach(sink.writeln);
 }
 
 Future<int> _freePort({required bool udp}) async {
@@ -209,25 +243,103 @@ class _Rig {
 }
 
 class _Config {
-  const _Config(this.ns, this.gain, {this.noisy = false, this.classic = false, this.dtx = true});
+  const _Config(this.ns, this.gain, {this.noisy = false, this.classic = false, this.dtx = true, this.fullband = false});
   final NoiseSuppression ns;
   final double gain;
   final bool noisy; // inject speech + noise, compare with the clean speech
   final bool classic; // RNNoise: upstream gain smoothing instead of floor and hold
   final bool dtx; // Opus DTX; the noisy suite also publishes at 64 kbps like the app
-  String get id => noisy
+  final bool fullband; // inject speech + 8-16 kHz chirps and report the energy above 8 kHz
+  String get id => fullband ? 'fullband' : noisy
       ? 'noisy-${ns.name}${ns == NoiseSuppression.rnnoise ? (classic ? '-classic' : '-new') : ''}-dtx${dtx ? 'on' : 'off'}'
       : '${ns.name}-g${(gain * 100).round()}';
-  String get title => noisy
+  String get title => fullband ? 'Fullband chirps, ${ns.label}, gain ${(gain * 100).round()} %' : noisy
       ? '${ns.label}${ns == NoiseSuppression.rnnoise ? (classic ? ' classic' : ' new') : ''}, DTX ${dtx ? 'on' : 'off'}, noisy'
       : '${ns.label}, gain ${(gain * 100).round()} %';
   AudioPublishOptions? get publish =>
-      noisy ? AudioPublishOptions(dtx: dtx, encoding: const AudioEncoding(maxBitrate: 64000)) : null;
+      noisy || fullband ? AudioPublishOptions(dtx: dtx, encoding: const AudioEncoding(maxBitrate: 64000)) : null;
   rtc.HubbubNoiseSuppression get hook => switch (ns) {
         NoiseSuppression.none => rtc.HubbubNoiseSuppression.off,
         NoiseSuppression.standard => rtc.HubbubNoiseSuppression.webrtc,
         NoiseSuppression.rnnoise => rtc.HubbubNoiseSuppression.rnnoise,
       };
+}
+
+/// The microphone of the sender room for the harness: a stock capture track, like the app's.
+class _RigMic {
+  _RigMic(this.local);
+  final LocalParticipant local;
+  LocalAudioTrack? track;
+
+  Future<void> start(NoiseSuppression ns, {AudioPublishOptions? publishOptions}) async {
+    final t = track = await LocalAudioTrack.create(captureOptionsFor(null, noiseSuppression: ns));
+    await local.publishAudioTrack(t, publishOptions: publishOptions);
+  }
+
+  Future<void> stop() async {
+    await local.unpublishAllTracks();
+    await track?.stop();
+    track = null;
+  }
+}
+
+/// [speech] (a 48 kHz mono 16-bit WAV) with a deterministic chirp swept 8 -> 16 kHz mixed in for 0.4 s
+/// out of every 1.2 s, written to [outPath]. Energy there is well above anything speech has.
+void _makeFullbandReference(File speech, String outPath) {
+  final b = speech.readAsBytesSync();
+  final d = ByteData.sublistView(b);
+  int tag(int o) => d.getUint32(o, Endian.big);
+  if (b.length < 44 || tag(0) != 0x52494646 || tag(8) != 0x57415645) fail('${speech.path} is not a WAV file');
+  var pos = 12;
+  int? rate, channels, bits, dataAt, dataLen;
+  while (pos + 8 <= b.length) {
+    final id = tag(pos);
+    final len = d.getUint32(pos + 4, Endian.little);
+    if (id == 0x666d7420) {
+      channels = d.getUint16(pos + 10, Endian.little);
+      rate = d.getUint32(pos + 12, Endian.little);
+      bits = d.getUint16(pos + 22, Endian.little);
+    } else if (id == 0x64617461) {
+      dataAt = pos + 8;
+      dataLen = len > b.length - dataAt ? b.length - dataAt : len;
+      break;
+    }
+    pos += 8 + len + (len & 1);
+  }
+  if (rate != 48000 || channels != 1 || bits != 16 || dataAt == null || dataLen == null) {
+    fail('the fullband config needs a 48 kHz mono 16-bit reference, got rate=$rate ch=$channels bits=$bits');
+  }
+  final n = dataLen ~/ 2;
+  final out = Uint8List(44 + n * 2);
+  out.setRange(0, 44, b.sublist(0, 44));
+  final o = ByteData.sublistView(out);
+  // a canonical 44 byte header (the reader above allows extra chunks, the writer does not copy them)
+  o.setUint32(0, 0x52494646, Endian.big);
+  o.setUint32(4, 36 + n * 2, Endian.little);
+  o.setUint32(8, 0x57415645, Endian.big);
+  o.setUint32(12, 0x666d7420, Endian.big);
+  o.setUint32(16, 16, Endian.little);
+  o.setUint16(20, 1, Endian.little);
+  o.setUint16(22, 1, Endian.little);
+  o.setUint32(24, 48000, Endian.little);
+  o.setUint32(28, 96000, Endian.little);
+  o.setUint16(32, 2, Endian.little);
+  o.setUint16(34, 16, Endian.little);
+  o.setUint32(36, 0x64617461, Endian.big);
+  o.setUint32(40, n * 2, Endian.little);
+  const period = 57600, burst = 19200; // 1.2 s and 0.4 s at 48 kHz
+  for (var i = 0; i < n; i++) {
+    var v = d.getInt16(dataAt + i * 2, Endian.little) / 32768.0;
+    final k = i % period;
+    if (k < burst) {
+      final t = k / 48000.0, dur = burst / 48000.0;
+      final phase = 2 * 3.141592653589793 * (8000 * t + (8000 / (2 * dur)) * t * t); // 8 -> 16 kHz
+      final fade = k < 480 ? k / 480 : (burst - k < 480 ? (burst - k) / 480 : 1.0);
+      v += 0.2 * fade * math.sin(phase);
+    }
+    o.setInt16(44 + i * 2, (v.clamp(-1.0, 1.0) * 32767).round(), Endian.little);
+  }
+  File(outPath).writeAsBytesSync(out);
 }
 
 /// One comparison made by tools/audio_compare.py.
@@ -273,6 +385,16 @@ void main() {
     final out = Directory('${root ?? Directory.systemTemp.path}/audio-quality-$stamp')..createSync(recursive: true);
     _log('files in ${out.path}');
 
+    // ---- libwebrtc's own log (opt in): shows the ADM and APM order, e.g. EnableBuiltInAEC, InitRecording
+    final nativeSeverity = Platform.environment['HUBBUB_AUDIO_NATIVE_LOG'];
+    if (nativeSeverity != null) {
+      final sink = File('${out.path}/native.log').openWrite();
+      addTearDown(sink.close);
+      NativeLogsListener.instance.setLogger(
+          Logger(filter: _AllLogs(), printer: _PlainLog(), output: _FileLog(sink)), nativeSeverity);
+      _log('libwebrtc log at $nativeSeverity -> ${out.path}/native.log');
+    }
+
     // ---- reference speech
     final refEnv = Platform.environment['HUBBUB_AUDIO_REF'];
     final ref = File(refEnv ?? '${out.path}/reference.wav');
@@ -316,12 +438,16 @@ void main() {
     await rig.start();
 
     final suite = Platform.environment['HUBBUB_AUDIO_SUITE'] ?? 'clean';
-    expect(['clean', 'noisy', 'all'], contains(suite), reason: 'HUBBUB_AUDIO_SUITE: clean, noisy or all');
+    expect(['clean', 'noisy', 'fullband', 'all'], contains(suite),
+        reason: 'HUBBUB_AUDIO_SUITE: clean, noisy, fullband or all');
+    final expectRate = int.tryParse(Platform.environment['HUBBUB_AUDIO_EXPECT_RATE'] ?? '');
     final configs = <_Config>[
-      if (suite != 'noisy')
+      if (suite == 'clean' || suite == 'all')
         for (final ns in [NoiseSuppression.rnnoise, NoiseSuppression.standard, NoiseSuppression.none])
           for (final g in [1.0, 1.5]) _Config(ns, g),
-      if (suite != 'clean') ...[
+      // no suppressor: RNNoise would treat the chirps as noise
+      if (suite != 'noisy') const _Config(NoiseSuppression.none, 1.0, fullband: true),
+      if (suite == 'noisy' || suite == 'all') ...[
         for (final classic in [true, false])
           for (final dtx in [true, false]) _Config(NoiseSuppression.rnnoise, 1.0, noisy: true, classic: classic, dtx: dtx),
         const _Config(NoiseSuppression.none, 1.0, noisy: true, dtx: false),
@@ -333,6 +459,8 @@ void main() {
     final noisySummary = <String>[];
     final notes = <String>[];
     String? hookLayout;
+    final layoutFailures = <String>[];
+    final fullbandNotes = <String>[];
     String? lastSid;
 
     // The noisy speech: same speech, seeded noise at 10 dB SNR. Made only when a noisy config runs.
@@ -346,12 +474,19 @@ void main() {
       _log('noisy reference ${noisyRef.path}: ${(r.stdout as String).trim()}');
     }
 
+    File? fullRef;
+    if (configs.any((c) => c.fullband && (only == null || only.split(',').contains(c.id)))) {
+      fullRef = File('${out.path}/reference-fullband.wav');
+      _makeFullbandReference(ref, fullRef.path);
+      _log('fullband reference ${fullRef.path}: speech plus 0.4 s chirps (8 to 16 kHz) every 1.2 s');
+    }
+
     // Clock check: how many 10 ms blocks the capture hook gets per second of wall clock with the
     // plain microphone (only counters are read, nothing is recorded). 100 is real time.
     {
       final local = rig.sender!.localParticipant!;
-      final mic = await LocalAudioTrack.create(captureOptionsFor(null, noiseSuppression: NoiseSuppression.none));
-      await local.publishAudioTrack(mic);
+      final mic = _RigMic(local);
+      await mic.start(NoiseSuppression.none);
       await Future<void>.delayed(const Duration(seconds: 2));
       final a = await rtc.HubbubAudio.status();
       final p0 = await rtc.HubbubTaps.playoutStatus();
@@ -365,7 +500,6 @@ void main() {
       notes.add('Clock check (plain microphone, 8 s): capture hook ${capRate.toStringAsFixed(1)} blocks/s, '
           'render hook ${renRate.toStringAsFixed(1)} blocks/s (100 is real time).');
       _log(notes.last);
-      await local.unpublishAllTracks();
       await mic.stop();
     }
 
@@ -381,9 +515,10 @@ void main() {
       await rtc.HubbubAudio.setInputGain(c.gain);
       await rtc.HubbubAudio.setTailMode(classic: c.classic);
       // the microphone is silent from here on; the noisy suite injects the noisy speech
-      await rtc.HubbubTaps.injectLoad(c.noisy ? noisyRef!.path : ref.path);
-      final mic = await LocalAudioTrack.create(captureOptionsFor(null, noiseSuppression: c.ns));
-      await local.publishAudioTrack(mic, publishOptions: c.publish);
+      final inputFile = c.fullband ? fullRef!.path : (c.noisy ? noisyRef!.path : ref.path);
+      await rtc.HubbubTaps.injectLoad(inputFile);
+      final mic = _RigMic(local);
+      await mic.start(c.ns, publishOptions: c.publish);
       final remote = await rig.waitRemoteAudio(notSid: lastSid);
       if (remote == null) {
         await mic.stop();
@@ -392,6 +527,10 @@ void main() {
       final trackId = remote.mediaStreamTrack.id!;
       lastSid = remote.sid;
       await Future<void>.delayed(const Duration(seconds: 1)); // let the capture path settle
+      final up = await rtc.HubbubAudio.status();
+      final layoutText = 'rate=${up?['rate']} channels=${up?['channels']} frames=${up?['frames']}';
+      _log('${c.id}: capture hook layout after the call is up: $layoutText');
+      if (expectRate != null && up?['rate'] != expectRate) layoutFailures.add('${c.id}: $layoutText (expected rate $expectRate)');
 
       final proc = '${dir.path}/send-processed.wav';
       final inp = '${dir.path}/send-hook-input.wav';
@@ -427,13 +566,23 @@ void main() {
           'dropped chunks ${[rProc, rInp, rRcv, rMix].map((r) => r?.droppedChunks).join('/')}');
 
       await rtc.HubbubTaps.injectStop();
-      await local.unpublishAllTracks();
       await mic.stop();
 
-      final overall = await compare('reference -> received', ref.path, rcv, '${c.id}-overall', png: true);
-      final legA = await compare('reference -> sent (hook out)', ref.path, proc, '${c.id}-leg-capture');
+      final refPath = c.fullband ? fullRef!.path : ref.path;
+      final overall = await compare('reference -> received', refPath, rcv, '${c.id}-overall', png: true);
+      final legA = await compare('reference -> sent (hook out)', refPath, proc, '${c.id}-leg-capture');
       final legB = await compare('sent (hook out) -> received', proc, rcv, '${c.id}-leg-network');
-      final legMix = await compare('reference -> playout mix', ref.path, mix, '${c.id}-leg-mix');
+      final legMix = await compare('reference -> playout mix', refPath, mix, '${c.id}-leg-mix');
+      if (c.fullband) {
+        String hf(_Cmp cmp, String side) =>
+            'above 8 kHz ${_f(cmp.at(['spectrum', side, 'power_above_8k_db']))} dB, share ${_f((cmp.at(['spectrum', side, 'share_above_8k']) ?? 0) * 100)} %, '
+            '95% roll-off ${_f(cmp.at(['spectrum', side, 'rolloff95_hz']), 0)} Hz';
+        fullbandNotes.add('Fullband (capture hook layout $layoutText): reference ${hf(overall, 'sent')}; '
+              'sent by the hook ${hf(legA, 'recv')}; received ${hf(overall, 'recv')}; '
+              'highest band of the received audio ${_f(overall.at(['muffled', 'cutoff_hz_recv']), 0)} Hz '
+              '(about 6350 Hz with a 16 kHz capture, expect 12000 to 16000 with a 48 kHz capture, i.e. a rebuilt libwebrtc).');
+        _log(fullbandNotes.last);
+      }
       final tag = c.title;
       for (final leg in [overall, legA, legB, legMix]) {
         (c.noisy ? noisyRows : rows).add(leg.row(tag));
@@ -472,10 +621,12 @@ void main() {
       for (final r in rows) {
         md.writeln(r);
       }
-      for (final n in notes) {
+      for (final n in [...notes, ...fullbandNotes]) {
         md.writeln('\n$n');
       }
-      File('${repoSdd.path}/baseline.md').writeAsStringSync(md.toString());
+      // a fullband-only run must not overwrite the full baseline
+      final plain = configs.any((c) => !c.fullband && !c.noisy && (only == null || only.split(',').contains(c.id)));
+      File('${repoSdd.path}/${plain ? 'baseline.md' : 'fullband.md'}').writeAsStringSync(md.toString());
       summaryParts.add(md.toString());
     }
     if (noisyRows.isNotEmpty) {
@@ -512,6 +663,8 @@ void main() {
       summaryParts.add(md.toString());
     }
     await rtc.HubbubAudio.setTailMode(classic: false); // leave the default behaviour behind
-    _log('==== SUMMARY ====\n${summaryParts.join('\n')}\n=================');
+    _log('==== SUMMARY ====\n${summaryParts.join('\n')}\n${fullbandNotes.join('\n')}\n=================');
+    expect(layoutFailures, isEmpty,
+        reason: 'the capture hook rate after the call is up must be HUBBUB_AUDIO_EXPECT_RATE');
   }, timeout: const Timeout(Duration(minutes: 25)));
 }

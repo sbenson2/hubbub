@@ -253,4 +253,48 @@ void main() {
       expect(safeFileName('..'), 'unknown');
     });
   });
+  group('recorder never touches the render hook', () {
+    // The first hubbubPlayout call registers the render hook with the audio engine, and it is
+    // never unregistered: from then on all playout runs through the APM render buffer at 16 kHz.
+    // A user who records a call would hear everybody degraded, so the recorder must only use the
+    // send taps and the per-track sinks (recv-<name>.wav, 48 kHz).
+    const forbidden = ['hubbubPlayout', 'hubbubInject'];
+
+    test('a_whole_session_with_the_real_backend_sends_no_playout_call', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      const channel = MethodChannel('FlutterWebRTC.Method');
+      final methods = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        methods.add(call.method);
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final base = Directory.systemTemp.createTempSync('diagrender');
+      addTearDown(() => base.deleteSync(recursive: true));
+      final s = await AudioDiagnosticsSession.start(baseDir: base.path, settings: {}, backend: const PluginTapBackend());
+      if (s == null) return; // not a desktop plugin platform: nothing can be recorded
+      await s.addRemote('Bob', 't1');
+      await s.removeTrack('t1');
+      final report = await s.stop();
+      expect(methods, isNotEmpty);
+      expect(methods.where(forbidden.contains), isEmpty);
+      expect(report.files.where((f) => f.startsWith('recv-') && f != 'recv-Bob.wav'), isEmpty,
+          reason: 'the only received audio is one file per participant; no playout mix file');
+      expect(report.files, isNot(contains('recv-mix.wav')));
+      expect(report.files, isNot(contains('playout-mix.wav')));
+    });
+
+    test('no_app_code_outside_tests_calls_the_playout_or_inject_methods', () {
+      final lib = Directory('lib');
+      final hits = <String>[];
+      for (final f in lib.listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
+        final text = f.readAsStringSync();
+        for (final w in ['playoutTapStart', 'playoutTapStop', 'setPlayoutMuted', 'playoutStatus', 'hubbubPlayout', 'injectLoad', 'injectPlay']) {
+          if (text.contains(w)) hits.add('${f.path}: $w');
+        }
+      }
+      expect(hits, isEmpty);
+    });
+  });
 }

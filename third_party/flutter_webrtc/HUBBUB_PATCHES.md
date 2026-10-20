@@ -245,7 +245,11 @@ native test `hubbub_test/hubbub_tap_test.cc`.
   track (remote: decoded audio of one participant, 48 kHz, after NetEq and the per-track volume). The final playout
   mix is available through `hubbubPlayout {action: tapStart|tapStop}` at the render pre-processing hook (16 kHz,
   2 channels on this PC). That hook is registered with the engine only by the first `hubbubPlayout` call and never
-  unregistered (same crash as above); until then the render path is untouched.
+  unregistered (same crash as above); until then the render path is untouched. **Registering it band-limits all
+  playout to the APM rate until the app restarts** (`RenderFullBandProcessingActive`), so `hubbubPlayout` and
+  `hubbubInject` are for the integration test only: the app's in-app recorder never calls them (guarded by tests in
+  `app/test/audio_diagnostics_test.dart`) and records received audio only through the per-track sinks (`recv-<name>.wav`,
+  48 kHz).
 - **Stop all** (`hubbubTapStopAll`): stops both send taps, every track tap and the playout tap (never registers the
   render hook); safe when idle. The app calls it after the per-tap stops, so a failed stop cannot leave a tap writing.
 - **Tap lifetime**: `RemoveSink` is only declared in the closed wrapper (`rtc_audio_track.h`), so whether it waits for an
