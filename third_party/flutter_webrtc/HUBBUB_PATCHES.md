@@ -147,6 +147,28 @@ same paths as before (the new helper does nothing there).
   cached). The "source not found" and "CreateDesktopCapturer failed" paths also drop the list.
 - All drops go through `DropPortalScreen()`, so the lifetime reasoning above covers them.
 
+## Video frame rate fixes (2026-10-19)
+
+Measured with `app/integration_test/video_fps_test.dart` (4K monitor, C920, local LiveKit, E2EE).
+
+- **`RtpSenderSetParameters` now changes anything** (`common/cpp/src/flutter_peerconnection.cc`,
+  `updateRtpParameters`). Three bugs hid each other. The encodings the wrapper hands back are
+  copies, so the setters never reached the parameters: `set_encodings` writes them back. The
+  `ssrc` Dart sends back is 0 (the sender owns it and it is read-only), and writing it made
+  libwebrtc reject every change as a modified SSRC, so it is no longer written. Fields are only
+  written when they differ. `getParameters` also reports `rid` now. Effect: `scaleResolutionDownBy`
+  and `active` updates after publish take effect (a 4K share's layers went from 3840x2160 /
+  2560x1440 / 1280x720 at 16-27 fps to 1920x1080 / 1280x720 / 640x360 at 30-36 fps).
+- **getUserMedia constraints** (`common/cpp/src/flutter_media_stream.cc`, `getConstrainInt`;
+  macOS `FlutterRTCMediaStream.m`, unbuilt): width, height and frameRate accept a number or a map
+  of `exact`, `ideal`, `max`, `min`. exact, ideal and max are the target (in that order), min only
+  when none is given. LiveKit sends `frameRate: {max: N}`, which was ignored, so the capture fell
+  back to `DEFAULT_FPS` and the C920 delivered 15 fps at 1280x720; it now delivers 30. macOS also
+  stops `selectFpsForFormat` returning 0 when there is no target (`CMTimeMake(1, 0)`).
+- **Tried and dropped:** the field trial `WebRTC-VideoEncoderSettings/encoder_thread_limit:N/`.
+  It is a cap on the cores the encoders are told about, not a way to add threads, and made no
+  difference (16 cores, OpenH264 already gets 8 threads at 4K).
+
 ## Re-applying on an upgrade (new flutter_webrtc version)
 
 1. Copy the new pub.dev package over `third_party/flutter_webrtc` in a pristine commit (keep

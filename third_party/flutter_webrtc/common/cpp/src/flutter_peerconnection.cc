@@ -179,6 +179,8 @@ EncodableMap rtpParametersToMap(
        encodings.std_vector()) {
     EncodableMap map;
     map[EncodableValue("active")] = EncodableValue(encoding->active());
+    // Hubbub: getParameters reports the rid, so Dart can match simulcast layers.
+    map[EncodableValue("rid")] = EncodableValue(encoding->rid().std_string());
     map[EncodableValue("maxBitrate")] =
         EncodableValue(encoding->max_bitrate_bps());
     map[EncodableValue("minBitrate")] =
@@ -781,47 +783,47 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
     scoped_refptr<RTCRtpParameters> parameters) {
   EncodableList encodings = findList(newParameters, "encodings");
   auto encoding = encodings.begin();
+  // Hubbub: only fields that differ are written (an unchanged field written
+  // back, such as an empty scalabilityMode, can fail the whole set_parameters).
   auto params = parameters->encodings();
   for (auto param : params.std_vector()) {
     if (encoding != encodings.end()) {
       EncodableMap map = GetValue<EncodableMap>(*encoding);
       EncodableValue value = findEncodableValue(map, "active");
       if (!value.IsNull()) {
-        param->set_active(GetValue<bool>(value));
+        if (param->active() != GetValue<bool>(value)) param->set_active(GetValue<bool>(value));
       }
       value = findEncodableValue(map, "rid");
       if (!value.IsNull()) {
-        param->set_rid(GetValue<std::string>(value));
+        if (param->rid().std_string() != GetValue<std::string>(value)) param->set_rid(GetValue<std::string>(value));
       }
-      value = findEncodableValue(map, "ssrc");
-      if (!value.IsNull()) {
-        param->set_ssrc(GetValue<int>(value));
-      }
+      // Hubbub: the ssrc is read-only (the sender owns it); writing the 0 Dart
+      // sends back made libwebrtc reject every change as a modified SSRC.
       value = findEncodableValue(map, "maxBitrate");
       if (!value.IsNull()) {
-        param->set_max_bitrate_bps(GetValue<int>(value));
+        if (param->max_bitrate_bps() != GetValue<int>(value)) param->set_max_bitrate_bps(GetValue<int>(value));
       }
 
       value = findEncodableValue(map, "minBitrate");
       if (!value.IsNull()) {
-        param->set_min_bitrate_bps(GetValue<int>(value));
+        if (param->min_bitrate_bps() != GetValue<int>(value)) param->set_min_bitrate_bps(GetValue<int>(value));
       }
 
       value = findEncodableValue(map, "maxFramerate");
       if (!value.IsNull()) {
-        param->set_max_framerate(GetValue<int>(value));
+        if (static_cast<int>(param->max_framerate()) != GetValue<int>(value)) param->set_max_framerate(GetValue<int>(value));
       }
       value = findEncodableValue(map, "numTemporalLayers");
       if (!value.IsNull()) {
-        param->set_num_temporal_layers(GetValue<int>(value));
+        if (param->num_temporal_layers() != GetValue<int>(value)) param->set_num_temporal_layers(GetValue<int>(value));
       }
       value = findEncodableValue(map, "scaleResolutionDownBy");
       if (!value.IsNull()) {
-        param->set_scale_resolution_down_by(GetValue<double>(value));
+        if (param->scale_resolution_down_by() != GetValue<double>(value)) param->set_scale_resolution_down_by(GetValue<double>(value));
       }
       value = findEncodableValue(map, "scalabilityMode");
       if (!value.IsNull()) {
-        param->set_scalability_mode(GetValue<std::string>(value));
+        if (param->scalability_mode().std_string() != GetValue<std::string>(value)) param->set_scalability_mode(GetValue<std::string>(value));
       }
       value = findEncodableValue(map, "priority");
       if (!value.IsNull()) {
@@ -834,6 +836,10 @@ scoped_refptr<RTCRtpParameters> FlutterPeerConnection::updateRtpParameters(
       encoding++;
     }
   }
+  // Hubbub: encodings() hands back wrapper objects over copies of the
+  // encodings, so the setters above never reached `parameters`. Write the
+  // edited encodings back, or set_parameters() resends the old values.
+  parameters->set_encodings(params);
 
   EncodableValue value =
       findEncodableValue(newParameters, "degradationPreference");

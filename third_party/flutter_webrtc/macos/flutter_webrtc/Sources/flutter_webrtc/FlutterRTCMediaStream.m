@@ -322,11 +322,15 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
       return possibleValue;
     }
   } else if ([constraint isKindOfClass:[NSDictionary class]]) {
-    id idealConstraint = constraint[@"ideal"];
-    if ([idealConstraint isKindOfClass:[NSString class]]) {
-      int possibleValue = [idealConstraint intValue];
-      if (possibleValue != 0) {
-        return possibleValue;
+    // Hubbub: exact, ideal and max are the target (in that order); min only when
+    // none of them is given. Numbers count as well as strings (UNBUILT on macOS).
+    for (NSString* name in @[ @"exact", @"ideal", @"max", @"min" ]) {
+      id inner = constraint[name];
+      if ([inner isKindOfClass:[NSNumber class]] || [inner isKindOfClass:[NSString class]]) {
+        int possibleValue = [inner intValue];
+        if (possibleValue != 0) {
+          return possibleValue;
+        }
       }
     }
   }
@@ -994,6 +998,10 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
   Float64 maxSupportedFramerate = 0;
   for (AVFrameRateRange* fpsRange in format.videoSupportedFrameRateRanges) {
     maxSupportedFramerate = fmax(maxSupportedFramerate, fpsRange.maxFrameRate);
+  }
+  // Hubbub: no target frame rate must not reach CMTimeMake(1, 0) (UNBUILT on macOS).
+  if (targetFps <= 0) {
+    targetFps = 30;
   }
   return fmin(maxSupportedFramerate, targetFps);
 }

@@ -295,25 +295,40 @@ std::string getFacingMode(const EncodableMap& mediaConstraints) {
              : "";
 }
 
+// A constraint value is a plain number or a map of {exact, ideal, max, min}.
+// Hubbub: LiveKit sends frameRate as {max: N}, which was ignored (the capture
+// then fell back to DEFAULT_FPS). exact, ideal and max are the target, in that
+// order; min is used only when none of them is given.
+static EncodableValue constrainNumber(const EncodableValue& v) {
+  if (TypeIs<int>(v)) {
+    return v;
+  }
+  if (TypeIs<double>(v)) {
+    return EncodableValue(static_cast<int>(GetValue<double>(v)));
+  }
+  return EncodableValue();
+}
+
 EncodableValue getConstrainInt(const EncodableMap& constraints,
                                const std::string& key) {
-  EncodableValue value;
   auto it = constraints.find(EncodableValue(key));
-  if (it != constraints.end()) {
-    if (TypeIs<int>(it->second)) {
-      return it->second;
-    }
-
-    if (TypeIs<EncodableMap>(it->second)) {
-      EncodableMap innerMap = GetValue<EncodableMap>(it->second);
-      auto it2 = innerMap.find(EncodableValue("ideal"));
-      if (it2 != innerMap.end() && TypeIs<int>(it2->second)) {
-        return it2->second;
+  if (it == constraints.end()) {
+    return EncodableValue();
+  }
+  if (TypeIs<EncodableMap>(it->second)) {
+    EncodableMap innerMap = GetValue<EncodableMap>(it->second);
+    for (const char* name : {"exact", "ideal", "max", "min"}) {
+      auto it2 = innerMap.find(EncodableValue(name));
+      if (it2 != innerMap.end()) {
+        EncodableValue n = constrainNumber(it2->second);
+        if (!n.IsNull()) {
+          return n;
+        }
       }
     }
+    return EncodableValue();
   }
-
-  return EncodableValue();
+  return constrainNumber(it->second);
 }
 
 void FlutterMediaStream::GetUserVideo(const EncodableMap& constraints,
