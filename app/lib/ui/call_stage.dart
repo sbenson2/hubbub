@@ -39,6 +39,7 @@ class StageActions {
     required this.onToggleStats,
     this.rx,
     this.tx = const [],
+    this.link,
     this.onHidden,
   });
 
@@ -61,6 +62,9 @@ class StageActions {
 
   /// Your own outbound video (screen share and camera) while it is on, shown under the stats.
   final List<VideoTxSample> tx;
+
+  /// The media connection line (`Connection: direct · 42 ms · 0.1% loss`), when there is one.
+  final String? link;
 
   /// Told the [StageItem.key]s of the strip tiles that are scrolled out of view (empty when
   /// none are, or there is no strip), so their video can stop being received.
@@ -123,7 +127,7 @@ class CallStage extends StatelessWidget {
           child: Stack(children: [
             Positioned.fill(child: _tile(focus, large: true)),
             if (statsPanel)
-              Positioned(left: 8, top: 40, child: _StatsPanel(statsTile ? actions.rx : null, actions.tx, receiving: statsTile)),
+              Positioned(left: 8, top: 40, child: _StatsPanel(statsTile ? actions.rx : null, actions.tx, receiving: statsTile, link: actions.link)),
             Positioned(
               top: 8,
               right: 8,
@@ -256,7 +260,10 @@ class _StripState extends State<_Strip> {
 /// The received resolution, frame rate and bitrate of the stream or camera on screen, then one line
 /// for each of your own outgoing videos.
 class _StatsPanel extends StatelessWidget {
-  const _StatsPanel(this.rx, this.tx, {this.receiving = true});
+  const _StatsPanel(this.rx, this.tx, {this.receiving = true, this.link});
+
+  /// The connection line, shown last.
+  final String? link;
 
   final VideoRxSample? rx;
   final List<VideoTxSample> tx;
@@ -296,7 +303,7 @@ class _StatsPanel extends StatelessWidget {
             '${(r.framesPerSecond ?? 0).round()} fps',
             '${(r.kbps ?? 0).round()} kbps',
           ];
-    final own = [for (final t in tx) ..._txLines(t)];
+    final own = [for (final t in tx) ..._txLines(t), ?link];
     if (lines.isEmpty && own.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

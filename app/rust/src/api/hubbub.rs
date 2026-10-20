@@ -271,6 +271,79 @@ pub fn node_members(n: &AppNode) -> Vec<AppMember> {
         .collect()
 }
 
+/// One media connection (the uplink to the host, or on the host each member), read now. Counters
+/// are cumulative and clamped to u32; the app diffs consecutive samples.
+pub struct AppMediaLink {
+    /// `uplink` (we dialed the host) or `member` (we host and serve it).
+    pub role: String,
+    /// `direct`, `relay` or `unknown`.
+    pub path: String,
+    pub rtt_ms: u32,
+    pub cwnd: u32,
+    pub sent_packets: u32,
+    pub lost_packets: u32,
+    pub congestion_events: u32,
+    pub mtu: u32,
+    pub max_datagram: u32,
+    pub send_buffer_space: u32,
+    pub frame_tx_datagrams: u32,
+}
+
+/// Media links plus this node's tunnel counters (cumulative).
+pub struct AppMediaSnapshot {
+    pub links: Vec<AppMediaLink>,
+    pub wire_tx_pkts: u32,
+    pub wire_rx_pkts: u32,
+    pub via_stream: u32,
+    pub dropped: u32,
+    pub try_send_failed: u32,
+    pub dgram_enqueued: u32,
+}
+
+fn clamp32(v: u64) -> u32 {
+    v.min(u32::MAX as u64) as u32
+}
+
+/// The state of this node's media connections and tunnel, for the Stream Stats panel and log.
+#[frb(sync)]
+pub fn node_media_link(n: &AppNode) -> AppMediaSnapshot {
+    let m = n.node.media_links();
+    AppMediaSnapshot {
+        links: m
+            .links
+            .iter()
+            .map(|l| AppMediaLink {
+                role: match l.role {
+                    hubbub_core::media_tunnel::LinkRole::Uplink => "uplink",
+                    hubbub_core::media_tunnel::LinkRole::Member => "member",
+                }
+                .into(),
+                path: match l.path {
+                    ConnKind::Direct => "direct",
+                    ConnKind::Relay => "relay",
+                    ConnKind::Unknown => "unknown",
+                }
+                .into(),
+                rtt_ms: l.rtt_ms,
+                cwnd: clamp32(l.cwnd),
+                sent_packets: clamp32(l.sent_packets),
+                lost_packets: clamp32(l.lost_packets),
+                congestion_events: clamp32(l.congestion_events),
+                mtu: l.mtu,
+                max_datagram: l.max_datagram,
+                send_buffer_space: clamp32(l.send_buffer_space),
+                frame_tx_datagrams: clamp32(l.frame_tx_datagrams),
+            })
+            .collect(),
+        wire_tx_pkts: clamp32(m.tunnel.wire_tx_pkts),
+        wire_rx_pkts: clamp32(m.tunnel.wire_rx_pkts),
+        via_stream: clamp32(m.tunnel.via_stream),
+        dropped: clamp32(m.tunnel.dropped),
+        try_send_failed: clamp32(m.tunnel.try_send_failed),
+        dgram_enqueued: clamp32(m.tunnel.dgram_enqueued),
+    }
+}
+
 /// Sends a text message and returns its client id. Without a host it waits and goes out
 /// when one appears; its Text event arrives once the host has delivered it.
 pub async fn node_send_text(n: &AppNode, channel: String, body: String) -> anyhow::Result<u64> {

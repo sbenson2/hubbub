@@ -35,6 +35,8 @@ const MAX_STREAM_FRAME: usize = 65_600;
 const MAX_STREAM_SENDS: usize = 64;
 /// Largest UDP payload read from LiveKit.
 const UDP_BUF: usize = 65_536;
+/// The datagram send buffer: about 150 ms at 6 Mbps. Older media is dropped, not delayed.
+pub const DATAGRAM_SEND_BUFFER: usize = 128 * 1024;
 
 /// `[flow][payload]`.
 pub fn encode_frame(flow: u16, payload: &[u8]) -> Bytes {
@@ -48,6 +50,84 @@ pub fn encode_frame(flow: u16, payload: &[u8]) -> Bytes {
 pub fn decode_frame(frame: &[u8]) -> Option<(u16, &[u8])> {
     let (head, payload) = frame.split_at_checked(FLOW_HEADER)?;
     Some((u16::from_be_bytes([head[0], head[1]]), payload))
+}
+
+/// Which end of a media connection a sample describes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkRole {
+    /// This node dialed the host to send its own call media.
+    Uplink,
+    /// This node is the host and serves a member's media connection.
+    Member,
+}
+
+/// A point-in-time reading of one media connection. Counters are cumulative; use [`LinkSample::since`]
+/// (or compare two samples) for the interval between ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkSample {
+    pub role: LinkRole,
+    /// Direct IP path or n0's relay (TCP, so head-of-line blocking) carries the media.
+    pub path: crate::net::ConnKind,
+    pub rtt_ms: u32,
+    pub cwnd: u64,
+    /// UDP datagrams sent and QUIC packets lost, whole connection.
+    pub sent_packets: u64,
+    pub lost_packets: u64,
+    pub congestion_events: u64,
+    /// `current_mtu` of the selected path, and the datagram limit it gives.
+    pub mtu: u32,
+    pub max_datagram: u32,
+    /// Free bytes in the datagram send buffer (0 means the oldest media is being dropped).
+    pub send_buffer_space: u64,
+    /// Datagram frames QUIC has actually put on the wire.
+    pub frame_tx_datagrams: u64,
+}
+
+impl LinkSample {
+    /// Loss since `prev` as a fraction of packets sent, 0 when nothing was sent.
+    pub fn loss_since(&self, prev: &LinkSample) -> f64 {
+        let sent = self.sent_packets.saturating_sub(prev.sent_packets);
+        if sent == 0 {
+            return 0.0;
+        }
+        self.lost_packets.saturating_sub(prev.lost_packets) as f64 / sent as f64
+    }
+}
+
+/// Reads `conn`: its selected path's kind, RTT and MTU, congestion state and send buffer.
+pub fn sample_link(role: LinkRole, conn: &Connection) -> LinkSample {
+    use crate::net::ConnKind;
+    let paths = conn.paths();
+    let mut path = ConnKind::Unknown;
+    let (mut rtt, mut cwnd, mut mtu, mut cong) = (Duration::ZERO, 0, 0u32, 0);
+    for p in paths.iter() {
+        let st = p.stats();
+        cong += st.congestion_events;
+        if p.is_selected() {
+            path = if p.is_ip() {
+                ConnKind::Direct
+            } else if p.is_relay() {
+                ConnKind::Relay
+            } else {
+                ConnKind::Unknown
+            };
+            (rtt, cwnd, mtu) = (st.rtt, st.cwnd, st.current_mtu as u32);
+        }
+    }
+    let cs = conn.stats();
+    LinkSample {
+        role,
+        path,
+        rtt_ms: rtt.as_millis() as u32,
+        cwnd,
+        sent_packets: cs.udp_tx.datagrams,
+        lost_packets: cs.lost_packets,
+        congestion_events: cong,
+        mtu,
+        max_datagram: conn.max_datagram_size().unwrap_or(0) as u32,
+        send_buffer_space: conn.datagram_send_buffer_space() as u64,
+        frame_tx_datagrams: cs.frame_tx.datagram,
+    }
 }
 
 /// Where frames go. Sending never blocks and never fails loudly: media is real-time, so a
@@ -73,6 +153,11 @@ pub struct TunnelStats {
     pub dropped: AtomicU64,
     /// Frames that went on a uni stream because they exceeded the datagram limit.
     pub via_stream: AtomicU64,
+    /// Datagrams handed to the QUIC send buffer. The connection's
+    /// own transmitted-datagram count falls behind this when the bounded buffer drops old media.
+    pub dgram_enqueued: AtomicU64,
+    /// Frames for a local receiver that its full queue refused (member side, toward WebRTC).
+    pub try_send_failed: AtomicU64,
     /// Frames and payload bytes that crossed the iroh connection, sent and received, whichever
     /// role this node plays (member to host, or host to member).
     pub wire_tx_pkts: AtomicU64,
@@ -381,9 +466,16 @@ impl Table {
 #[derive(Clone, Default)]
 pub struct Routes {
     map: Arc<Mutex<HashMap<u16, mpsc::Sender<Bytes>>>>,
+    /// Where refused deliveries are counted, when set.
+    stats: Option<Arc<TunnelStats>>,
 }
 
 impl Routes {
+    /// The same routes, counting frames a full receiver queue refuses in `stats`.
+    pub fn counting(&self, stats: Arc<TunnelStats>) -> Routes {
+        Routes { map: self.map.clone(), stats: Some(stats) }
+    }
+
     pub fn open(&self, flow: u16) -> mpsc::Receiver<Bytes> {
         let (tx, rx) = mpsc::channel(512);
         self.map.lock().unwrap().insert(flow, tx);
@@ -418,8 +510,12 @@ impl FrameSink for Routes {
         }
         let tx = self.map.lock().unwrap().get(&flow).cloned();
         if let Some(tx) = tx {
-            // A full queue drops the frame, as a congested network would.
-            let _ = tx.try_send(Bytes::copy_from_slice(payload));
+            // A full queue drops the frame, as a congested network would; it is counted.
+            if tx.try_send(Bytes::copy_from_slice(payload)).is_err() {
+                if let Some(s) = &self.stats {
+                    s.try_send_failed.fetch_add(1, Relaxed);
+                }
+            }
         }
     }
 }
@@ -435,6 +531,19 @@ impl IrohSender {
     pub fn new(conn: Connection, stats: Arc<TunnelStats>) -> IrohSender {
         IrohSender { conn, stats, streams: Arc::new(AtomicUsize::new(0)) }
     }
+
+    fn datagram(&self, d: Bytes) -> bool {
+        match self.conn.send_datagram(d) {
+            Ok(()) => {
+                self.stats.dgram_enqueued.fetch_add(1, Relaxed);
+                true
+            }
+            Err(_) => {
+                self.stats.dropped.fetch_add(1, Relaxed);
+                false
+            }
+        }
+    }
 }
 
 impl FrameSink for IrohSender {
@@ -444,16 +553,14 @@ impl FrameSink for IrohSender {
     }
 
     fn send_frame(&self, flow: u16, payload: &[u8]) {
-        let frame = encode_frame(flow, payload);
         self.stats.wire_tx_pkts.fetch_add(1, Relaxed);
         self.stats.wire_tx_bytes.fetch_add(payload.len() as u64, Relaxed);
-        let fits = self.conn.max_datagram_size().is_some_and(|max| frame.len() <= max);
-        if fits {
-            if self.conn.send_datagram(frame).is_err() {
-                self.stats.dropped.fetch_add(1, Relaxed);
-            }
+        let max = self.conn.max_datagram_size();
+        if max.is_some_and(|m| FLOW_HEADER + payload.len() <= m) {
+            self.datagram(encode_frame(flow, payload));
             return;
         }
+        let frame = encode_frame(flow, payload);
         if self.streams.fetch_add(1, Relaxed) >= MAX_STREAM_SENDS {
             self.streams.fetch_sub(1, Relaxed);
             self.stats.dropped.fetch_add(1, Relaxed);
@@ -776,6 +883,43 @@ mod tests {
         assert_eq!((flow, back), (4, big));
         assert!(stats.via_stream.load(Relaxed) >= 1);
         assert_eq!(stats.dropped.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn loss_is_a_fraction_of_the_packets_sent_in_the_interval() {
+        use crate::net::ConnKind;
+        let base = LinkSample {
+            role: LinkRole::Uplink, path: ConnKind::Direct, rtt_ms: 40, cwnd: 1, sent_packets: 1000, lost_packets: 10,
+            congestion_events: 0, mtu: 1200, max_datagram: 1162, send_buffer_space: 1, frame_tx_datagrams: 0,
+        };
+        let later = LinkSample { sent_packets: 2000, lost_packets: 15, ..base };
+        assert!((later.loss_since(&base) - 0.005).abs() < 1e-9);
+        assert_eq!(base.loss_since(&base), 0.0, "nothing sent: no loss, no division by zero");
+    }
+
+    #[tokio::test]
+    async fn a_link_sample_reads_a_live_connection() {
+        let (a, b) = two_member_nets().await;
+        let conn_a = a.connect_addr(b.addr().await.unwrap(), a.media_alpn()).await.unwrap();
+        let (_, _, _conn_b) = b.accept().await.unwrap();
+        let s = sample_link(LinkRole::Uplink, &conn_a);
+        assert!(s.mtu >= 1200, "mtu {}", s.mtu);
+        assert!(s.max_datagram > 1000 && s.max_datagram < s.mtu, "datagram limit {} of mtu {}", s.max_datagram, s.mtu);
+        assert_eq!(s.send_buffer_space as usize, DATAGRAM_SEND_BUFFER, "the bounded buffer from net::bind");
+        assert_ne!(s.path, crate::net::ConnKind::Unknown);
+    }
+
+    #[test]
+    fn a_full_receiver_queue_counts_refused_frames() {
+        let stats = Arc::new(TunnelStats::default());
+        let routes = Routes::default().counting(stats.clone());
+        let _rx = routes.open(1);
+        for _ in 0..600 {
+            routes.send_frame(1, b"x");
+        }
+        assert_eq!(stats.try_send_failed.load(Relaxed), 600 - 512, "the queue holds 512");
+        routes.send_frame(2, b"x"); // nobody listens on flow 2: not a refusal
+        assert_eq!(stats.try_send_failed.load(Relaxed), 88);
     }
 
     #[tokio::test]

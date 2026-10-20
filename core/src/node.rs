@@ -40,7 +40,7 @@ use crate::invite::Invite;
 use crate::ids::{CommunityId, MemberId};
 use crate::media_host::MediaHost;
 use crate::media_shim::IceConfig;
-use crate::media_tunnel::{serve_media_host, FlowLimits, MemberMedia, TunnelStats};
+use crate::media_tunnel::{sample_link, serve_media_host, FlowLimits, LinkRole, LinkSample, MemberMedia, TunnelStats};
 use crate::media_shared::SharedMedia;
 use crate::net::{ConnKind, Net, RelayChoice, Switch};
 use crate::probe::{recv_probe, send_probe};
@@ -136,6 +136,41 @@ pub struct MediaStats {
     pub flows_opened: u64,
     pub flows_expired: u64,
     pub flows_refused: u64,
+    /// Datagrams handed to QUIC, and frames a full receiver queue refused.
+    pub dgram_enqueued: u64,
+    pub try_send_failed: u64,
+}
+
+impl MediaStats {
+    /// What happened since `prev`: every counter minus its earlier value.
+    pub fn since(&self, prev: &MediaStats) -> MediaStats {
+        let d = |a: u64, b: u64| a.saturating_sub(b);
+        MediaStats {
+            to_livekit_pkts: d(self.to_livekit_pkts, prev.to_livekit_pkts),
+            to_livekit_bytes: d(self.to_livekit_bytes, prev.to_livekit_bytes),
+            from_livekit_pkts: d(self.from_livekit_pkts, prev.from_livekit_pkts),
+            from_livekit_bytes: d(self.from_livekit_bytes, prev.from_livekit_bytes),
+            wire_tx_pkts: d(self.wire_tx_pkts, prev.wire_tx_pkts),
+            wire_tx_bytes: d(self.wire_tx_bytes, prev.wire_tx_bytes),
+            wire_rx_pkts: d(self.wire_rx_pkts, prev.wire_rx_pkts),
+            wire_rx_bytes: d(self.wire_rx_bytes, prev.wire_rx_bytes),
+            dropped: d(self.dropped, prev.dropped),
+            via_stream: d(self.via_stream, prev.via_stream),
+            flows_opened: d(self.flows_opened, prev.flows_opened),
+            flows_expired: d(self.flows_expired, prev.flows_expired),
+            flows_refused: d(self.flows_refused, prev.flows_refused),
+            dgram_enqueued: d(self.dgram_enqueued, prev.dgram_enqueued),
+            try_send_failed: d(self.try_send_failed, prev.try_send_failed),
+        }
+    }
+}
+
+/// Every media connection of this node (its uplink to the host; on the host, each member) and
+/// the tunnel counters, read at one moment.
+#[derive(Clone, Debug, Default)]
+pub struct MediaLinks {
+    pub links: Vec<LinkSample>,
+    pub tunnel: MediaStats,
 }
 
 pub struct Node {
@@ -236,6 +271,7 @@ impl Node {
             tunnel_port,
             shim: Mutex::new(None),
             media_stats: Arc::default(),
+            media_conns: Mutex::new(Vec::new()),
             media_members: Arc::default(),
             shim_gate: tokio::sync::Mutex::new(false),
             state: Mutex::new(State {
@@ -413,7 +449,19 @@ impl Node {
             flows_opened: s.flows_opened.load(Ordering::Relaxed),
             flows_expired: s.flows_expired.load(Ordering::Relaxed),
             flows_refused: s.flows_refused.load(Ordering::Relaxed),
+            dgram_enqueued: s.dgram_enqueued.load(Ordering::Relaxed),
+            try_send_failed: s.try_send_failed.load(Ordering::Relaxed),
         }
+    }
+
+    /// Reads every live media connection of this node plus the tunnel counters.
+    pub fn media_links(&self) -> MediaLinks {
+        let links = {
+            let mut conns = self.inner.media_conns.lock().unwrap();
+            conns.retain(|(_, c)| c.close_reason().is_none());
+            conns.iter().map(|(role, c)| sample_link(*role, c)).collect()
+        };
+        MediaLinks { links, tunnel: self.media_stats() }
     }
 
     /// Credentials for joining `room` on the current host. Retries for a few seconds while
@@ -598,6 +646,8 @@ struct Inner {
     shim: Mutex<Option<media_link::ShimSlot>>,
     /// Counters of the media tunnel on this node (as host and as member).
     media_stats: Arc<TunnelStats>,
+    /// Live media connections, for sampling: our uplink to the host, and each member served.
+    media_conns: Mutex<Vec<(LinkRole, Connection)>>,
     /// Per-member flow budgets and connection counts for media connections served here.
     media_members: Arc<MemberMedia>,
     /// Serialises starting the shim. `true` once the node has shut down: no shim starts after.
@@ -1268,6 +1318,7 @@ impl Inner {
             conn.close(VarInt::from_u32(1), b"not host");
             return;
         };
+        self.media_conns.lock().unwrap().push((LinkRole::Member, conn.clone()));
         let inner = self.clone();
         self.spawn(async move {
             serve_media_host(conn.clone(), target, limits, permit.budget.clone(), inner.media_stats.clone()).await;
@@ -1572,6 +1623,16 @@ async fn election_loop(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Cmd>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_stats_since_gives_the_interval_and_never_underflows() {
+        let before = MediaStats { wire_tx_pkts: 100, via_stream: 2, dropped: 5, try_send_failed: 1, ..Default::default() };
+        let now = MediaStats { wire_tx_pkts: 160, via_stream: 2, dropped: 9, try_send_failed: 4, dgram_enqueued: 70, ..Default::default() };
+        let d = now.since(&before);
+        assert_eq!((d.wire_tx_pkts, d.via_stream, d.dropped, d.try_send_failed, d.dgram_enqueued), (60, 0, 4, 3, 70));
+        // A restarted node can report less than the earlier sample: clamp to zero.
+        assert_eq!(before.since(&now).wire_tx_pkts, 0);
+    }
 
     fn id(b: u8) -> MemberId {
         MemberId([b; 32])

@@ -68,6 +68,16 @@ async fn main() -> anyhow::Result<()> {
             h.wire_rx_pkts, h.wire_tx_pkts, h.to_livekit_pkts, h.to_livekit_bytes, h.from_livekit_pkts, h.from_livekit_bytes,
             h.dropped + m.dropped, h.via_stream + m.via_stream, h.flows_opened
         );
+        for (who, node) in [("host", &host), ("member", &member)] {
+            let l = node.media_links();
+            for k in &l.links {
+                eprintln!(
+                    "  {who} link {:?} {:?} rtt={}ms cwnd={} mtu={} maxdgram={} bufspace={} lost={}/{} cong={} try_fail={}",
+                    k.role, k.path, k.rtt_ms, k.cwnd, k.mtu, k.max_datagram, k.send_buffer_space,
+                    k.lost_packets, k.sent_packets, k.congestion_events, l.tunnel.try_send_failed
+                );
+            }
+        }
     }
     eprintln!("relay_check stopping");
     Ok(())

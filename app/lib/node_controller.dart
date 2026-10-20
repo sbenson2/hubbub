@@ -105,6 +105,17 @@ class NodeController extends ChangeNotifier implements TextService {
     nodeSetVoice(n: node, channel: channel, muted: muted, deafened: deafened);
   }
 
+  /// The core's media connections and tunnel counters; null before the node starts.
+  AppMediaSnapshot? mediaLink() {
+    final node = _node;
+    if (node == null) return null;
+    try {
+      return nodeMediaLink(n: node);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<AppVoiceCredentials> credentials(String room) =>
       nodeVoiceCredentials(n: _started(), room: room);
 

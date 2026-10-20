@@ -76,6 +76,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppJoinEvent dco_decode_app_join_event(dynamic raw);
 
   @protected
+  AppMediaLink dco_decode_app_media_link(dynamic raw);
+
+  @protected
+  AppMediaSnapshot dco_decode_app_media_snapshot(dynamic raw);
+
+  @protected
   AppMember dco_decode_app_member(dynamic raw);
 
   @protected
@@ -116,6 +122,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppCommunity> dco_decode_list_app_community(dynamic raw);
+
+  @protected
+  List<AppMediaLink> dco_decode_list_app_media_link(dynamic raw);
 
   @protected
   List<AppMember> dco_decode_list_app_member(dynamic raw);
@@ -203,6 +212,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppJoinEvent sse_decode_app_join_event(SseDeserializer deserializer);
 
   @protected
+  AppMediaLink sse_decode_app_media_link(SseDeserializer deserializer);
+
+  @protected
+  AppMediaSnapshot sse_decode_app_media_snapshot(SseDeserializer deserializer);
+
+  @protected
   AppMember sse_decode_app_member(SseDeserializer deserializer);
 
   @protected
@@ -253,6 +268,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppCommunity> sse_decode_list_app_community(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<AppMediaLink> sse_decode_list_app_media_link(
     SseDeserializer deserializer,
   );
 
@@ -364,6 +384,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_app_join_event(AppJoinEvent self, SseSerializer serializer);
 
   @protected
+  void sse_encode_app_media_link(AppMediaLink self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_app_media_snapshot(
+    AppMediaSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_app_member(AppMember self, SseSerializer serializer);
 
   @protected
@@ -426,6 +455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_app_community(
     List<AppCommunity> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_app_media_link(
+    List<AppMediaLink> self,
     SseSerializer serializer,
   );
 

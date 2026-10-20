@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use super::Inner;
 use crate::ids::MemberId;
 use crate::media_shim::{local_media_ip, IceConfig, TurnShim, UplinkSource};
-use crate::media_tunnel::{pump, FlowLimits, FlowTable, FrameSink, IrohSender, Routes, TunnelStats};
+use crate::media_tunnel::{pump, LinkRole, FlowLimits, FlowTable, FrameSink, IrohSender, Routes, TunnelStats};
 
 /// The shim, and the address it listens on.
 pub(super) struct ShimSlot {
@@ -89,9 +89,13 @@ impl UplinkSource for NodeUplink {
         if inner.state.lock().unwrap().host.host != Some(host) {
             anyhow::bail!("the host changed while this allocation waited to dial");
         }
-        let conn = inner.dial_within(host, inner.net.media_alpn(), super::MEDIA_DIAL_TIMEOUT).await?;
+        let conn = inner
+            .dial_within(host, inner.net.media_alpn(), super::MEDIA_DIAL_TIMEOUT)
+            .await
+            .context("media connection to the host failed")?;
+        inner.media_conns.lock().unwrap().push((LinkRole::Uplink, conn.clone()));
         let sender = Arc::new(IrohSender::new(conn.clone(), self.stats.clone()));
-        let down = routes.clone();
+        let down = routes.counting(self.stats.clone());
         let reader = tokio::spawn(pump(conn.clone(), self.stats.clone(), move |flow, payload| down.send_frame(flow, &payload)));
         let mut cached = self.cached.lock().unwrap();
         // Nothing live toward `host` is cached here (checked under the dial lock), so this

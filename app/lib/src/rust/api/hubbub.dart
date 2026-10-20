@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'hubbub.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `app_event`, `app_join_event`, `app_presence`, `ensure_closed`, `history_messages`, `hub_slot`, `hub`, `join_slot`, `minutes_left`, `now_min`, `on_runtime`, `parse_cid`, `runtime`, `seed_event`
+// These functions are ignored because they are not marked as `pub`: `app_event`, `app_join_event`, `app_presence`, `clamp32`, `ensure_closed`, `history_messages`, `hub_slot`, `hub`, `join_slot`, `minutes_left`, `now_min`, `on_runtime`, `parse_cid`, `runtime`, `seed_event`
 
 Future<AppNode> startNode({required AppNodeConfig cfg}) =>
     RustLib.instance.api.crateApiHubbubStartNode(cfg: cfg);
@@ -52,6 +52,10 @@ List<AppVoicePresence> nodeVoiceRoster({required AppNode n}) =>
 /// Every member of the community, this node included.
 List<AppMember> nodeMembers({required AppNode n}) =>
     RustLib.instance.api.crateApiHubbubNodeMembers(n: n);
+
+/// The state of this node's media connections and tunnel, for the Stream Stats panel and log.
+AppMediaSnapshot nodeMediaLink({required AppNode n}) =>
+    RustLib.instance.api.crateApiHubbubNodeMediaLink(n: n);
 
 /// Sends a text message and returns its client id. Without a host it waits and goes out
 /// when one appears; its Text event arrives once the host has delivered it.
@@ -264,6 +268,114 @@ sealed class AppJoinEvent with _$AppJoinEvent {
       AppJoinEvent_Denied;
   const factory AppJoinEvent.joined({required String cid}) =
       AppJoinEvent_Joined;
+}
+
+/// One media connection (the uplink to the host, or on the host each member), read now. Counters
+/// are cumulative and clamped to u32; the app diffs consecutive samples.
+class AppMediaLink {
+  /// `uplink` (we dialed the host) or `member` (we host and serve it).
+  final String role;
+
+  /// `direct`, `relay` or `unknown`.
+  final String path;
+  final int rttMs;
+  final int cwnd;
+  final int sentPackets;
+  final int lostPackets;
+  final int congestionEvents;
+  final int mtu;
+  final int maxDatagram;
+  final int sendBufferSpace;
+  final int frameTxDatagrams;
+
+  const AppMediaLink({
+    required this.role,
+    required this.path,
+    required this.rttMs,
+    required this.cwnd,
+    required this.sentPackets,
+    required this.lostPackets,
+    required this.congestionEvents,
+    required this.mtu,
+    required this.maxDatagram,
+    required this.sendBufferSpace,
+    required this.frameTxDatagrams,
+  });
+
+  @override
+  int get hashCode =>
+      role.hashCode ^
+      path.hashCode ^
+      rttMs.hashCode ^
+      cwnd.hashCode ^
+      sentPackets.hashCode ^
+      lostPackets.hashCode ^
+      congestionEvents.hashCode ^
+      mtu.hashCode ^
+      maxDatagram.hashCode ^
+      sendBufferSpace.hashCode ^
+      frameTxDatagrams.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppMediaLink &&
+          runtimeType == other.runtimeType &&
+          role == other.role &&
+          path == other.path &&
+          rttMs == other.rttMs &&
+          cwnd == other.cwnd &&
+          sentPackets == other.sentPackets &&
+          lostPackets == other.lostPackets &&
+          congestionEvents == other.congestionEvents &&
+          mtu == other.mtu &&
+          maxDatagram == other.maxDatagram &&
+          sendBufferSpace == other.sendBufferSpace &&
+          frameTxDatagrams == other.frameTxDatagrams;
+}
+
+/// Media links plus this node's tunnel counters (cumulative).
+class AppMediaSnapshot {
+  final List<AppMediaLink> links;
+  final int wireTxPkts;
+  final int wireRxPkts;
+  final int viaStream;
+  final int dropped;
+  final int trySendFailed;
+  final int dgramEnqueued;
+
+  const AppMediaSnapshot({
+    required this.links,
+    required this.wireTxPkts,
+    required this.wireRxPkts,
+    required this.viaStream,
+    required this.dropped,
+    required this.trySendFailed,
+    required this.dgramEnqueued,
+  });
+
+  @override
+  int get hashCode =>
+      links.hashCode ^
+      wireTxPkts.hashCode ^
+      wireRxPkts.hashCode ^
+      viaStream.hashCode ^
+      dropped.hashCode ^
+      trySendFailed.hashCode ^
+      dgramEnqueued.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppMediaSnapshot &&
+          runtimeType == other.runtimeType &&
+          links == other.links &&
+          wireTxPkts == other.wireTxPkts &&
+          wireRxPkts == other.wireRxPkts &&
+          viaStream == other.viaStream &&
+          dropped == other.dropped &&
+          trySendFailed == other.trySendFailed &&
+          dgramEnqueued == other.dgramEnqueued;
 }
 
 class AppMember {

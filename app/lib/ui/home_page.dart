@@ -10,6 +10,7 @@ import '../device_settings.dart';
 import '../hub_controller.dart';
 import '../install.dart';
 import '../links.dart';
+import '../media_link.dart';
 import '../node_controller.dart';
 import '../room_adapter.dart';
 import '../share_sources.dart';
@@ -155,6 +156,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _focus = null;
       _rx.clear();
       _tx.clear();
+      _link = null;
+      _linkPrev = null;
       _highSent.clear();
       _hiddenTiles = const {};
       _shownSent = null;
@@ -198,6 +201,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// The stream stats panel, and the latest received sample for the watched stream.
   bool _showStats = false;
+
+  /// The media connection as of the last 2 s stats tick, and the snapshot it was diffed from.
+  MediaLinkReading? _link;
+  AppMediaSnapshot? _linkPrev;
   final _rx = <String, VideoRxSample>{};
 
   /// The latest outbound sample per source (`screen`, `camera`), shown with the stream stats.
@@ -826,6 +833,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // One line per signal for the automated multi-machine check; samples are too chatty.
     if (s is! RoomStats && s is! RoomVideoRx && s is! RoomVideoTx) debugPrint('hubbub: ${_describe(s)}');
     if (s is ShareEnded && _sharing) unawaited(_stopShare());
+    if (s is RoomStats) {
+      // The room adapter's 2 s stats tick also samples the core's media connection.
+      final snap = _node.mediaLink();
+      if (snap != null) {
+        final reading = readMediaLink(snap, _linkPrev);
+        _linkPrev = snap;
+        if (reading != null) debugPrint('hubbub: ${formatMediaLink(reading)}');
+        if (mounted) setState(() => _link = reading);
+      }
+    }
     if (s is RoomVideoRx) {
       // Every sample (every 2 s while a stream is watched) goes to the journal.
       debugPrint('hubbub: ${formatVideoRx(s.sample)}');
@@ -1230,6 +1247,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _ => null,
           },
           onHidden: _onHiddenTiles,
+          link: _link == null ? null : formatMediaLinkPanel(_link!),
           tx: [
             if (_sharing && _tx['screen'] != null) _tx['screen']!,
             if (_cameraOn && _tx['camera'] != null) _tx['camera']!,

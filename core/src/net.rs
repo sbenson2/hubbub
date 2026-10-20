@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use iroh::endpoint::{presets, Connection, VarInt};
+use iroh::endpoint::{presets, Connection, QuicTransportConfig, VarInt};
 use iroh::address_lookup::MemoryLookup;
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use tokio::sync::{mpsc, watch};
@@ -69,7 +69,14 @@ impl Switch {
             RelayChoice::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
         };
         let lookup = MemoryLookup::new();
+        // Datagrams are only call media. Bounding their send buffer keeps queueing delay near
+        // 150 ms when the path is slower than the media: old packets are dropped, not delayed.
+        // Control traffic rides streams and is unaffected.
+        let transport = QuicTransportConfig::builder()
+            .datagram_send_buffer_size(crate::media_tunnel::DATAGRAM_SEND_BUFFER)
+            .build();
         let endpoint = builder
+            .transport_config(transport)
             .secret_key(id.secret_key())
             .address_lookup(lookup.clone())
             .alpns(Vec::new())

@@ -12,6 +12,15 @@ import 'package:hubbub/ui/theme.dart';
 
 import 'support/fakes.dart';
 
+AppMediaSnapshot snapshot({required int sent, required int lost, required int rtt, String path = 'direct'}) =>
+    AppMediaSnapshot(
+      links: [
+        AppMediaLink(
+            role: 'uplink', path: path, rttMs: rtt, cwnd: 60000, sentPackets: sent, lostPackets: lost,
+            congestionEvents: 0, mtu: 1452, maxDatagram: 1410, sendBufferSpace: 131072, frameTxDatagrams: sent),
+      ],
+      wireTxPkts: sent, wireRxPkts: sent, viaStream: 0, dropped: 0, trySendFailed: 0, dgramEnqueued: sent);
+
 void main() {
   late StreamController<AppNodeEvent> events;
   late FakeNode node;
@@ -672,6 +681,33 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Sending screen 1920x1080 30 fps'), findsOneWidget);
       expect(find.text('limited by cpu'), findsOneWidget);
+    });
+
+    testWidgets('the_overlay_shows_the_media_connection_line_from_each_stats_tick', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Connection:'), findsNothing, reason: 'no sample yet');
+
+      node.link = snapshot(sent: 1000, lost: 0, rtt: 42);
+      room.emitSignal(const RoomStats(StatsSample()));
+      await tester.pumpAndSettle();
+      expect(find.text('Connection: direct · 42 ms · 0.0% loss'), findsOneWidget);
+
+      node.link = snapshot(sent: 2000, lost: 1, rtt: 44);
+      room.emitSignal(const RoomStats(StatsSample()));
+      await tester.pumpAndSettle();
+      expect(find.text('Connection: direct · 44 ms · 0.1% loss'), findsOneWidget);
+
+      node.link = snapshot(sent: 3000, lost: 1, rtt: 90, path: 'relay');
+      room.emitSignal(const RoomStats(StatsSample()));
+      await tester.pumpAndSettle();
+      expect(find.text('Connection: relay · 90 ms · 0.0% loss'), findsOneWidget);
     });
 
     testWidgets('the_overlay_is_off_until_toggled_then_shows_what_is_received', (tester) async {

@@ -83,6 +83,11 @@ class FakeNode extends NodeController {
   final FakeTextService text;
   final credentialRequests = <String>[];
 
+  /// What `mediaLink` reports: the core's media connections. Null before a call.
+  AppMediaSnapshot? link;
+  @override
+  AppMediaSnapshot? mediaLink() => link;
+
   /// When set, `credentials` waits for it, then throws if it completed with an error.
   Completer<void>? credentialsGate;
 
