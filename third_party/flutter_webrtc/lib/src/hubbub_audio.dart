@@ -245,6 +245,9 @@ class HubbubTaps {
       await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
           'hubbubStopRecordTrack', <String, dynamic>{'trackId': trackId}));
 
+  /// Fail-safe: stops both send taps, every track tap and the playout tap. Safe when nothing runs.
+  static Future<void> stopAll() => WebRTC.invokeMethod('hubbubTapStopAll');
+
   /// Test only: replaces the capture signal at the hook with a WAV file. [injectLoad] makes the
   /// microphone silent until [injectPlay]; [injectStop] gives the microphone back.
   static Future<void> injectLoad(String path) => WebRTC.invokeMethod(

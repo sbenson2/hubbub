@@ -347,6 +347,15 @@ class _VoiceVideo extends StatelessWidget {
                 value: audio.recordDiagnostics,
                 onChanged: audio.setRecordDiagnostics,
               ),
+              if (audio.diagnosticsError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                      'The recording may not have stopped: ${audio.diagnosticsError}. '
+                      'Switch it off again to retry.',
+                      key: const Key('recording-error'),
+                      style: const TextStyle(fontFamily: hubFont, fontSize: 13, color: HubColors.red)),
+                ),
               if (audio.lastReport != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),

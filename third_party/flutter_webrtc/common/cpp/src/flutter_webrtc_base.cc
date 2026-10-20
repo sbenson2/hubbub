@@ -60,6 +60,7 @@ FlutterWebRTCBase::~FlutterWebRTCBase() {
   // left alive on purpose until the process ends (a few KB plus the RNNoise
   // state).
   hubbub_track_taps_.clear();  // removes the sinks, closes the WAV files
+  hubbub_retired_track_taps_.clear();
   hubbub_alive_->store(false);
   hubbub_stop_.store(true);
   if (hubbub_publisher_.joinable()) hubbub_publisher_.join();

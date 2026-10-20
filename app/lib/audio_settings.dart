@@ -137,6 +137,7 @@ class AudioSettings extends ChangeNotifier {
   bool _recordDiagnostics = false;
   AudioDiagnosticsReport? _lastReport;
   int _reportSerial = 0;
+  String? _diagnosticsError;
 
   // Sliders fire many changes a second; the room hears at most one per key every 50 ms, and
   // the last value is always delivered (by the timer, or at once by [commit]).
@@ -171,9 +172,23 @@ class AudioSettings extends ChangeNotifier {
   Future<void> setRecordDiagnostics(bool on) async {
     if (on == _recordDiagnostics) return;
     _recordDiagnostics = on;
+    _diagnosticsError = null;
     notifyListeners();
-    await _push(() => _room.setAudioDiagnosticsDir(on ? _diagnosticsBase : null));
+    try {
+      await _room.setAudioDiagnosticsDir(on ? _diagnosticsBase : null);
+    } catch (e) {
+      debugPrint('could not switch the diagnostics recorder: $e');
+      if (_disposed) return;
+      // A recording that could not be stopped may still be writing: the switch and the red
+      // badge stay on, with the error, and switching off again tries again.
+      if (!on) _recordDiagnostics = true;
+      _diagnosticsError = '$e';
+      notifyListeners();
+    }
   }
+
+  /// Why the last switch of the recorder failed (null: it did not).
+  String? get diagnosticsError => _diagnosticsError;
 
   /// The peaks of your own microphone for the settings meter.
   Stream<MicLevels> get micLevels => _room.micLevels;

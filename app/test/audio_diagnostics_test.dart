@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:hubbub/audio_diagnostics.dart';
@@ -13,6 +14,14 @@ import 'support/fakes.dart';
 
 class _FakeBackend implements AudioTapBackend {
   final calls = <String>[];
+  Object? stopAllError; // thrown by stopAll while set
+  @override
+  Future<void> stopAll() async {
+    calls.add('stopAll');
+    final e = stopAllError;
+    if (e != null) throw e;
+  }
+
   @override
   bool get supported => true;
   @override
@@ -109,6 +118,23 @@ void main() {
     });
   });
 
+  group('a stop that fails', () {
+    test('keeps_the_switch_and_badge_on_with_the_error_until_a_retry_works', () async {
+      final room = FakeRoom()..diagnosticsStopError = StateError('stop failed');
+      final audio = AudioSettings(room, AudioPrefsStore.memory(), diagnosticsSupported: true);
+      await audio.setRecordDiagnostics(true);
+      await audio.setRecordDiagnostics(false);
+      expect(audio.recordDiagnostics, isTrue, reason: 'still recording as far as anyone can tell');
+      expect(audio.diagnosticsError, contains('stop failed'));
+      room.diagnosticsStopError = null;
+      await audio.setRecordDiagnostics(false);
+      expect(audio.recordDiagnostics, isFalse);
+      expect(audio.diagnosticsError, isNull);
+      expect(room.diagnosticsDir, isNull);
+      audio.dispose();
+    });
+  });
+
   group('recording indicator', () {
     testWidgets('is_hidden_when_off_and_a_red_recording_audio_badge_when_on', (tester) async {
       final audio = AudioSettings(FakeRoom(), AudioPrefsStore.memory(), diagnosticsSupported: true);
@@ -152,7 +178,7 @@ void main() {
           settings: {'noiseSuppression': 'rnnoise', 'inputGainFactor': 1.5},
           backend: be,
           now: DateTime(2026, 10, 19, 14, 5, 9)))!;
-      expect(s.directory, endsWith('call-audio-20261019-140509'));
+      expect(s.directory, endsWith('call-audio-20261019-140509-000'));
       await s.addRemote('Bob / Smith', 't1');
       await s.addRemote('Bob / Smith', 't2');
       await s.addRemote('', 't3');
@@ -174,6 +200,52 @@ void main() {
       expect(files['recv-Bob_Smith.wav']['participant'], 'Bob / Smith');
       expect(be.calls.where((c) => c.startsWith('start')).length, 2);
       expect(be.calls, containsAll(['stop sendProcessed', 'untrack t1']));
+    });
+
+    test('two_sessions_in_the_same_second_get_different_folders', () async {
+      final base = Directory.systemTemp.createTempSync('diagsame');
+      addTearDown(() => base.deleteSync(recursive: true));
+      final t = DateTime(2026, 10, 19, 14, 5, 9, 250);
+      final a = (await AudioDiagnosticsSession.start(
+          baseDir: base.path, settings: {}, backend: _FakeBackend(), now: t))!;
+      final b = (await AudioDiagnosticsSession.start(
+          baseDir: base.path, settings: {}, backend: _FakeBackend(), now: t))!;
+      final c = (await AudioDiagnosticsSession.start(
+          baseDir: base.path, settings: {}, backend: _FakeBackend(), now: t))!;
+      expect(a.directory, endsWith('call-audio-20261019-140509-250'));
+      expect(b.directory, endsWith('call-audio-20261019-140509-250-2'));
+      expect(c.directory, endsWith('call-audio-20261019-140509-250-3'));
+      await a.stop();
+      await b.stop();
+      await c.stop();
+      for (final s in [a, b, c]) {
+        expect(File('${s.directory}/session.json').existsSync(), isTrue);
+      }
+    });
+
+    test('a_stop_that_fails_throws_keeps_the_session_open_and_can_be_retried', () async {
+      final base = Directory.systemTemp.createTempSync('diagfail');
+      addTearDown(() => base.deleteSync(recursive: true));
+      final be = _FakeBackend()..stopAllError = PlatformException(code: 'hubbubTap', message: 'boom');
+      final s = (await AudioDiagnosticsSession.start(baseDir: base.path, settings: {}, backend: be))!;
+      await expectLater(s.stop(), throwsA(isA<PlatformException>()));
+      expect(File('${s.directory}/session.json').existsSync(), isFalse, reason: 'not reported as saved');
+      be.stopAllError = null;
+      final report = await s.stop();
+      expect(report.files, contains('session.json'));
+      expect(File('${s.directory}/session.json').existsSync(), isTrue);
+      expect(be.calls.where((c) => c == 'stopAll').length, 2);
+    });
+
+    test('stop_calls_the_native_stop_all_after_the_per_tap_stops', () async {
+      final base = Directory.systemTemp.createTempSync('diagall');
+      addTearDown(() => base.deleteSync(recursive: true));
+      final be = _FakeBackend();
+      final s = (await AudioDiagnosticsSession.start(baseDir: base.path, settings: {}, backend: be))!;
+      await s.addRemote('Bob', 't1');
+      await s.stop();
+      expect(be.calls.last, 'stopAll', reason: 'status() is not recorded, so stopAll is the last call');
+      expect(be.calls.indexOf('stopAll'), greaterThan(be.calls.indexOf('untrack t1')));
     });
 
     test('a_backend_that_is_not_supported_records_nothing', () async {

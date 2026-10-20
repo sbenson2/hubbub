@@ -148,6 +148,10 @@ class FlutterWebRTCBase {
   hubbub::RenderProcessor* HubbubRender();
   // Hubbub patch: per-track diagnostic recorders (hubbubRecordTrack), platform thread only.
   std::map<std::string, std::unique_ptr<hubbub::TrackTap>> hubbub_track_taps_;
+  // Stopped taps are kept (inert, ring freed) until the plugin is disposed: the closed libwebrtc
+  // wrapper does not document that RemoveSink waits for an OnData in flight, so a tap is never
+  // destroyed while the audio thread could still hold it.
+  std::vector<std::unique_ptr<hubbub::TrackTap>> hubbub_retired_track_taps_;
   RTCConfiguration configuration_;
 
   std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;

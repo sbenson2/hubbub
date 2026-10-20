@@ -851,7 +851,10 @@ class LiveKitRoomAdapter implements RoomAdapter {
       if (session == null) return;
       // Stopped, or the call ended, while the folder was being made.
       if (_diagDir == null || _room != room) {
-        unawaited(session.stop().then(_diagReports.add));
+        unawaited(session.stop().then(_diagReports.add, onError: (Object e) {
+          debugPrint('audio diagnostics did not stop: $e');
+          _diag ??= session; // never leave a tap running unseen
+        }));
         return;
       }
       _diag = session;
@@ -876,13 +879,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   Future<void> _stopDiagnostics() async {
     final s = _diag;
-    _diag = null;
     if (s == null) return;
-    try {
-      _diagReports.add(await s.stop());
-    } catch (e) {
-      debugPrint('audio diagnostics did not stop cleanly: $e');
-    }
+    // The session is dropped only once its taps are stopped; on a failure it stays, so the
+    // next switch-off or disconnect tries again.
+    _diagReports.add(await s.stop());
+    _diag = null;
   }
 
   /// What is received without asking: voice, and cameras (at the low layer, see above). A
@@ -918,7 +919,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
 
   @override
   Future<void> disconnect() async {
-    await _stopDiagnostics();
+    try {
+      await _stopDiagnostics();
+    } catch (e) {
+      debugPrint('audio diagnostics did not stop: $e'); // kept, so the badge stays
+    }
     _statsTimer?.cancel();
     _statsTimer = null;
     await _listener?.dispose();

@@ -254,7 +254,14 @@ class FakeRoom implements RoomAdapter {
   String? diagnosticsDir;
   final diagnosticsReports = StreamController<AudioDiagnosticsReport>.broadcast();
   @override
-  Future<void> setAudioDiagnosticsDir(String? dir) async => diagnosticsDir = dir;
+  Future<void> setAudioDiagnosticsDir(String? dir) async {
+    final e = diagnosticsStopError;
+    if (dir == null && e != null) throw e;
+    diagnosticsDir = dir;
+  }
+
+  /// When set, switching the recorder off throws it (a native stop that failed).
+  Object? diagnosticsStopError;
   @override
   Stream<AudioDiagnosticsReport> get audioDiagnosticsReports => diagnosticsReports.stream;
 

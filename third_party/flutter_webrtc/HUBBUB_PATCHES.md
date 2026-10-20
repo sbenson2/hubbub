@@ -246,6 +246,11 @@ native test `hubbub_test/hubbub_tap_test.cc`.
   mix is available through `hubbubPlayout {action: tapStart|tapStop}` at the render pre-processing hook (16 kHz,
   2 channels on this PC). That hook is registered with the engine only by the first `hubbubPlayout` call and never
   unregistered (same crash as above); until then the render path is untouched.
+- **Stop all** (`hubbubTapStopAll`): stops both send taps, every track tap and the playout tap (never registers the
+  render hook); safe when idle. The app calls it after the per-tap stops, so a failed stop cannot leave a tap writing.
+- **Tap lifetime**: `RemoveSink` is only declared in the closed wrapper (`rtc_audio_track.h`), so whether it waits for an
+  `OnData` in flight is unconfirmed. Stopped `TrackTap`s are therefore moved to `hubbub_retired_track_taps_` (ring freed,
+  a few bytes each) and destroyed only when the plugin is disposed.
 - **Inject** (`hubbubInject {action: load|play|stop, path}`, test only): replaces the buffer at the start of the
   hook (silence after `load`, the file after `play`). It is after the APM stages, so the engine's own NS/AGC cannot
   be exercised by it; RNNoise, gain, limiter, the hook's sample rate, Opus, E2EE and the SFU are.

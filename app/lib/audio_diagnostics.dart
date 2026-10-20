@@ -13,6 +13,9 @@ abstract class AudioTapBackend {
   Future<int> startTrack(String trackId, String path);
   Future<rtc.HubbubTapResult?> stopTrack(String trackId);
   Future<Map<dynamic, dynamic>?> status();
+
+  /// Stops every tap natively; safe when nothing runs. The fail-safe behind [AudioDiagnosticsSession.stop].
+  Future<void> stopAll();
 }
 
 class PluginTapBackend implements AudioTapBackend {
@@ -29,6 +32,8 @@ class PluginTapBackend implements AudioTapBackend {
   Future<rtc.HubbubTapResult?> stopTrack(String trackId) => rtc.HubbubTaps.stopTrack(trackId);
   @override
   Future<Map<dynamic, dynamic>?> status() => rtc.HubbubAudio.status();
+  @override
+  Future<void> stopAll() => rtc.HubbubTaps.stopAll();
 }
 
 /// Where a finished recording went.
@@ -51,10 +56,11 @@ String safeFileName(String s) {
 
 String _stamp(DateTime t) {
   String p(int v, [int n = 2]) => v.toString().padLeft(n, '0');
-  return '${p(t.year, 4)}${p(t.month)}${p(t.day)}-${p(t.hour)}${p(t.minute)}${p(t.second)}';
+  return '${p(t.year, 4)}${p(t.month)}${p(t.day)}-${p(t.hour)}${p(t.minute)}${p(t.second)}-${p(t.millisecond, 3)}';
 }
 
-/// One recording: a new folder `<base>/call-audio-<time>` with `send-processed.wav`,
+/// One recording: a new folder `<base>/call-audio-<time>` (milliseconds; a `-2`, `-3`... suffix if it
+/// exists, so a session never overwrites an earlier one) with `send-processed.wav`,
 /// `send-hook-input.wav` (the capture signal before Hubbub's processing, the closest to the raw
 /// microphone that can be reached), `recv-<name>.wav` per remote participant, and `session.json` (settings and
 /// the wall clock each file started, so the files can be aligned).
@@ -83,8 +89,13 @@ class AudioDiagnosticsSession {
   }) async {
     if (!backend.supported) return null;
     final t = now ?? DateTime.now();
-    final dir = Directory('$baseDir${Platform.pathSeparator}call-audio-${_stamp(t)}');
-    await dir.create(recursive: true);
+    final root = '$baseDir${Platform.pathSeparator}call-audio-${_stamp(t)}';
+    await Directory(baseDir).create(recursive: true);
+    var dir = Directory(root);
+    for (var i = 2; await dir.exists(); i++) {
+      dir = Directory('$root-$i');
+    }
+    await dir.create();
     final s = AudioDiagnosticsSession._(backend, dir.path, t, settings);
     await s._startSend(rtc.HubbubSendTap.processed, 'send-processed.wav');
     // The raw microphone is not reachable (a sink on the local track delivers the processed
@@ -139,7 +150,9 @@ class AudioDiagnosticsSession {
     _entries[file] = {...?_entries[file], ...r.toJson()}..remove('path');
   }
 
-  /// Stops every tap, writes `session.json` and reports the folder.
+  /// Stops every tap, writes `session.json` and reports the folder. If the native stop-all fails
+  /// the taps may still be writing: it throws and the session stays open, so the caller keeps
+  /// showing it and can call this again.
   Future<AudioDiagnosticsReport> stop() async {
     if (!_stopped) {
       _stopped = true;
@@ -153,6 +166,12 @@ class AudioDiagnosticsSession {
       }
       for (final id in _trackFiles.keys.toList()) {
         await removeTrack(id);
+      }
+      try {
+        await _backend.stopAll();
+      } catch (_) {
+        _stopped = false;
+        rethrow;
       }
       Map<dynamic, dynamic>? native;
       try {

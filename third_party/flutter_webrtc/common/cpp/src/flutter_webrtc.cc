@@ -674,6 +674,20 @@ void FlutterWebRTC::HandleMethodCall(
       }
       result->Success(EncodableValue(statsMap(st)));
     }
+  } else if (method_call.method_name().compare("hubbubTapStopAll") == 0) {
+    // Hubbub patch: fail-safe for the recorder. Stops both send taps, every track tap and the
+    // playout tap; safe when nothing runs. It never registers the render hook.
+    if (hubbub_processor_) {
+      hubbub_processor_->tap_out().Stop(nullptr);
+      hubbub_processor_->tap_in().Stop(nullptr);
+    }
+    for (auto& kv : hubbub_track_taps_) {
+      kv.second->Stop(nullptr);
+      hubbub_retired_track_taps_.push_back(std::move(kv.second));
+    }
+    hubbub_track_taps_.clear();
+    if (hubbub_render_) hubbub_render_->tap().Stop(nullptr);
+    result->Success();
   } else if (method_call.method_name().compare("hubbubRecordTrack") == 0 ||
              method_call.method_name().compare("hubbubStopRecordTrack") == 0) {
     // Hubbub patch: record one audio track (a remote participant, or a local
@@ -694,6 +708,7 @@ void FlutterWebRTC::HandleMethodCall(
       hubbub::TapStats st;
       int calls = it->second->calls();
       it->second->Stop(&st);
+      hubbub_retired_track_taps_.push_back(std::move(it->second));
       hubbub_track_taps_.erase(it);
       EncodableMap m;
       m[EncodableValue("path")] = st.path;
