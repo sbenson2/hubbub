@@ -1,0 +1,71 @@
+diff --git a/build/libwebrtc_win_build.cmd b/build/libwebrtc_win_build.cmd
+index 561f762..5c9d46d 100644
+--- a/build/libwebrtc_win_build.cmd
++++ b/build/libwebrtc_win_build.cmd
+@@ -94,6 +94,7 @@ copy .vpython3 ..
+ call git apply "libwebrtc\patches\custom_audio_source_m150.patch" -v --ignore-space-change --ignore-whitespace --whitespace=nowarn
+ call git apply "libwebrtc\patches\add_libwebrtc_build_target.patch" -v --ignore-space-change --ignore-whitespace --whitespace=nowarn
+ call git apply "libwebrtc\patches\allow_176k4_192k_shared_mode_formats.patch" -v --ignore-space-change --ignore-whitespace --whitespace=nowarn
++call git apply "libwebrtc\patches\disable_win_builtin_aec_dmo.patch" -v --ignore-space-change --ignore-whitespace --whitespace=nowarn
+ cd ..
+ 
+ 
+diff --git a/patches/disable_win_builtin_aec_dmo.patch b/patches/disable_win_builtin_aec_dmo.patch
+new file mode 100644
+index 0000000..c7ce2c5
+--- /dev/null
++++ b/patches/disable_win_builtin_aec_dmo.patch
+@@ -0,0 +1,37 @@
++--- a/modules/audio_device/win/audio_device_core_win.cc
+++++ b/modules/audio_device/win/audio_device_core_win.cc
++@@ -450,8 +450,6 @@
++ 
++   _deviceStateListener = new DeviceStateListener();
++ 
++-  HRESULT hr;
++-
++   // We know that this API will work since it has already been verified in
++   // CoreAudioIsSupported, hence no need to check for errors here as well.
++ 
++@@ -465,20 +463,11 @@
++ 
++   _ptrEnumerator->RegisterEndpointNotificationCallback(_deviceStateListener);
++ 
++-  // DMO initialization for built-in WASAPI AEC.
++-  {
++-    IMediaObject* ptrDMO = NULL;
++-    hr = CoCreateInstance(CLSID_CWMAudioAEC, NULL, CLSCTX_INPROC_SERVER,
++-                          IID_IMediaObject, reinterpret_cast<void**>(&ptrDMO));
++-    if (FAILED(hr) || ptrDMO == NULL) {
++-      // Since we check that _dmo is non-NULL in EnableBuiltInAEC(), the
++-      // feature is prevented from being enabled.
++-      _builtInAecEnabled = false;
++-      _TraceCOMError(hr);
++-    }
++-    _dmo = ptrDMO;
++-    SAFE_RELEASE(ptrDMO);
++-  }
+++  // Hubbub: never create the built-in AEC DMO (CLSID_CWMAudioAEC). It forces
+++  // 16 kHz mono capture. With _dmo null, BuiltInAECIsAvailable() is false,
+++  // EnableBuiltInAEC() returns -1 and _builtInAecEnabled stays false, so
+++  // InitRecording() always takes the shared-mode WASAPI path at the device
+++  // rate and the engine resolves echo_cancellation=true to software AEC3.
++ }
++ 
++ // ----------------------------------------------------------------------------
+diff --git a/src/rtc_audio_processing_impl.cc b/src/rtc_audio_processing_impl.cc
+index d0b460e..7c7004e 100644
+--- a/src/rtc_audio_processing_impl.cc
++++ b/src/rtc_audio_processing_impl.cc
+@@ -89,6 +89,11 @@ RTCAudioProcessingImpl::RTCAudioProcessingImpl() {
+              .Build(webrtc::CreateEnvironment());
+ 
+   webrtc::AudioProcessing::Config config;
++  // Hubbub: split and process at 48 kHz (3 bands) instead of the 32 kHz
++  // default, so a 48 kHz capture keeps its 16-24 kHz band through
++  // AEC3/NS/AGC. The engine's option updates start from GetConfig(), so
++  // this survives them.
++  config.pipeline.maximum_internal_processing_rate = 48000;
+   apm_->ApplyConfig(config);
+ }
+ 

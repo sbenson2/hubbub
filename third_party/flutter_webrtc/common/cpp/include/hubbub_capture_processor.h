@@ -6,9 +6,11 @@
 // only touch atomics (settings_, the counters, levels_); pipes_ belongs to the
 // audio thread alone.
 //
-// Buffer layout, as measured with hubbub_test/apm_probe against the prebuilt
-// libwebrtc m150 (see HUBBUB_PATCHES.md):
-//   Windows  Initialize(16000, 1); Process(bands=1, frames=160, size=160).
+// Buffer layout, as measured with hubbub_test/apm_probe against libwebrtc m150
+// (see HUBBUB_PATCHES.md):
+//   Windows  Initialize(48000, 1); Process(bands=3, frames=480, size=480) with Hubbub's
+//            build (third_party/libwebrtc-hubbub); the stock prebuilt gives
+//            Initialize(16000, 1); Process(bands=1, frames=160, size=160).
 //   Linux    Initialize(48000, 1); Process(bands=3, frames=480, size=480).
 // |num_frames| is the full-band 10 ms frame count (rate / 100) even when
 // |num_bands| is 3, and the buffer then holds the merged full-band signal (a

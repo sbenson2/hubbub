@@ -1,0 +1,4 @@
+# Windows batch scripts need CRLF; the patch must stay byte-exact for git apply.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+third_party/libwebrtc-hubbub/wrapper.patch -text

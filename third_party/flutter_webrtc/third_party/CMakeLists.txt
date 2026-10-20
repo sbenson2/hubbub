@@ -14,6 +14,10 @@ endif()
 
 set(LIBWEBRTC_BINARY_VERSION "")
 set(LIBWEBRTC_DOWNLOAD_URL_BASE "")
+set(_libwebrtc_win_version "")
+set(_libwebrtc_win_url "")
+set(_libwebrtc_win_x64_sha256 "")
+set(_libwebrtc_win_arm64_sha256 "")
 file(STRINGS "${LIBWEBRTC_VERSION_INI}" _libwebrtc_ini_lines)
 foreach(_line IN LISTS _libwebrtc_ini_lines)
   string(STRIP "${_line}" _line)
@@ -30,8 +34,26 @@ foreach(_line IN LISTS _libwebrtc_ini_lines)
     set(LIBWEBRTC_BINARY_VERSION "${_value}")
   elseif(_key STREQUAL "download_url")
     set(LIBWEBRTC_DOWNLOAD_URL_BASE "${_value}")
+  elseif(_key STREQUAL "win_binary_version")
+    set(_libwebrtc_win_version "${_value}")
+  elseif(_key STREQUAL "win_download_url")
+    set(_libwebrtc_win_url "${_value}")
+  elseif(_key STREQUAL "win_x64_sha256")
+    set(_libwebrtc_win_x64_sha256 "${_value}")
+  elseif(_key STREQUAL "win_arm64_sha256")
+    set(_libwebrtc_win_arm64_sha256 "${_value}")
   endif()
 endforeach()
+
+# Windows has its own build; the plain keys stay for Linux.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  if(NOT _libwebrtc_win_version STREQUAL "")
+    set(LIBWEBRTC_BINARY_VERSION "${_libwebrtc_win_version}")
+  endif()
+  if(NOT _libwebrtc_win_url STREQUAL "")
+    set(LIBWEBRTC_DOWNLOAD_URL_BASE "${_libwebrtc_win_url}")
+  endif()
+endif()
 
 if(LIBWEBRTC_BINARY_VERSION STREQUAL "" OR LIBWEBRTC_DOWNLOAD_URL_BASE STREQUAL "")
   message(FATAL_ERROR "libwebrtc: ${LIBWEBRTC_VERSION_INI} must define binary_version and download_url")
@@ -79,7 +101,20 @@ else()
 endif()
 
 set(LIBWEBRTC_ASSET "libwebrtc-${LIBWEBRTC_OS}-${LIBWEBRTC_ARCH}-release")
-set(ZIPFILE "${LIBWEBRTC_THIRD_PARTY_DIR}/downloads/${LIBWEBRTC_ASSET}.zip")
+
+# Optional sha256 for this OS/arch (see libwebrtc_version.ini).
+set(LIBWEBRTC_SHA256 "")
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  if(LIBWEBRTC_ARCH STREQUAL "arm64")
+    set(LIBWEBRTC_SHA256 "${_libwebrtc_win_arm64_sha256}")
+  else()
+    set(LIBWEBRTC_SHA256 "${_libwebrtc_win_x64_sha256}")
+  endif()
+endif()
+string(TOLOWER "${LIBWEBRTC_SHA256}" LIBWEBRTC_SHA256)
+
+# The cache is keyed by version, so bumping binary_version never reuses an old zip.
+set(ZIPFILE "${LIBWEBRTC_THIRD_PARTY_DIR}/downloads/${LIBWEBRTC_BINARY_VERSION}/${LIBWEBRTC_ASSET}.zip")
 
 # Final URL = <base>/<binary_version>/<asset>.zip
 set(DOWNLOAD_URL "${LIBWEBRTC_DOWNLOAD_URL_BASE}/${LIBWEBRTC_BINARY_VERSION}/${LIBWEBRTC_ASSET}.zip")
@@ -119,23 +154,50 @@ function(_libwebrtc_extract_and_normalize zip_path dest_dir)
   file(REMOVE_RECURSE "${_staging}")
 endfunction()
 
+# The stamp records which zip libwebrtc/ was extracted from, so a leftover
+# extraction of another version (e.g. the stock 16 kHz DLL) is never reused.
+set(_libwebrtc_stamp "${LIBWEBRTC_THIRD_PARTY_DIR}/libwebrtc/.hubbub-stamp")
+set(_libwebrtc_stamp_want "${LIBWEBRTC_BINARY_VERSION} ${LIBWEBRTC_ASSET} ${LIBWEBRTC_SHA256}")
+
+# A cached zip that fails the configured hash is deleted and downloaded again.
+if(EXISTS "${ZIPFILE}" AND NOT LIBWEBRTC_SHA256 STREQUAL "")
+  file(SHA256 "${ZIPFILE}" _libwebrtc_cached_sha)
+  if(NOT _libwebrtc_cached_sha STREQUAL LIBWEBRTC_SHA256)
+    message(WARNING "libwebrtc: cached ${ZIPFILE} has sha256 ${_libwebrtc_cached_sha}, expected ${LIBWEBRTC_SHA256}; downloading again")
+    file(REMOVE "${ZIPFILE}")
+  endif()
+endif()
+
 if(NOT EXISTS "${ZIPFILE}")
   message(NOTICE "download: ${DOWNLOAD_URL}")
-  file(MAKE_DIRECTORY "${LIBWEBRTC_THIRD_PARTY_DIR}/downloads")
+  get_filename_component(_libwebrtc_zip_dir "${ZIPFILE}" DIRECTORY)
+  file(MAKE_DIRECTORY "${_libwebrtc_zip_dir}")
+  set(_libwebrtc_hash_args "")
+  if(NOT LIBWEBRTC_SHA256 STREQUAL "")
+    set(_libwebrtc_hash_args EXPECTED_HASH SHA256=${LIBWEBRTC_SHA256})
+  endif()
   file(DOWNLOAD "${DOWNLOAD_URL}"
       ${ZIPFILE}
+      ${_libwebrtc_hash_args}
       STATUS download_status
       LOG download_log)
 
   if(NOT download_status EQUAL 0)
-    message(FATAL_ERROR "Failed to download dependency: ${download_log}")
+    file(REMOVE "${ZIPFILE}")
+    message(FATAL_ERROR "Failed to download dependency: ${download_status}\n${download_log}")
   endif()
+endif()
 
+set(_libwebrtc_stamp_have "")
+if(EXISTS "${_libwebrtc_stamp}")
+  file(READ "${_libwebrtc_stamp}" _libwebrtc_stamp_have)
+  string(STRIP "${_libwebrtc_stamp_have}" _libwebrtc_stamp_have)
+endif()
+if(NOT EXISTS "${LIBWEBRTC_THIRD_PARTY_DIR}/libwebrtc"
+    OR NOT _libwebrtc_stamp_have STREQUAL _libwebrtc_stamp_want)
+  message(NOTICE "libwebrtc: extracting ${ZIPFILE}")
   _libwebrtc_extract_and_normalize("${ZIPFILE}" "${LIBWEBRTC_THIRD_PARTY_DIR}")
+  file(WRITE "${_libwebrtc_stamp}" "${_libwebrtc_stamp_want}\n")
 else()
-  if(NOT EXISTS "${LIBWEBRTC_THIRD_PARTY_DIR}/libwebrtc")
-    message(NOTICE "libwebrtc directory does not exist after extraction.")
-    _libwebrtc_extract_and_normalize("${ZIPFILE}" "${LIBWEBRTC_THIRD_PARTY_DIR}")
-  endif()
-  message(TRACE "libwebrtc already downloaded.")
+  message(TRACE "libwebrtc already extracted.")
 endif()

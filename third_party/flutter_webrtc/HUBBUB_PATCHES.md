@@ -10,11 +10,21 @@ downloaded libwebrtc prebuilt); every later commit touching `third_party/flutter
 reference; do not use `HEAD~1`). Line endings are as upstream (`third_party/.gitattributes` is `* -text`):
 `windows/CMakeLists.txt` is CRLF, the rest of the files touched are LF.
 
-Not vendored (downloaded at CMake configure time by upstream's `third_party/CMakeLists.txt` from
-`third_party/libwebrtc_version.ini`, libwebrtc.m150.7871.03): `third_party/downloads/`,
+Not vendored (downloaded at CMake configure time by `third_party/CMakeLists.txt` from
+`third_party/libwebrtc_version.ini`): `third_party/downloads/<binary_version>/` (the zip) and
 `third_party/libwebrtc/` (headers, `libwebrtc.dll`, `.lib`, `.so`). They are git-ignored by
 `third_party/.gitignore` (repository level). A fresh checkout needs network
 access on its first Windows or Linux build.
+
+- **Linux** uses upstream's prebuilt libwebrtc.m150.7871.03 (`binary_version`, `download_url`), no hash.
+- **Windows** uses Hubbub's own build, `libwebrtc.m150.7871.03-hubbub1` (`win_binary_version`,
+  `win_download_url`): the same source with the 16 kHz Windows AEC DMO removed and the APM at 48 kHz.
+  Its zip lives on a zip-only prerelease of this repo; patches, build scripts and the publishing
+  steps are in `third_party/libwebrtc-hubbub/README.md`.
+- CMake checks `win_x64_sha256` on every configure (fresh download and cached zip alike; a cached zip
+  that does not match is deleted and downloaded again). `libwebrtc/.hubbub-stamp` holds the
+  version, asset and hash it was extracted from; a different or missing stamp re-extracts, so an
+  old stock `libwebrtc/` never stays. The cache is keyed by version, `downloads/<binary_version>/<asset>.zip`.
 
 ## What the patches add
 
@@ -24,7 +34,7 @@ against the prebuilt DLL: `Initialize`, then `Process` about 100 times a second 
 samples). The processor runs after echo cancellation, noise suppression and AGC and does, in order:
 
 1. RNNoise (optional), at 48 kHz in 480 sample frames. The APM hands the processor floats in the
-   16-bit range at its internal rate (16 kHz mono on Windows, 48 kHz mono on Linux; see "Buffer
+   16-bit range at its internal rate (48 kHz mono on Linux and on our Windows build, 16 kHz mono on the stock Windows prebuilt; see "Buffer
    layout"), so a windowed-sinc rational resampler brings other rates to 48 kHz and back. Switching
    it on or off cross-fades over one block (and stays dry until RNNoise has real output), so it does
    not click.
@@ -48,11 +58,12 @@ Quieter libwebrtc logs: `EnsureWebRTCInitialized` (`common/cpp/src/flutter_webrt
 `LibWebRTCLogging::setMinDebugLogLevel(Warning)`. The prebuilt library logs to stderr at Info, and
 there the frame cryptor prints the raw end-to-end key, which journald keeps on Linux.
 
-## Buffer layout (measured, `hubbub_test/apm_probe`, prebuilt libwebrtc m150)
+## Buffer layout (measured, `hubbub_test/apm_probe`, libwebrtc m150)
 
 | Where | `Initialize` | `Process(num_bands, num_frames, buffer_size)` | Notes |
 |---|---|---|---|
-| Windows (WASAPI mic, Opus negotiated) | 16000 Hz, 1 channel | 1, 160, 160 | stays 16 kHz mono with stereo Opus requested, with AEC/NS/AGC on or off, on both microphones |
+| Windows, Hubbub build (WASAPI mic, Opus negotiated) | 48000 Hz, 1 channel | 3, 480, 480 | as on Linux; verified at 48 kHz with the fullband suite |
+| Windows, stock prebuilt | 16000 Hz, 1 channel | 1, 160, 160 | stays 16 kHz mono with stereo Opus requested, with AEC/NS/AGC on or off, on both microphones |
 | Linux (PulseAudio, WSLg) | 48000 Hz, 1 channel | 3, 480, 480 | `num_frames` is the full-band count; a 1 kHz plus 10 kHz test tone arrives in those 480 samples with its 10 kHz part intact (5998 of 6000), also with AEC/NS/AGC on |
 
 So the buffer is merged full-band audio even when `num_bands` is 3: the processor treats any block
@@ -237,8 +248,8 @@ native test `hubbub_test/hubbub_tap_test.cc`.
   10 minutes, ring overflow is counted (`droppedChunks`), per-tap `maxGapMs` shows a stalled clock.
 - **What I send** (`hubbubTapStart/Stop {kind}`): `sendProcessed` is the buffer leaving the capture hook
   (after RNNoise, gain, limiter), which is what the engine resamples to 48 kHz and hands to Opus; `sendInput`
-  is the buffer as the hook receives it. Both are at the APM rate (16 kHz on Windows), so the 48 kHz file has
-  a bandwidth of at most 8 kHz by construction. `sourceRate` in the result says so.
+  is the buffer as the hook receives it. Both are at the APM rate (48 kHz with our Windows build; 16 kHz with the stock prebuilt, where the
+  48 kHz file has a bandwidth of at most 8 kHz by construction). `sourceRate` in the result says so.
 - **Raw microphone: not reachable.** The hook sits after the APM's echo cancellation, noise suppression and AGC,
   and the wrapper has no custom audio device module. An `AddSink` on the local mic track delivers the processed
   signal, not the raw one (measured: identical to `sendProcessed`).
@@ -291,8 +302,7 @@ Tests: `hubbub_test/hubbub_audio_test.cc` (`TestTailHold`, `TestTailSteadyNoise`
 ## RNNoise sees only the wideband part (2026-10-20)
 
 Found when Windows capture moved to 48 kHz: the noisy suite's hook leg got worse (PESQ-WB new 2.01 -> 1.85,
-classic 1.78 -> 1.51) while clean speech got better. Cause, measured offline (`hubbub_test/hubbub_offline`,
-report `.superpowers/sdd/2026-10-19-audio/report-noisy-48k.md`): at 16 kHz RNNoise only ever saw the
+classic 1.78 -> 1.51) while clean speech got better. Cause, measured offline (`hubbub_test/hubbub_offline`): at 16 kHz RNNoise only ever saw the
 resampled band below 7.2 kHz; at 48 kHz it also sees the noise above 8 kHz, and its gains *below* 7.2 kHz
 then stay about 5 dB higher in the pauses (residual noise 2-6 kHz up 4.5 dB). Its speech probability is not
 lower. Low-passing the input alone gives most of the score back.
