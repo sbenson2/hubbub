@@ -154,6 +154,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _watchGrace?.cancel();
       _focus = null;
       _rx.clear();
+      _tx.clear();
     }
     _inCall.value = c != null;
     widget.updates?.callActive.value = c != null;
@@ -195,6 +196,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// The stream stats panel, and the latest received sample for the watched stream.
   bool _showStats = false;
   final _rx = <String, VideoRxSample>{};
+
+  /// The latest outbound sample per source (`screen`, `camera`), shown with the stream stats.
+  final _tx = <String, VideoTxSample>{};
   bool _cameraBusy = false;
   bool _shareBusy = false;
   bool _mutedBeforeDeafen = false;
@@ -748,13 +752,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _onSignal(RoomSignal s) {
     // One line per signal for the automated multi-machine check; samples are too chatty.
-    if (s is! RoomStats && s is! RoomVideoRx) debugPrint('hubbub: ${_describe(s)}');
+    if (s is! RoomStats && s is! RoomVideoRx && s is! RoomVideoTx) debugPrint('hubbub: ${_describe(s)}');
     if (s is ShareEnded && _sharing) unawaited(_stopShare());
     if (s is RoomVideoRx) {
       // Every sample (every 2 s while a stream is watched) goes to the journal.
       debugPrint('hubbub: ${formatVideoRx(s.sample)}');
       final from = s.sample.participantId;
-      if (mounted && from != null) setState(() => _rx[from] = s.sample);
+      if (mounted && from != null) setState(() => _rx[s.sample.key] = s.sample);
+    }
+    if (s is RoomVideoTx) {
+      debugPrint('hubbub: ${formatVideoTx(s.sample)}');
+      if (mounted) setState(() => _tx[s.sample.source] = s.sample);
     }
     if (s is! RoomDisconnected || _rejoining) return;
     final call = _call;
@@ -776,6 +784,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         RoomStats() => 'stats',
         ShareEnded() => 'shareEnded',
         RoomVideoRx() => 'videoRx',
+        RoomVideoTx() => 'videoTx',
       };
 
   void _toast(String message) {
@@ -1142,7 +1151,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onFullscreen: _openFullscreen,
           showStats: _showStats,
           onToggleStats: () => setState(() => _showStats = !_showStats),
-          rx: _focus?.startsWith('stream:') ?? false ? _rx[_focus!.substring(7)] : null,
+          rx: switch (_focus) {
+            final f? when f.startsWith('stream:') => _rx[f.substring(7)],
+            final f? when f.startsWith('user:') => _rx['${f.substring(5)}/camera'],
+            _ => null,
+          },
+          tx: [
+            if (_sharing && _tx['screen'] != null) _tx['screen']!,
+            if (_cameraOn && _tx['camera'] != null) _tx['camera']!,
+          ],
         ),
       );
     }

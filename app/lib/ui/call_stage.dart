@@ -38,6 +38,7 @@ class StageActions {
     required this.showStats,
     required this.onToggleStats,
     this.rx,
+    this.tx = const [],
   });
 
   /// Whose streams are being watched (member ids).
@@ -56,6 +57,9 @@ class StageActions {
   final bool showStats;
   final VoidCallback onToggleStats;
   final VideoRxSample? rx;
+
+  /// Your own outbound video (screen share and camera) while it is on, shown under the stats.
+  final List<VideoTxSample> tx;
 }
 
 /// Whether [item] has pictures to show large: a camera, a stream you watch, or your own.
@@ -84,20 +88,21 @@ class CallStage extends StatelessWidget {
       return _TileGrid(items: items, tileFor: _tile);
     }
     final others = [for (final i in items) if (i != focus) i];
-    final watchedStream = focus.stream && !focus.member.isMe;
+    // Stats exist for anything you receive: a watched stream or someone else's camera.
+    final statsTile = !focus.member.isMe;
     return Column(children: [
       Expanded(
         child: KeyedSubtree(
           key: const ValueKey('focused'),
           child: Stack(children: [
             Positioned.fill(child: _tile(focus, large: true)),
-            if (watchedStream && actions.showStats)
-              Positioned(left: 8, top: 40, child: _StatsPanel(actions.rx)),
+            if (statsTile && actions.showStats)
+              Positioned(left: 8, top: 40, child: _StatsPanel(actions.rx, actions.tx)),
             Positioned(
               top: 8,
               right: 8,
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (watchedStream) ...[
+                if (statsTile) ...[
                   _OverlayButton(
                     tooltip: 'Stream Stats',
                     icon: Icons.bar_chart_rounded,
@@ -160,11 +165,28 @@ class CallStage extends StatelessWidget {
   }
 }
 
-/// The received resolution, frame rate and bitrate of the stream on screen.
+/// The received resolution, frame rate and bitrate of the stream or camera on screen, then one line
+/// for each of your own outgoing videos.
 class _StatsPanel extends StatelessWidget {
-  const _StatsPanel(this.rx);
+  const _StatsPanel(this.rx, this.tx);
 
   final VideoRxSample? rx;
+  final List<VideoTxSample> tx;
+
+  /// `Sending screen 1920x1080 60 fps`, plus `limited by cpu` when libwebrtc holds it back.
+  static List<String> _txLines(VideoTxSample t) {
+    final top = t.layers.isEmpty
+        ? null
+        : t.layers.reduce((a, b) => (a.width ?? 0) * (a.height ?? 0) >= (b.width ?? 0) * (b.height ?? 0) ? a : b);
+    final w = top?.width ?? t.captureWidth ?? 0;
+    final h = top?.height ?? t.captureHeight ?? 0;
+    final fps = top?.framesPerSecond ?? t.captureFps ?? 0;
+    final why = t.layers.map((l) => l.limitation).firstWhere((l) => l != null && l != 'none', orElse: () => null);
+    return [
+      'Sending ${t.source} ${w}x$h ${fps.round()} fps',
+      if (why != null) 'limited by $why',
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -176,11 +198,12 @@ class _StatsPanel extends StatelessWidget {
             '${(r.framesPerSecond ?? 0).round()} fps',
             '${(r.kbps ?? 0).round()} kbps',
           ];
+    final own = [for (final t in tx) ..._txLines(t)];
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(color: const Color(0xB3000000), borderRadius: BorderRadius.circular(4)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-        for (final l in lines)
+        for (final l in [...lines, ...own])
           Text(l,
               style: const TextStyle(
                   fontFamily: hubFont, fontSize: 12, height: 1.3, color: HubColors.white)),

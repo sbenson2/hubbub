@@ -1,29 +1,31 @@
 import 'package:livekit_client/livekit_client.dart';
 
-/// Camera: 960x540 at 30 fps, up to 1 Mbps, with one 360p15 simulcast layer that the grid
-/// tiles subscribe to. Degradation is balanced, so under pressure cameras step down before
-/// the screen share (which keeps its resolution) and long before voice.
+/// Camera: 1280x720 at up to 60 fps (a webcam gives what it has, usually 30), up to 2.5 Mbps,
+/// with one 360p30 simulcast layer that the grid tiles subscribe to. Asking for 720p lets
+/// webcams like the C920 use their 30 fps mode; a 960x540 request lands on a 15 fps one.
+/// Degradation keeps the frame rate, so a loaded encoder drops resolution before motion
+/// turns to a slideshow.
 CameraCaptureOptions cameraCaptureOptionsFor(String? deviceId) => CameraCaptureOptions(
       deviceId: deviceId,
-      maxFrameRate: 30,
+      maxFrameRate: 60,
       params: const VideoParameters(
-        dimensions: VideoDimensions(960, 540),
-        encoding: VideoEncoding(maxFramerate: 30, maxBitrate: 1000000),
+        dimensions: VideoDimensions(1280, 720),
+        encoding: VideoEncoding(maxFramerate: 60, maxBitrate: 2500000),
       ),
     );
 
 const cameraPublishOptions = VideoPublishOptions(
   name: VideoPublishOptions.defaultCameraName,
-  videoEncoding: VideoEncoding(maxFramerate: 30, maxBitrate: 1000000),
+  videoEncoding: VideoEncoding(maxFramerate: 60, maxBitrate: 2500000),
   simulcast: true,
   videoSimulcastLayers: [
     VideoParameters(
       dimensions: VideoDimensions(640, 360),
-      encoding: VideoEncoding(maxFramerate: 15, maxBitrate: 300000),
+      encoding: VideoEncoding(maxFramerate: 30, maxBitrate: 500000),
     ),
   ],
   backupVideoCodec: BackupVideoCodec(enabled: false),
-  degradationPreference: DegradationPreference.balanced,
+  degradationPreference: DegradationPreference.maintainFramerate,
 );
 
 /// Screen share capture: 1080p at up to 60 fps, at most 6 Mbps for the top layer.
@@ -36,7 +38,7 @@ ScreenShareCaptureOptions screenCaptureOptionsFor(String? sourceId) => ScreenSha
       ),
     );
 
-/// Screen share publishing: the 1080p60 layer plus 720p30 and 360p15 for viewers who cannot
+/// Screen share publishing: the 1080p60 layer plus 720p60 and 360p30 for viewers who cannot
 /// take it. The resolution is kept when bandwidth drops (text must stay readable), so it is
 /// the frame rate that gives way. H.264 only and no backup codec: calls are end-to-end
 /// encrypted and the frame cryptor skips AV1 (and the backup codec's sender gets none), which
@@ -50,11 +52,11 @@ VideoPublishOptions screenPublishOptionsFor() => const VideoPublishOptions(
       screenShareSimulcastLayers: [
         VideoParameters(
           dimensions: VideoDimensions(1280, 720),
-          encoding: VideoEncoding(maxFramerate: 30, maxBitrate: 2500000),
+          encoding: VideoEncoding(maxFramerate: 60, maxBitrate: 3500000),
         ),
         VideoParameters(
           dimensions: VideoDimensions(640, 360),
-          encoding: VideoEncoding(maxFramerate: 15, maxBitrate: 600000),
+          encoding: VideoEncoding(maxFramerate: 30, maxBitrate: 800000),
         ),
       ],
       degradationPreference: DegradationPreference.maintainResolution,
@@ -83,3 +85,16 @@ bool screenShareSupported({required bool isLinux, required Map<String, String> e
 /// which leaves Hubbub out); on Linux it is the whole PulseAudio monitor, which includes the
 /// call itself and would echo it back to the watchers, so a Linux share is picture only.
 bool shareAudioSupported({required bool isLinux}) => !isLinux;
+
+/// How much to shrink every screen share layer so the top one is at most 1920x1080 of the
+/// real capture. LiveKit computes the layer scales from the 1080p constraint, not from the
+/// frames, so on a 4K screen the "1080p" layer would go out at 3840x2160. 1 when the capture
+/// already fits.
+double captureDownscale(num width, num height) {
+  if (width <= 0 || height <= 0) return 1;
+  final s = [width / 1920, height / 1080, 1.0].reduce((a, b) => a > b ? a : b);
+  return s;
+}
+
+/// [scales] (each layer's `scaleResolutionDownBy`, null meaning 1) multiplied by [factor].
+List<double> scaledLayers(List<double?> scales, double factor) => [for (final s in scales) (s ?? 1) * factor];

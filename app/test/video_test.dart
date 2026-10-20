@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:hubbub/device_settings.dart';
 import 'package:hubbub/room_adapter.dart';
 import 'package:hubbub/share_sources.dart';
@@ -578,11 +579,98 @@ void main() {
   group('stats overlay', () {
     const stream = VideoFeed('TR_s');
     const sample = VideoRxSample(
-        participantId: 'bbbb', width: 1920, height: 1080, framesPerSecond: 59.6, kbps: 5400.4);
+        participantId: 'bbbb',
+        width: 1920,
+        height: 1080,
+        framesPerSecond: 59.6,
+        kbps: 5400.4,
+        framesDropped: 3,
+        decoder: 'OpenH264');
 
     test('video_rx_line_has_the_resolution_fps_and_kbps', () {
-      expect(formatVideoRx(sample), 'video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400');
-      expect(formatVideoRx(const VideoRxSample()), 'video_rx from=? 0x0 fps=0.0 kbps=0');
+      expect(formatVideoRx(sample),
+          'video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400 dropped=3 dec=OpenH264 src=screen');
+      expect(formatVideoRx(const VideoRxSample()),
+          'video_rx from=? 0x0 fps=0.0 kbps=0 dropped=0 dec=- src=screen');
+    });
+
+    test('video_tx_line_has_the_capture_rate_and_every_layer', () {
+      const tx = VideoTxSample(
+        source: 'screen',
+        captureWidth: 1920,
+        captureHeight: 1080,
+        captureFps: 59.8,
+        rttMs: 3.4,
+        layers: [
+          VideoTxLayer(
+              rid: 'f', width: 1920, height: 1080, framesPerSecond: 29.6, kbps: 5400.2, limitation: 'cpu', encoder: 'OpenH264'),
+          VideoTxLayer(rid: 'q', width: 640, height: 360, framesPerSecond: 15),
+        ],
+      );
+      expect(formatVideoTx(tx),
+          'video_tx src=screen capture=1920x1080@59.8 rtt=3ms f=1920x1080@29.6/5400kbps/cpu/OpenH264 q=640x360@15.0/0kbps/-/-');
+      expect(formatVideoTx(const VideoTxSample()), 'video_tx src=screen capture=0x0@0.0 rtt=0ms');
+    });
+
+    test('tx_reports_reduce_to_capture_layers_rtt_and_bitrate', () {
+      rtc.StatsReport out(num bytes, double ts) => rtc.StatsReport('o1', 'outbound-rtp', ts, {
+            'kind': 'video',
+            'rid': 'f',
+            'frameWidth': 1920,
+            'frameHeight': 1080,
+            'framesPerSecond': 59.0,
+            'bytesSent': bytes,
+            'qualityLimitationReason': 'none',
+            'encoderImplementation': 'OpenH264',
+          });
+      final rest = [
+        rtc.StatsReport('m', 'media-source', 0, {'kind': 'video', 'width': 1920, 'height': 1080, 'framesPerSecond': 30.0}),
+        rtc.StatsReport('c', 'candidate-pair', 0, {'nominated': true, 'currentRoundTripTime': 0.012}),
+      ];
+      final prev = <String, (num, num)>{};
+      final first = videoTxFromReports('screen', [out(0, 7), ...rest], prev, nowMs: 1000);
+      expect(first.layers.single.kbps, isNull);
+      final second = videoTxFromReports('screen', [out(125000, 7), ...rest], prev, nowMs: 2000);
+      expect(second.captureFps, 30.0);
+      expect(second.captureWidth, 1920);
+      expect(second.rttMs, closeTo(12, 0.001));
+      expect(second.layers.single.kbps, closeTo(1000, 0.001));
+      expect(second.layers.single.limitation, 'none');
+      expect(second.layers.single.encoder, 'OpenH264');
+    });
+
+    test('a_camera_sample_is_filed_apart_from_the_screen_share', () {
+      expect(const VideoRxSample(participantId: 'bbbb').key, 'bbbb');
+      expect(const VideoRxSample(participantId: 'bbbb', source: 'camera').key, 'bbbb/camera');
+    });
+
+    testWidgets('the_overlay_adds_your_own_tx_line_while_you_share', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobShare: stream);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Watch Stream'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      const tx = VideoTxSample(source: 'screen', captureFps: 30, layers: [
+        VideoTxLayer(rid: 'f', width: 1920, height: 1080, framesPerSecond: 29.6, limitation: 'cpu'),
+        VideoTxLayer(rid: 'q', width: 640, height: 360, framesPerSecond: 15, limitation: 'none'),
+      ]);
+      room.emitSignal(const RoomVideoTx(tx));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Sending'), findsNothing, reason: 'not sharing yet');
+
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Screen 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Go Live'));
+      await tester.pumpAndSettle();
+      room.emitSignal(const RoomVideoTx(tx));
+      await tester.pumpAndSettle();
+      expect(find.text('Sending screen 1920x1080 30 fps'), findsOneWidget);
+      expect(find.text('limited by cpu'), findsOneWidget);
     });
 
     testWidgets('the_overlay_is_off_until_toggled_then_shows_what_is_received', (tester) async {
@@ -612,6 +700,25 @@ void main() {
       expect(find.text('1280x720'), findsNothing);
     });
 
+    testWidgets('a_focused_camera_has_stats_too', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      callWith(tester, bobCamera: const VideoFeed('TR_cam'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('tile:bbbb')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Stream Stats'));
+      await tester.pumpAndSettle();
+      expect(find.text('Waiting for video…'), findsOneWidget);
+      room.emitSignal(const RoomVideoRx(VideoRxSample(
+          participantId: 'bbbb', source: 'camera', width: 1280, height: 720, framesPerSecond: 30, kbps: 2000)));
+      room.emitSignal(const RoomVideoRx(
+          VideoRxSample(participantId: 'bbbb', width: 1920, height: 1080, framesPerSecond: 60, kbps: 5000)));
+      await tester.pumpAndSettle();
+      expect(find.text('1280x720'), findsOneWidget);
+      expect(find.text('1920x1080'), findsNothing, reason: 'the share of the same person is not the camera');
+    });
+
     testWidgets('every_sample_is_logged_as_video_rx', (tester) async {
       final lines = <String>[];
       final old = debugPrint;
@@ -624,7 +731,22 @@ void main() {
       } finally {
         debugPrint = old;
       }
-      expect(lines, contains('hubbub: video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400'));
+      expect(lines, contains('hubbub: video_rx from=bbbb 1920x1080 fps=59.6 kbps=5400 dropped=3 dec=OpenH264 src=screen'));
+    });
+
+    testWidgets('every_outbound_sample_is_logged_as_video_tx', (tester) async {
+      final lines = <String>[];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => lines.add(m ?? '');
+      try {
+        await pumpShell(tester);
+        await joinLobby(tester);
+        room.emitSignal(const RoomVideoTx(VideoTxSample(source: 'camera', captureFps: 30)));
+        await tester.pump();
+      } finally {
+        debugPrint = old;
+      }
+      expect(lines, contains('hubbub: video_tx src=camera capture=0x0@30.0 rtt=0ms'));
     });
   });
 
