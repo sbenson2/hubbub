@@ -17,11 +17,13 @@ void main() {
   late FakeRoom room;
   late AppMember me;
   late FakeShareSources shares;
+  late FakePortalSource portal;
   late List<bool> fullscreen;
 
   Future<void> pumpShell(WidgetTester tester,
-      {DevicePrefs prefs = const DevicePrefs(), bool screenShare = true}) async {
+      {DevicePrefs prefs = const DevicePrefs(), bool screenShare = true, bool portalShare = false}) async {
     shares = FakeShareSources();
+    portal = FakePortalSource();
     fullscreen = [];
     events = StreamController<AppNodeEvent>.broadcast();
     me = member('aaaa', 'Shawn');
@@ -45,6 +47,8 @@ void main() {
         shareSources: shares.load,
         shareStillExists: shares.exists,
         screenShareAvailable: screenShare,
+        portalShare: portalShare,
+        portalSource: portal.call,
         setFullscreen: (on) async => fullscreen.add(on),
         loadConfig: () => throw StateError('a started node needs no config'),
       ),
@@ -104,6 +108,111 @@ void main() {
       await tester.pumpAndSettle();
       expect(room.calls, ['disconnect', 'connect', 'mic:true', 'deafened:false', 'camera:true']);
       expect(find.byTooltip('Turn Off Camera'), findsOneWidget);
+    });
+  });
+
+  group('wayland screen share', () {
+    const cancelled = 'Screen sharing was cancelled';
+
+    Future<void> pressShare(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    testWidgets('the_share_button_waits_for_the_system_dialog_and_opens_no_picker', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      portal.gate = Completer<String?>();
+      await pressShare(tester);
+      expect(find.text('Choose a screen in the system dialog'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+      expect(find.text('Go Live'), findsNothing);
+      expect(find.text('Screens'), findsNothing);
+      expect(shares.loads, 0, reason: 'the picker list (screens and windows) is never asked for');
+      expect(portal.calls, 1);
+      expect(room.calls, isEmpty);
+    });
+
+    testWidgets('the_pick_starts_the_share_with_the_id_the_loader_returned', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      portal.gate = Completer<String?>();
+      await pressShare(tester);
+      portal.gate!.complete('portal-7');
+      await tester.pumpAndSettle();
+      expect(find.text('Choose a screen in the system dialog'), findsNothing);
+      expect(room.calls, ['screen:true:portal-7']);
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Stop Streaming'));
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:true:portal-7', 'screen:false']);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('cancel_in_hubbub_stops_the_wait_and_shares_nothing', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      portal.gate = Completer<String?>();
+      await pressShare(tester);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(portal.lastCancel!.cancelled, isTrue);
+      expect(room.calls, isEmpty);
+      expect(find.text('Choose a screen in the system dialog'), findsNothing);
+      expect(find.text(cancelled), findsOneWidget);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('no_pick_in_time_shares_nothing_and_says_it_was_cancelled', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      portal.error = TimeoutException('nobody chose');
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      expect(room.calls, isEmpty);
+      expect(find.text(cancelled), findsOneWidget);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('a_portal_that_fails_says_why_and_shares_nothing', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      portal.error = StateError('no portal');
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      expect(room.calls, isEmpty);
+      expect(find.textContaining('Could not start the stream'), findsOneWidget);
+      expect(find.byTooltip('Share Your Screen'), findsOneWidget);
+    });
+
+    testWidgets('a_portal_share_is_never_checked_for_a_vanished_source', (tester) async {
+      await pumpShell(tester, portalShare: true);
+      await joinLobby(tester);
+      await pressShare(tester);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 10));
+      expect(shares.checks, 0);
+      expect(find.byTooltip('Stop Streaming'), findsOneWidget);
+    });
+
+    testWidgets('the_picker_flow_is_unchanged_when_not_in_portal_mode', (tester) async {
+      await pumpShell(tester);
+      await joinLobby(tester);
+      await tester.tap(find.byTooltip('Share Your Screen'));
+      await tester.pumpAndSettle();
+      expect(find.text('Screens'), findsOneWidget);
+      expect(portal.calls, 0);
+      await tester.tap(find.text('Screen 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Go Live'));
+      await tester.pumpAndSettle();
+      expect(room.calls, ['screen:true:screen:0:0']);
+      await tester.pump(const Duration(seconds: 3));
+      expect(shares.checks, greaterThan(0), reason: 'a picker share is still watched');
+      expect(portal.calls, 0);
     });
   });
 

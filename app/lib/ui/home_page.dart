@@ -27,6 +27,7 @@ import 'dialogs/invite_dialog.dart';
 import 'dialogs/join_dialog.dart';
 import 'dialogs/leave_dialog.dart';
 import 'dialogs/name_dialog.dart';
+import 'dialogs/portal_share_dialog.dart';
 import 'dialogs/share_picker_dialog.dart';
 import 'dialogs/update_banner.dart';
 import 'member_list.dart';
@@ -59,6 +60,8 @@ class HomePage extends StatefulWidget {
     this.shareSources = desktopShareSources,
     this.shareStillExists = desktopSourceExists,
     this.screenShareAvailable,
+    this.portalShare,
+    this.portalSource = portalScreenSource,
     this.setFullscreen = setWindowFullscreen,
   }) : assert((controller == null) != (hub == null), 'give a controller or a hub');
 
@@ -78,6 +81,13 @@ class HomePage extends StatefulWidget {
 
   /// Whether this session can share a screen at all; null decides from the platform.
   final bool? screenShareAvailable;
+
+  /// Whether the screen is picked in the system's own share prompt (Wayland) instead of
+  /// Hubbub's picker; null decides from the platform.
+  final bool? portalShare;
+
+  /// Waits for the pick in the system's prompt (only used when [portalShare]).
+  final PortalScreenSource portalSource;
 
   /// Puts the whole window in (or takes it out of) full screen for a focused stream.
   final Future<void> Function(bool) setFullscreen;
@@ -585,7 +595,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final available = widget.screenShareAvailable ??
           screenShareSupported(isLinux: Platform.isLinux, env: Platform.environment);
       if (!available) return _toast(shareUnsupported);
-      final source = await showSharePicker(context, widget.shareSources);
+      final portal = widget.portalShare ??
+          portalScreenShare(isLinux: Platform.isLinux, env: Platform.environment);
+      final source = portal ? await _pickInPortal() : await showSharePicker(context, widget.shareSources);
       if (source == null || !mounted || _call == null) return;
       setState(() {
         _sharing = true;
@@ -593,9 +605,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
       try {
         await widget.room.setScreenShareEnabled(true, sourceId: source);
-        _watchShare(source);
+        // A portal source is a placeholder id and cannot be listed; the share ends when the
+        // user stops it.
+        if (!portal) _watchShare(source);
       } catch (e) {
-        _toast(defaultTargetPlatform == TargetPlatform.linux
+        _toast(defaultTargetPlatform == TargetPlatform.linux && !portal
             ? shareUnsupported
             : 'Could not start the stream: $e');
         if (mounted) setState(() => _sharing = false);
@@ -603,6 +617,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } finally {
       _shareBusy = false;
     }
+  }
+
+  /// Wayland: waits in a small dialog while the system's own prompt asks which screen. Null
+  /// when nothing was chosen (the message says so).
+  Future<String?> _pickInPortal() async {
+    final pick = await showPortalWait(context, widget.portalSource);
+    if (pick.id != null) return pick.id;
+    final error = pick.error;
+    if (error == null || error is TimeoutException) {
+      _toast(portalShareCancelled);
+    } else {
+      _toast('Could not start the stream: $error');
+    }
+    return null;
   }
 
   /// The desktop plugin never says when a captured window closes, so look for it: when the

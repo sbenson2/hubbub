@@ -320,7 +320,10 @@ class FakeShareSources {
   Object? error;
   int loads = 0;
 
+  int checks = 0;
+
   Future<bool> exists(String id) async {
+    checks++;
     if (error != null) throw error!;
     return sources.any((s) => s.id == id);
   }
@@ -329,6 +332,23 @@ class FakeShareSources {
     loads++;
     if (error != null) throw error!;
     return List.of(sources);
+  }
+}
+
+/// The Wayland share prompt: [gate] holds the pick back until the test completes it; without
+/// one the pick comes at once. [error] makes the wait fail.
+class FakePortalSource {
+  String id = 'portal-1';
+  Object? error;
+  Completer<String?>? gate;
+  int calls = 0;
+  PortalCancel? lastCancel;
+
+  Future<String?> call(PortalCancel cancel) {
+    calls++;
+    lastCancel = cancel;
+    if (error != null) return Future.error(error!);
+    return gate?.future ?? Future.value(id);
   }
 }
 

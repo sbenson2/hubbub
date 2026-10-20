@@ -64,10 +64,20 @@ VideoPublishOptions screenPublishOptionsFor() => const VideoPublishOptions(
 /// (`e2ee_manager.dart:51-54`) or the receiver (`:88-90`): published, they go unencrypted.
 const frameCryptorSkipsCodecs = <String>{'av1'};
 
-/// Whether this session can capture a screen or window. The plugin captures through X11/GDI
-/// only; under Wayland that gives a black picture, so it is refused up front.
+/// Whether the screen is captured through the system's share prompt (xdg-desktop-portal and
+/// PipeWire): a Wayland session on Linux. It is libwebrtc's own rule for choosing PipeWire
+/// (`XDG_SESSION_TYPE` is `wayland` and `WAYLAND_DISPLAY` is set), so the two cannot disagree.
+bool portalScreenShare({required bool isLinux, required Map<String, String> env}) =>
+    isLinux && env['XDG_SESSION_TYPE'] == 'wayland' && (env['WAYLAND_DISPLAY'] ?? '').isNotEmpty;
+
+/// Whether this session can capture a screen or window. Windows, macOS and X11 capture
+/// directly; Wayland captures through the system prompt ([portalScreenShare]). A session
+/// with only one of the two Wayland variables set is refused: libwebrtc would pick X11 there
+/// and get a black picture.
 bool screenShareSupported({required bool isLinux, required Map<String, String> env}) =>
-    !(isLinux && (env['XDG_SESSION_TYPE'] == 'wayland' || (env['WAYLAND_DISPLAY'] ?? '').isNotEmpty));
+    !isLinux ||
+    portalScreenShare(isLinux: isLinux, env: env) ||
+    !(env['XDG_SESSION_TYPE'] == 'wayland' || (env['WAYLAND_DISPLAY'] ?? '').isNotEmpty);
 
 /// Whether a share carries sound. On Windows it is the app's own audio (process loopback,
 /// which leaves Hubbub out); on Linux it is the whole PulseAudio monitor, which includes the
