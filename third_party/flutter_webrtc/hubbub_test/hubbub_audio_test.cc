@@ -615,6 +615,55 @@ static void TestLatency() {
   }
 }
 
+// RNNoise stand-in: a pure two frame (20 ms) delay at gain 1, which is what the
+// real RNNoise adds to the signal (its frame plus the overlap-add window).
+static float g_prev[2][480];
+static float DelayFrame(float* out, const float* in) {
+  std::copy(g_prev[0], g_prev[0] + 480, out);
+  std::copy(g_prev[1], g_prev[1] + 480, g_prev[0]);
+  std::copy(in, in + 480, g_prev[1]);
+  return 0.f;
+}
+
+// Pins the timing of the band split: with RNNoise a pure delay at gain 1, the
+// low band (through RNNoise) and the high band (delayed alongside) must add up to
+// the input again at the stated lag. A high band that is a frame early or late
+// shows up as a comb filter and fails the residual.
+static void TestBandTiming() {
+  std::printf("band timing: pure-delay RNNoise reconstructs the input\n");
+  const int rate = 48000;
+  const int kLag = 960 + 54;  // RNNoise's 20 ms plus the band split's 54 samples
+  std::mt19937 rng(11);
+  std::normal_distribution<float> nd(0.f, 3000.f);
+  std::vector<float> in(rate * 2);
+  for (auto& v : in) v = nd(rng);  // white: both bands carry energy
+  std::fill(&g_prev[0][0], &g_prev[0][0] + 960, 0.f);
+  CapturePipeline p;
+  p.Initialize(rate, 1);
+  p.SetDenoiseFrameForTest(DelayFrame);
+  p.SetRnnoiseEnabled(true);
+  auto out = RunPipeline(p, in, rate / 100);
+  double e = 0, r = 0;
+  for (size_t i = (size_t)rate / 2; i < in.size(); ++i) {
+    double d = (double)out[i] - in[i - kLag];
+    e += (double)in[i - kLag] * in[i - kLag];
+    r += d * d;
+  }
+  double db = 10 * std::log10(r / e + 1e-30);
+  std::printf("  lag %d samples, residual %.1f dB\n", kLag, db);
+  CHECK(db < -60.0, "residual %.1f dB at lag %d", db, kLag);
+}
+
+// A frame RNNoise treats as silence passes at unity gain; the reported gain says so.
+static void TestLastGainSilence() {
+  std::printf("rnnoise_last_gain: unity after a silent frame\n");
+  DenoiseState* st = rnnoise_create(nullptr);
+  float in[480] = {}, out[480];
+  for (int k = 0; k < 4; ++k) rnnoise_process_frame(st, out, in);
+  CHECK(rnnoise_last_gain(st, 0.f, 24000.f) == 1.f, "silence gain %f", rnnoise_last_gain(st, 0.f, 24000.f));
+  rnnoise_destroy(st);
+}
+
 static void Benchmark() {
   CapturePipeline p;
   p.Initialize(48000, 1);
@@ -649,6 +698,8 @@ int main() {
   TestNoAllocation();
   TestToggleNoClick();
   TestLatency();
+  TestBandTiming();
+  TestLastGainSilence();
   Benchmark();
   std::printf(g_fail ? "FAILED: %d check(s)\n" : "ALL PASSED\n", g_fail);
   return g_fail ? 1 : 0;

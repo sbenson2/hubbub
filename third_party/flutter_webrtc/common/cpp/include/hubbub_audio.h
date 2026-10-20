@@ -151,6 +151,10 @@ class CapturePipeline {
   // adapter uses UseLevelsSlot so nothing allocates on the audio thread).
   void SetLevelsCallback(LevelsCallback cb) { cb_ = std::move(cb); }
   void UseLevelsSlot(LevelsSlot* slot) { slot_ = slot; }
+  // Test seam: stands in for rnnoise_process_frame (the high band then gets
+  // unity gain). Null in production.
+  using DenoiseFrameFn = float (*)(float* out, const float* in);
+  void SetDenoiseFrameForTest(DenoiseFrameFn fn) { frame_test_ = fn; }
 
  private:
   void ResetDenoise();
@@ -169,6 +173,7 @@ class CapturePipeline {
   // RNNoise state. Everything is allocated in Initialize, so turning RNNoise
   // on or off on the audio thread allocates nothing.
   DenoiseState* st_ = nullptr;
+  DenoiseFrameFn frame_test_ = nullptr;
   bool denoise_active_ = false;
   bool tail_classic_ = false;
   float tail_floor_db_ = -20.f, tail_hold_ms_ = 200.f;

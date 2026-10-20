@@ -194,7 +194,7 @@ void CapturePipeline::ResetDenoise() {
 // call's to this one's. high_ holds as many samples as the chunker, so at least
 // this frame's.
 void CapturePipeline::AddHighBand(float* out) {
-  const float g = rnnoise_last_gain(st_, kHighGainFromHz, kHighGainToHz);
+  const float g = frame_test_ ? 1.f : rnnoise_last_gain(st_, kHighGainFromHz, kHighGainToHz);
   const float step = (g - high_gain_) / (float)kRnnoiseFrame;
   float k = high_gain_;
   for (int i = 0; i < kRnnoiseFrame; ++i) {
@@ -239,7 +239,7 @@ size_t CapturePipeline::RunDenoise(float* samples, size_t n) {
   out48_.clear();
   chunker_.Push(in48, n48, [&](const float* frame) {
     float tmp[kRnnoiseFrame];
-    float vad = rnnoise_process_frame(st_, tmp, frame);
+    float vad = frame_test_ ? frame_test_(tmp, frame) : rnnoise_process_frame(st_, tmp, frame);
     speech_sum_ += vad;
     ++speech_n_;
     if (split_down_) AddHighBand(tmp);

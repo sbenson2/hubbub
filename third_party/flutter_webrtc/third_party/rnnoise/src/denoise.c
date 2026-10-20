@@ -90,6 +90,7 @@ struct DenoiseState {
   float hb_release;
   int hb_hold_frames;
   int hb_hold_left;
+  int hb_silent; /* last frame was treated as silence: unity gain applied */
 };
 
 static void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
@@ -337,6 +338,8 @@ void rnnoise_set_tail(DenoiseState *st, int mode, float floor_gain,
 float rnnoise_last_gain(const DenoiseState *st, float lo_hz, float hi_hz) {
   int i, n = 0;
   float sum = 0;
+  /* A silent frame passes through at unity gain; lastg is then stale. */
+  if (st->hb_silent) return 1.f;
   for (i=0;i<NB_BANDS;i++) {
     /* band centres in 20 ms (50 Hz) bins */
     float hz = eband20ms[i] * (24000.f/(FREQ_SIZE-1));
@@ -498,6 +501,7 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   static const float b_hp[2] = {-2, 1};
   rnn_biquad(x, st->mem_hp_x, in, b_hp, a_hp, FRAME_SIZE);
   silence = rnn_compute_frame_features(st, X, P, Ex, Ep, Exp, features, x);
+  st->hb_silent = silence != 0;
 
   if (!silence) {
 #if !TRAINING
