@@ -3,7 +3,23 @@
 
 #include <stdexcept>
 
+#ifdef __linux__
+#include <cstdlib>
+#endif
+
 namespace flutter_webrtc_plugin {
+
+#ifdef __linux__
+// Hubbub: true when libwebrtc captures the screen through the xdg-desktop-portal / PipeWire
+// capturer. Same rule as libwebrtc's DesktopCapturer (XDG_SESSION_TYPE is "wayland" and
+// WAYLAND_DISPLAY is set), so the two cannot disagree.
+static bool IsWaylandPortalSession() {
+  const char* session = std::getenv("XDG_SESSION_TYPE");
+  const char* display = std::getenv("WAYLAND_DISPLAY");
+  return session != nullptr && std::string(session) == "wayland" &&
+         display != nullptr && display[0] != '\0';
+}
+#endif
 
 FlutterScreenCapture::FlutterScreenCapture(FlutterWebRTCBase* base)
     : base_(base) {}
@@ -371,6 +387,20 @@ void FlutterScreenCapture::GetDisplayMedia(
   base_->local_streams_[uuid] = stream;
 
   desktop_capturer->Start(uint32_t(fps));
+
+#ifdef __linux__
+  // Hubbub: on a Wayland portal session the cached Screen media list keeps its own portal
+  // session open (GNOME's "sharing" indicator stays on, and the next share would reuse it
+  // without asking). The user already chose in that session, and the capturer above started
+  // with its restore token. Drop the list so the portal session closes; the next share builds
+  // a fresh list and so asks again. Nothing else points at the list: a MediaSourceImpl holds a
+  // raw pointer to it, but only UpdateThumbnail() uses that, and it is reached only through
+  // sources_, which is cleared here. The capturer keeps just a refptr to its source.
+  if (IsWaylandPortalSession()) {
+    sources_.clear();
+    medialist_.erase(DesktopType::kScreen);
+  }
+#endif
 
   result->Success(EncodableValue(params));
 }

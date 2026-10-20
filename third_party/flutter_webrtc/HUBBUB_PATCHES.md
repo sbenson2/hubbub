@@ -111,6 +111,25 @@ delivered once. Test: `hubbub_test/task_runner_test.cc` (real runner; watchdog t
 
 macOS, Android, iOS: untouched (the Dart API reports `HubbubAudio.supported == false` there).
 
+## Wayland screen share: drop the cached Screen media list
+
+`common/cpp/src/flutter_screen_capture.cc`, Linux only. On a Wayland portal session (`XDG_SESSION_TYPE`
+is `wayland` and `WAYLAND_DISPLAY` is set, libwebrtc's own rule for choosing PipeWire) the Screen
+capturer is the xdg-desktop-portal one, and creating the cached Screen media list starts a portal
+session, which is GNOME's share prompt. Upstream keeps that list for the life of the plugin, so GNOME's
+"sharing" indicator never closed and a second share reused the session without asking.
+
+`GetDisplayMedia` now clears `sources_` and erases `medialist_[kScreen]` right after it has created and
+started the real capturer (which reuses the list's restore token, so the user is asked once). The next
+`getSources` builds a fresh list, which opens a new portal session with a new placeholder id, so a
+fresh prompt appears.
+
+Lifetime check (libwebrtc.m150.7871.03 wrapper): `MediaSourceImpl` keeps a raw `RTCDesktopMediaListImpl*`
+used only by `UpdateThumbnail()`, which the plugin reaches only through `sources_` (cleared in the same
+step). `RTCDesktopCapturerImpl` holds a `scoped_refptr<MediaSource>` for `source()` and never calls
+`UpdateThumbnail()`, so dropping the list while the capture runs is safe. The list's destructor stops its
+own thread and capturer, which closes only the list's portal session.
+
 ## Re-applying on an upgrade (new flutter_webrtc version)
 
 1. Copy the new pub.dev package over `third_party/flutter_webrtc` in a pristine commit (keep
