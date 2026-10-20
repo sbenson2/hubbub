@@ -1,0 +1,5 @@
+# Reviewed false positives (2026-10-19):
+# the fps harness's throwaway secret for a loopback-only test LiveKit
+14f0e804d91ff12480756bc13c6cf689b55e29ec:app/integration_test/video_fps_test.dart:generic-api-key:23
+# an SDP fmtp parameter (useinbandfec=1), not a key
+ad9d3252ba3bc1903522f4a6d25a89d78090c086:third_party/flutter_webrtc/hubbub_test/apm_probe.cc:generic-api-key:219

@@ -74,7 +74,7 @@ void main() {
     test('the placeholder means no feed yet', () {
       // The built-in feed is the public releases repo now (ec6bdf9), so it is a real URL.
       expect(resolveUpdateFeed(env: {}), kUpdateFeed);
-      expect(kUpdateFeed, startsWith('https://github.com/sbenson2/hubbub-releases/'));
+      expect(kUpdateFeed, startsWith('https://github.com/sbenson2/hubbub/releases/'));
       expect(resolveUpdateFeed(compiled: 'https://github.com/<OWNER>/r/releases/latest/download', env: {}), isNull);
     });
 

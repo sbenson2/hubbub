@@ -7,11 +7,11 @@ import 'src/rust/api/install.dart' as rust;
 
 /// Where installed copies look for a newer release: a folder of static files (the installer
 /// feed `releases.win.json` and the packages), e.g. a GitHub release's `latest/download`.
-/// The public releases repo's latest release; override it with
+/// The project repo's latest release; override it with
 /// `--dart-define=HUBBUB_UPDATE_FEED=<url or folder>`. A feed still holding the `<OWNER>`
 /// placeholder is never contacted.
 const kUpdateFeed = String.fromEnvironment('HUBBUB_UPDATE_FEED',
-    defaultValue: 'https://github.com/sbenson2/hubbub-releases/releases/latest/download');
+    defaultValue: 'https://github.com/sbenson2/hubbub/releases/latest/download');
 
 /// The feed to use: the `HUBBUB_UPDATE_FEED` environment variable (a local folder to try an
 /// update without a server) over the built-in one. Null when it is still the placeholder.

@@ -2,7 +2,9 @@
 
 Prerequisites: `vpk` (`dotnet tool install -g vpk`), the Flutter SDK, and `tools/fetch-livekit.sh`
 already run so `livekit-server.exe` is bundled. The update feed URL in `app/lib/install.dart`
-(`kUpdateFeed`) must be the real `.../releases/latest/download` of the public releases repo.
+(`kUpdateFeed`) must be the real `.../releases/latest/download` of this repo
+(`https://github.com/sbenson2/hubbub`). Before 0.1.1 the feed was the separate
+`sbenson2/hubbub-releases` repo; 0.1.1 was published there once so those copies move over.
 
 Friends update at different times, so builds that talk to each other differ. Before changing a wire
 message, read the compatibility rule above `CtlMsg` in `core/src/proto.rs`.
@@ -15,7 +17,7 @@ message, read the compatibility rule above `CtlMsg` in `core/src/proto.rs`.
 3. `powershell -File tools\package-windows.ps1` from the repo root. It writes `dist\windows`.
    **Keep `dist\windows` between releases.** vpk reads the earlier full packages and
    `releases.win.json` there to build the delta; a fresh empty folder gives a full package only.
-4. On the GitHub releases repo, create a release tagged with the version and upload every file the
+4. On this repo's GitHub Releases, create a release tagged with the version and upload every file the
    script left that matters: `HubbubSetup.exe`, `releases.win.json`, the new
    `Hubbub-<ver>-full.nupkg` and `Hubbub-<ver>-delta.nupkg`. Do not upload the other files.
 5. Mark it as the latest release (not a pre-release): clients read
