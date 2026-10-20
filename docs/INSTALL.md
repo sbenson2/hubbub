@@ -29,8 +29,7 @@ Download **HubbubLinux.AppImage**, make it executable (`chmod +x HubbubLinux.App
 It needs FUSE to run an AppImage (Fedora: `sudo dnf install fuse fuse-libs`; Ubuntu: `libfuse2`) and the
 appindicator library for the tray icon (Fedora: `libayatana-appindicator-gtk3`; Ubuntu:
 `libayatana-appindicator3-1`); without the library Hubbub does not start. On GNOME the tray icon also
-needs the AppIndicator shell extension. Screen sharing is not available on Wayland; on Linux a screen
-share carries the picture only, no sound.
+needs the AppIndicator shell extension. On Linux a screen share carries the picture only, no sound.
 Linux does not update itself yet: to update, download the new AppImage from the latest release and
 replace the old one.
 

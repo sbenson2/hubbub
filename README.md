@@ -1,155 +1,164 @@
-# Hubbub
-
-**Open-source voice, text and screen-share chat that runs on your friends' computers instead of a company's servers.**
-
 <p align="center">
-  <img src="docs/brand/hubbub-icon.png" alt="Hubbub logo" width="160">
+  <img src="docs/brand/hubbub-icon.png" alt="Hubbub logo" width="140">
 </p>
+
+<h1 align="center">Hubbub</h1>
+
+<p align="center"><b>Voice, video and screen share with your friends. No servers, no accounts, no bill.</b></p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Platforms: Windows, Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-lightgrey">
-  <img alt="Status: pre-release 0.1.0" src="https://img.shields.io/badge/status-pre--release-orange">
+  <a href="https://github.com/sbenson2/hubbub/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/sbenson2/hubbub?label=release"></a>
+  <img alt="Platforms: Windows, macOS, Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey">
 </p>
 
-## Why
+<p align="center">
+  <a href="https://github.com/sbenson2/hubbub/releases/latest/download/HubbubSetup.exe"><b>Download for Windows</b></a>
+  &nbsp;|&nbsp;
+  <a href="https://github.com/sbenson2/hubbub/releases/latest/download/HubbubMac.pkg"><b>Download for macOS</b></a>
+  &nbsp;|&nbsp;
+  <a href="https://github.com/sbenson2/hubbub/releases/latest/download/HubbubLinux.AppImage"><b>Download for Linux</b></a>
+</p>
 
-Chat servers are usually someone else's machine, behind someone else's account system. Hubbub removes both. A server is a group of friends who each run the app; one of them acts as the host at any moment, and the role moves when that person leaves. You join with a link. There are no accounts, no central service, no port forwarding and no router settings.
+<p align="center"><sub>Free and open source (MIT). Early software, being tested with friends. <a href="#install">Install notes</a></sub></p>
 
-The interface is deliberately familiar: servers, text and voice channels, a member list, screen sharing. If you have used a community chat app before, you already know how to use this one.
+<p align="center">
+  <img src="docs/screenshots/hero.png" alt="Hubbub with a voice call, a shared screen and the Weekend Raid server open" width="900">
+</p>
 
-> **Status: pre-release.** Version 0.1.0, unsigned, being tested with a small group of friends. Expect rough edges. See [Status](#status-and-roadmap).
+## Why Hubbub
+
+- **No server to rent.** Your friends' computers are the network. One of them hosts at any moment, and you never set anything up.
+- **No account.** Install it, type a name, paste an invite link.
+- **Free 1080p screen share.** 1080p, with no paywall and no time limit.
+- **End-to-end encrypted calls.** The computer that hosts a call can't listen in on it.
+- **Your friends are the network.** If the host closes the app, another online friend takes over.
+- **Open source.** MIT licensed. Read the code, run it, fork it.
 
 ## Features
 
-- **Voice, text and screen share** in channels, with voice-channel presence visible to everyone in the server.
-- **No server to rent.** The member elected as host runs a bundled [LiveKit](https://livekit.io) media server; the role rotates and hands over when the host leaves, and calls follow it.
-- **No port forwarding.** Call media travels over [iroh](https://www.iroh.computer) connections, not open ports.
-- **End-to-end encrypted calls.** The call key is derived from the community's key material.
-- **Text ordered by the host**, with catch-up for members who were offline.
-- **Invite links** (`hubbub://join/...`) that work with no central service: any online member can admit you. Hubbub detects an invite on your clipboard. You can be in several servers at once.
-- **Audio controls:** RNNoise noise suppression, input volume and a live peak meter.
-- **Desktop integration:** Windows installer with a tray icon and start at login; Linux AppImage.
+### Text channels and chat
 
-## Install
+A familiar Discord-style layout: servers on the left, channels next to them, members on the right. Chat in text channels, and catch up on what you missed when you come back online.
 
-Download the latest build from the project's GitHub releases page. Full instructions, including the unsigned-installer warning, microphone permission and Linux dependencies, are in [docs/INSTALL.md](docs/INSTALL.md).
+<p align="center"><img src="docs/screenshots/chat.png" alt="A #general text channel in the Weekend Raid server" width="800"></p>
 
-- **Windows:** run `HubbubSetup.exe`. It installs for your account only and needs no admin password. Because it is not signed yet, Windows shows "Windows protected your PC": choose **More info**, then **Run anyway**.
-- **Linux:** download `HubbubLinux.AppImage`, `chmod +x` it and run it. It needs FUSE and the AppIndicator library for the tray icon.
+### Voice with noise suppression
+
+Jump into a voice channel and see who is in it before you join. Built-in RNNoise noise suppression cuts keyboard clatter and fan noise. There is an input volume control and a live level meter.
+
+<p align="center"><img src="docs/screenshots/voice.png" alt="The Squad Voice channel with four people connected" width="800"></p>
+
+### Video grid
+
+Turn on your webcam (720p at 30 fps) and everyone shows up in one grid. On Windows, a "Keep full frame rate in low light" setting keeps the camera at 30 fps in a dim room.
+
+<p align="center"><img src="docs/screenshots/video.png" alt="A video call grid with four participants" width="800"></p>
+
+### Screen share
+
+Share your screen at 1080p, at 30+ fps. On 4K monitors the share is scaled to 1080p and currently measures about 35 fps. Stream Stats show what your camera and your own share are actually sending.
+
+<p align="center"><img src="docs/screenshots/screen-share.png" alt="Someone sharing their screen in a voice call" width="800"></p>
+
+### Invites that are just a link
+
+Make an invite and send it to a friend. It looks like `hubbub://join/...`. They paste it into Hubbub, or Hubbub notices it on their clipboard. Anyone holding a valid link can join, so share it with people you trust. You can be in several servers at once.
+
+<p align="center"><img src="docs/screenshots/invite.png" alt="The invite dialog with a hubbub://join link" width="600"></p>
+
+### Quick to start
+
+The first launch asks for a name and not much else.
+
+<p align="center"><img src="docs/screenshots/welcome.png" alt="The welcome screen asking for a display name" width="600"></p>
+
+### Settings, and a tray icon
+
+Pick your mic and camera, tune noise suppression, and choose whether Hubbub starts with Windows. It lives in the tray, so your servers stay online when you close the window.
+
+<p align="center"><img src="docs/screenshots/settings.png" alt="The settings screen with audio and video options" width="700"></p>
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  subgraph A[Member A]
-    ClientA[Hubbub app] --> ShimA[TURN shim]
-  end
-  subgraph B[Member B]
-    ClientB[Hubbub app] --> ShimB[TURN shim]
-  end
-  subgraph H[Elected host]
-    ShimH[TURN shim] --> LK[LiveKit server]
-  end
-  ShimA <-->|iroh| LK
-  ShimB <-->|iroh| LK
+  A["You"] -->|"encrypted call"| H["Host<br/>(one friend, right now)"]
+  B["Friend 2"] -->|"encrypted call"| H
+  C["Friend 3"] -->|"encrypted call"| H
+  H -. "host leaves: next online friend takes over" .-> C
 ```
 
-1. **Identity and membership.** Each install has its own keypair. A server (a "community") is a shared membership list and key material replicated between members over [iroh](https://www.iroh.computer) connections. There is no account database.
-2. **Joining.** An invite is a `hubbub://join/...` link. Any member who is online checks it against their own copy of the server state, admits you, and broadcasts the new member list.
-3. **Host election.** Members elect one host. The host orders text messages, assembles voice presence, and runs a bundled LiveKit server on loopback. When the host leaves, another member takes over and ongoing calls move with it.
-4. **Media without open ports.** LiveKit listens only on the host's loopback address. Every member, including the host, runs a small local TURN server (the "shim") that gives their WebRTC client a relay address. Each packet is carried as a frame over the iroh tunnel to the host's LiveKit, so nothing needs to be reachable from the internet.
-5. **Encryption.** Call media is end-to-end encrypted with a key taken from the community, so the host's LiveKit server forwards packets it cannot read.
-6. **Text.** The host assigns an order to messages. A member who comes online later asks peers for what it missed.
+- Each server is a group of friends who all run Hubbub. There is no company in the middle.
+- One online friend acts as the host. Their copy of Hubbub runs the call and puts chat in order.
+- If the host goes offline, the role moves to someone who is online, and calls follow.
+- Call audio and video are end-to-end encrypted. The host forwards them but can't read them.
+- Nobody needs to open ports or change router settings.
 
-The design documents are in [docs/superpowers/specs](docs/superpowers/specs) (the original design and the invites design), and prior-art notes are in [docs/research](docs/research).
+Under the hood: [iroh](https://www.iroh.computer) connections between peers, and a bundled [LiveKit](https://livekit.io) media server on the host. The full design is in [docs/superpowers/specs](docs/superpowers/specs).
 
-## Philosophy
+## Install
 
-Community chat shouldn't depend on one company's servers, business model or terms of service. Hubbub is the open alternative: the same familiar experience, owned by the people who use it.
+Pick your platform and download. Full notes are in [docs/INSTALL.md](docs/INSTALL.md).
 
-- **Open source.** All of Hubbub is MIT licensed and developed in the open. Anyone can read the code, audit it, run it, fork it or improve it.
-- **Free forever.** Everything you need to talk with your friends (servers, text, voice, video, screen sharing, invites) is free, with no limits and no expiry. Optional premium features may come later to fund development. They will be extras on top, and nothing that is free today will move behind a paywall.
-- **Community driven.** The roadmap is shaped by the people who use it. Issues, ideas and pull requests are welcome, and the project is meant to outlive any one maintainer.
-- **Your data stays yours.** There is no Hubbub cloud. Messages and server data live on the members' own computers and travel between them over encrypted peer-to-peer links. When no direct path exists, a relay passes along traffic it cannot read. There are no accounts, no ads, no tracking, no analytics, and nothing to sell.
-- **Secure by design.** Every connection between members is encrypted, and voice and video calls are end-to-end encrypted. A server's keys are held by its members and shared only through its invite links. Because the code is open, none of this has to be taken on trust.
-- **It just works.** No router settings, no sign-up, no setup steps. Install it, share an invite link, and talk.
+| Platform | Download | Notes |
+| --- | --- | --- |
+| Windows | [HubbubSetup.exe](https://github.com/sbenson2/hubbub/releases/latest/download/HubbubSetup.exe) | Installs for your account, no admin password. Updates itself. |
+| macOS (Apple silicon) | [HubbubMac.pkg](https://github.com/sbenson2/hubbub/releases/latest/download/HubbubMac.pkg) | Updates are manual for now. |
+| Linux | [HubbubLinux.AppImage](https://github.com/sbenson2/hubbub/releases/latest/download/HubbubLinux.AppImage) | Updates are manual. Needs FUSE and the AppIndicator library. |
 
-## Status and roadmap
+<sub>v0.1.1 is Windows-first: the macOS and Linux files follow shortly.</sub>
 
-Version 0.1.0, pre-release and unsigned.
+**Hubbub isn't code-signed yet**, so your system will warn you the first time. That's expected.
 
-**The goal right now is a solid foundation.** Joining, calls, text, screen sharing and host handover have to work well and consistently on every platform before anything else is added. After that, new features come from what the community asks for and helps build.
+- **Windows:** SmartScreen says "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **macOS:** open the .pkg and, when macOS refuses, go to System Settings, Privacy & Security and click **Open Anyway**. Repeat if it blocks Hubbub itself on first start.
+- **Linux:** `chmod +x HubbubLinux.AppImage`, then run it.
 
-1. **Foundation (now):** reliability across networks and machines, the macOS build, Linux screen sharing on Wayland, signed installers and automatic updates.
-2. **Community features (next):** whatever users ask for most. Open an issue to suggest something or to vote on an existing idea.
+## FAQ
 
-| Platform | State |
-| --- | --- |
-| Windows | Primary platform. Velopack installer, tray icon, start at login. |
-| Linux | AppImage. Updates are manual. Screen sharing is off on Wayland for now; a Linux screen share carries video only. |
-| macOS | In progress. No installer yet. |
+**Is it really free?**
+Yes. Hubbub is MIT licensed, and everything in it is free: servers, text, voice, video and screen share. There are no ads and no tracking.
 
-- **Auto-update:** the Windows updater is built in, but the update feed is not published yet (the feed URL in `app/lib/install.dart` is a placeholder), so updates are manual for now.
-- **Signing:** installers are not code-signed.
-- **Mobile:** not supported.
+**Do I need a server?**
+No. There is nothing to rent or set up. A friend's computer hosts for you, and the role moves around.
+
+**Who can join?**
+Anyone with a valid invite link. Treat the link like a key and share it with people you trust.
+
+**What happens when the host goes offline?**
+Another online member takes over as host, and calls move with it. If nobody in a server is online, there is nothing running until someone opens Hubbub.
+
+**Is it private?**
+Calls are end-to-end encrypted. There is no Hubbub cloud: messages and server data live on the members' own computers and travel directly between them. The code is open, so you can check.
+
+**Does it work over the internet?**
+Yes. Friends can be on different networks. No port forwarding or router changes are needed.
+
+## Status
+
+Hubbub is early software. It is being tested with a small group of friends, installers are unsigned, and there will be rough edges. Windows is the primary platform. Right now the focus is reliability: joining, calls, chat, screen share and host handover working well everywhere. Signed installers come after that, then whatever people ask for.
+
+Found a bug? [Open an issue](https://github.com/sbenson2/hubbub/issues). Logs help.
 
 ## Build from source
 
-You need:
-
-- Flutter (stable channel; the app requires Dart 3.13.5 or newer, and has been built with Flutter 3.47.7), with desktop support for your platform.
-- Rust (stable, via `rustup`; `rust-toolchain.toml` selects the channel).
-- Bash and `curl` to run the LiveKit download script (use WSL or Git Bash on Windows; check out with LF line endings or the script will fail).
-- For installers: the [Velopack](https://velopack.io) `vpk` tool (`dotnet tool install -g vpk`).
+You need Flutter (stable), Rust (stable, via `rustup`) and Bash with `curl`.
 
 ```sh
-# 1. Fetch the bundled LiveKit server (version pinned in tools/livekit-version.txt)
 tools/fetch-livekit.sh windows amd64     # or: linux amd64
-
-# 2. Build the app (this also builds the Rust core)
 cd app
 flutter pub get
 flutter build windows --release          # or: flutter build linux --release
-
-# 3. Run the Rust tests
-cd ..
-cargo test -p hubbub-core --features test-util
+cd .. && cargo test -p hubbub-core --features test-util
 ```
 
-Packaging (details in [docs/RELEASING.md](docs/RELEASING.md)):
-
-```sh
-powershell -File tools\package-windows.ps1     # Windows installer and update feed, into dist\windows
-tools/package-linux.sh                         # Linux AppImage, into dist/linux
-```
-
-The first Windows or Linux build downloads a prebuilt libwebrtc, so it needs network access. The Dart bindings to the Rust core are generated with `flutter_rust_bridge_codegen generate` in `app/`.
-
-## Project layout
-
-| Path | What it is |
-| --- | --- |
-| `app/` | Flutter UI (`app/lib`), tests, and the platform runners. |
-| `app/rust/` | The flutter_rust_bridge crate that exposes the core to Dart. |
-| `core/` | `hubbub-core`, the Rust library: iroh networking, membership and invites, host election, text, voice presence, LiveKit hosting and the media tunnel and TURN shim. |
-| `cli/` | Command-line front end to the core. |
-| `third_party/flutter_webrtc/` | Fork of `flutter_webrtc` with the audio processing patches (RNNoise, input volume, peak meter). See `HUBBUB_PATCHES.md` there. |
-| `tools/` | LiveKit fetch script, packaging scripts, smoke tests and the relay check. |
-| `vendor/` | Downloaded LiveKit binaries (not committed). |
-| `docs/` | Install and release guides, design specs, research and brand assets. |
+Details, packaging and what to run before a pull request are in [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Contributing
 
-Hubbub is meant to be built together, and help of every kind is welcome:
-
-- **Test it.** Use it with friends on different networks and machines, and report what breaks, with logs if you can. This is the most valuable help while the foundation is being finished.
-- **Report bugs and suggest features** in [Issues](https://github.com/sbenson2/hubbub/issues).
-- **Send code.** Pull requests are welcome. Open an issue first for anything large, so we can agree on the approach.
-- **Improve the docs**, translations and the first-run experience.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a change.
+Testing with friends on different networks is the most useful help right now. Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE). Bundled components keep their own licences: LiveKit server (Apache-2.0), `flutter_webrtc` (MIT, see `third_party/flutter_webrtc/LICENSE`), and the other dependencies listed in `Cargo.lock` and `app/pubspec.lock`.
+[MIT](LICENSE). Bundled components keep their own licences: LiveKit server (Apache-2.0), `flutter_webrtc` (MIT), and the dependencies listed in `Cargo.lock` and `app/pubspec.lock`.
