@@ -29,8 +29,9 @@ samples). The processor runs after echo cancellation, noise suppression and AGC 
    it on or off cross-fades over one block (and stays dry until RNNoise has real output), so it does
    not click.
    **Latency added while RNNoise is on** (measured by cross-correlation, `TestLatency` in
-   `hubbub_audio_test`): about 20 ms at 48 kHz and about 30 ms at 16 and 32 kHz. The 20 ms is
-   RNNoise's own (the 10 ms frame it works on plus its overlap-add window); at other rates a further
+   `hubbub_audio_test`): about 21 ms at 48 kHz and about 30 ms at 16 and 32 kHz. The 20 ms is
+   RNNoise's own (the 10 ms frame it works on plus its overlap-add window), the 1.1 ms at 48 kHz is the
+   band split (54 samples, see "RNNoise sees only the wideband part" below); at other rates a further
    10 ms comes from waiting for a whole 48 kHz frame (the up-resampler's group delay pushes the end of
    each frame into the next block; the output is zero filled for the first block, then 9 samples at
    16 kHz). With RNNoise off the processor adds no delay.
@@ -286,6 +287,26 @@ state fields `hb_*` in `DenoiseState`, all zero after `rnnoise_init` = upstream 
 `hubbubSetTailMode {mode: classic|hold, floorDb?, holdMs?}` (`flutter_webrtc.cc`), Dart
 `HubbubAudio.setTailMode(classic:, floorDb:, holdMs:)`. The app never calls it; users always get "hold".
 Tests: `hubbub_test/hubbub_audio_test.cc` (`TestTailHold`, `TestTailSteadyNoise`, `TestTailSwitchLive`).
+
+## RNNoise sees only the wideband part (2026-10-20)
+
+Found when Windows capture moved to 48 kHz: the noisy suite's hook leg got worse (PESQ-WB new 2.01 -> 1.85,
+classic 1.78 -> 1.51) while clean speech got better. Cause, measured offline (`hubbub_test/hubbub_offline`,
+report `.superpowers/sdd/2026-10-19-audio/report-noisy-48k.md`): at 16 kHz RNNoise only ever saw the
+resampled band below 7.2 kHz; at 48 kHz it also sees the noise above 8 kHz, and its gains *below* 7.2 kHz
+then stay about 5 dB higher in the pauses (residual noise 2-6 kHz up 4.5 dB). Its speech probability is not
+lower. Low-passing the input alone gives most of the score back.
+
+Fix in `CapturePipeline::RunDenoise` (`hubbub_audio.cc`), for every rate above 16 kHz: RNNoise gets the
+48 -> 16 -> 48 kHz round trip of its input (exactly what a 16 kHz layout always gave it), and the rest, the
+high band (input minus that), is added back two frames later with the mean gain RNNoise applied to its bands
+centred at 4 to 7.2 kHz (`rnnoise_last_gain`, a read-only accessor in `denoise.c`/`rnnoise.h`), ramped
+across each frame like RNNoise's own overlap-add. So the band below 7.2 kHz is denoised the same at every
+rate, and content above 8 kHz stays (speech keeps its top, steady noise there is cut like the rest: -20 dB
+with the floor). The chunker starts with the round trip's 54 held-back samples, so frames still end with
+the blocks (1.1 ms more delay, not 10). 16 kHz is untouched (bit-identical output).
+Tests: `TestWidebandIgnoresHighNoise` (noise at 10-18 kHz changes the output below 7.2 kHz by -75 dB; about
+-21 dB without the split), `TestHighBandFollowsGains`, and the 48 kHz bound in `TestLatency`.
 
 ## Re-applying on an upgrade (new flutter_webrtc version)
 

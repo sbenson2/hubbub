@@ -63,6 +63,14 @@ if(EXISTS "${LIBWEBRTC_DIR}/include/rtc_audio_processing.h")
   if(NOT MSVC)
     target_link_libraries(hubbub_processor_test PRIVATE pthread)
   endif()
+  # Offline tool: the capture hook over a WAV (see hubbub_offline.cc).
+  add_executable(hubbub_offline hubbub_offline.cc "${PLUGIN_COMMON}/src/hubbub_audio.cc")
+  target_include_directories(hubbub_offline PRIVATE "${PLUGIN_COMMON}/include" "${LIBWEBRTC_DIR}/include")
+  target_link_libraries(hubbub_offline PRIVATE rnnoise)
+  target_compile_definitions(hubbub_offline PRIVATE $<$<BOOL:${WIN32}>:LIB_WEBRTC_API_DLL> $<$<BOOL:${MSVC}>:_USE_MATH_DEFINES>)
+  if(NOT MSVC)
+    target_link_libraries(hubbub_offline PRIVATE pthread)
+  endif()
 endif()
 
 # Real task runner (Hubbub fix: tasks run without the queue mutex). Set

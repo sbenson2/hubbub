@@ -129,6 +129,9 @@ class LevelsSlot {
 // In-place mono processor: RNNoise (any rate, resampled to 48 kHz), then input
 // gain with a soft limiter, then peak metering. Settings may be changed from
 // any thread (they are atomics); Initialize and Process run on the audio thread.
+// RNNoise treats the band below about 7 kHz the same at every rate: noise above
+// 8 kHz makes its gains below that worse (HUBBUB_PATCHES.md), so above 16 kHz
+// the signal is split and only the wideband part goes through the network.
 class CapturePipeline {
  public:
   using LevelsCallback = std::function<void(const Levels&)>;
@@ -154,6 +157,7 @@ class CapturePipeline {
   void ApplyTail();
   // Returns how many samples at the front were zero filled (RNNoise not primed).
   size_t RunDenoise(float* samples, size_t n);
+  void AddHighBand(float* out);
 
   CaptureSettings own_;
   const CaptureSettings* s_ = &own_;
@@ -170,6 +174,14 @@ class CapturePipeline {
   float tail_floor_db_ = -20.f, tail_hold_ms_ = 200.f;
   float mix_ = 0.f;  // 0 = dry, 1 = RNNoise output; moves over one block
   std::unique_ptr<RationalResampler> up_, down_;
+  // Above 16 kHz RNNoise analyses only the wideband part (the 48 -> 16 -> 48 kHz
+  // round trip a 16 kHz layout always made); the rest, the high band, follows
+  // the gains RNNoise gave its top wideband bands. See RunDenoise.
+  std::unique_ptr<RationalResampler> split_down_, split_up_;
+  std::vector<float> low16_, low48_, hist48_, high_;
+  std::vector<float> high_delay_;  // the high band of the last two RNNoise frames
+  float high_gain_ = 0.f;          // high band gain of the last RNNoise frame
+  size_t split_hold_ = 0;          // samples the round trip holds back
   FrameRechunker chunker_{480};
   std::vector<float> scratch_, out48_, wet_;
   std::vector<float> fifo_;  // processed samples at the native rate

@@ -98,6 +98,11 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
 RNNOISE_EXPORT void rnnoise_set_tail(DenoiseState *st, int mode, float floor_gain,
                                      int hold_frames, float release);
 
+/* Hubbub patch: the mean of the band gains rnnoise_process_frame applied last
+ * (after smoothing, hold and floor), over the bands centred in lo_hz..hi_hz
+ * (lo inclusive). 1 when no band is centred there. Read only. */
+RNNOISE_EXPORT float rnnoise_last_gain(const DenoiseState *st, float lo_hz, float hi_hz);
+
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
 /**

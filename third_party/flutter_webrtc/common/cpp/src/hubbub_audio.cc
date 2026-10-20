@@ -20,6 +20,11 @@ constexpr float kMaxOut = 32767.f;
 constexpr int kRnnoiseRate = 48000;
 constexpr int kRnnoiseFrame = 480;
 constexpr float kClipLevel = 0.98f * kFullScale;
+// RNNoise analyses at most what a 16 kHz signal holds (below 7.2 kHz, the
+// resampler cutoff); the high band above it takes the mean gain of the bands
+// centred at 4 to 7.2 kHz, the top of what RNNoise analysed.
+constexpr int kAnalysisRate = 16000;
+constexpr float kHighGainFromHz = 4000.f, kHighGainToHz = 7200.f;
 }  // namespace
 
 float SoftLimit(float x) {
@@ -118,11 +123,30 @@ void CapturePipeline::Initialize(int sample_rate, int channels) {
     up_.reset();
     down_.reset();
   }
+  if (rate_ > kAnalysisRate) {
+    split_down_ = std::make_unique<RationalResampler>(kRnnoiseRate, kAnalysisRate);
+    split_up_ = std::make_unique<RationalResampler>(kAnalysisRate, kRnnoiseRate);
+    // How many samples the round trip holds back. RNNoise's frames start that
+    // many zeros early, so they still end with the 10 ms blocks instead of
+    // waiting a whole block for the last few samples.
+    std::vector<float> probe(kRnnoiseFrame, 0.f), mid, back;
+    split_down_->Process(probe.data(), probe.size(), mid);
+    split_up_->Process(mid.data(), mid.size(), back);
+    split_hold_ = kRnnoiseFrame - std::min<size_t>(back.size(), kRnnoiseFrame);
+  } else {
+    split_down_.reset();
+    split_up_.reset();
+  }
   constexpr size_t kReserve = 8192;
   scratch_.reserve(kReserve);
   out48_.reserve(kReserve);
   wet_.reserve(kReserve);
   fifo_.reserve(kReserve);
+  low16_.reserve(kReserve);
+  low48_.reserve(kReserve);
+  hist48_.reserve(kReserve);
+  high_.reserve(kReserve);
+  high_delay_.assign(2 * kRnnoiseFrame, 0.f);
   chunker_.Reserve(kReserve);
   ResetDenoise();
   denoise_active_ = false;
@@ -151,6 +175,37 @@ void CapturePipeline::ResetDenoise() {
   speech_n_ = 0;
   if (up_) up_->Reset();
   if (down_) down_->Reset();
+  if (split_down_) split_down_->Reset();
+  if (split_up_) split_up_->Reset();
+  hist48_.clear();
+  high_.clear();
+  std::fill(high_delay_.begin(), high_delay_.end(), 0.f);
+  high_gain_ = 0.f;
+  if (split_down_ && split_hold_ > 0) {
+    static const float kZeros[kRnnoiseFrame] = {};
+    chunker_.Push(kZeros, split_hold_, [](const float*) {});  // less than a frame
+    high_.insert(high_.end(), kZeros, kZeros + split_hold_);
+  }
+}
+
+// Adds the high band to the RNNoise output frame |out|. That frame is the input
+// of two frames back (RNNoise's delay), overlap-added from the gains of the last
+// two calls, so the high band of that frame gets a gain ramped from the last
+// call's to this one's. high_ holds as many samples as the chunker, so at least
+// this frame's.
+void CapturePipeline::AddHighBand(float* out) {
+  const float g = rnnoise_last_gain(st_, kHighGainFromHz, kHighGainToHz);
+  const float step = (g - high_gain_) / (float)kRnnoiseFrame;
+  float k = high_gain_;
+  for (int i = 0; i < kRnnoiseFrame; ++i) {
+    k += step;
+    out[i] += k * high_delay_[i];
+  }
+  high_gain_ = g;
+  std::copy(high_delay_.begin() + kRnnoiseFrame, high_delay_.end(), high_delay_.begin());
+  if (high_.size() < (size_t)kRnnoiseFrame) return;  // cannot happen, see above
+  std::copy(high_.begin(), high_.begin() + kRnnoiseFrame, high_delay_.begin() + kRnnoiseFrame);
+  high_.erase(high_.begin(), high_.begin() + kRnnoiseFrame);
 }
 
 // Runs RNNoise on |samples| in place. The output is delayed by the resampler
@@ -166,12 +221,28 @@ size_t CapturePipeline::RunDenoise(float* samples, size_t n) {
     in48 = scratch_.data();
     n48 = scratch_.size();
   }
+  if (split_down_) {
+    // RNNoise gets the wideband part. The resamplers hold samples back but do
+    // not shift them, so low48_[i] lines up with the oldest unmatched input
+    // sample and the high band is the input minus the wideband part.
+    low16_.clear();
+    split_down_->Process(in48, n48, low16_);
+    low48_.clear();
+    split_up_->Process(low16_.data(), low16_.size(), low48_);
+    hist48_.insert(hist48_.end(), in48, in48 + n48);
+    size_t m = std::min(low48_.size(), hist48_.size());
+    for (size_t i = 0; i < m; ++i) high_.push_back(hist48_[i] - low48_[i]);
+    hist48_.erase(hist48_.begin(), hist48_.begin() + m);
+    in48 = low48_.data();
+    n48 = m;
+  }
   out48_.clear();
   chunker_.Push(in48, n48, [&](const float* frame) {
     float tmp[kRnnoiseFrame];
     float vad = rnnoise_process_frame(st_, tmp, frame);
     speech_sum_ += vad;
     ++speech_n_;
+    if (split_down_) AddHighBand(tmp);
     out48_.insert(out48_.end(), tmp, tmp + kRnnoiseFrame);
   });
   if (down_) {

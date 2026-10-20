@@ -334,6 +334,20 @@ void rnnoise_set_tail(DenoiseState *st, int mode, float floor_gain,
   st->hb_hold_left = 0;
 }
 
+float rnnoise_last_gain(const DenoiseState *st, float lo_hz, float hi_hz) {
+  int i, n = 0;
+  float sum = 0;
+  for (i=0;i<NB_BANDS;i++) {
+    /* band centres in 20 ms (50 Hz) bins */
+    float hz = eband20ms[i] * (24000.f/(FREQ_SIZE-1));
+    if (hz >= lo_hz && hz < hi_hz) {
+      sum += st->lastg[i];
+      n++;
+    }
+  }
+  return n ? sum/n : 1.f;
+}
+
 void rnnoise_destroy(DenoiseState *st) {
   free(st);
 }

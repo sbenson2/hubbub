@@ -373,6 +373,99 @@ static void TestTailSwitchLive() {
   CHECK(g_allocs.load() == 0, "allocs=%ld", g_allocs.load());
 }
 
+// |x| through a from -> to -> from round trip: a low-pass at 45 % of |to|/2, in
+// step with |x| (the resampler holds samples back, it does not shift them).
+static std::vector<float> LowPass(const std::vector<float>& x, int from, int to) {
+  RationalResampler down(from, to), up(to, from);
+  std::vector<float> mid, out;
+  std::vector<float> padded = x;
+  padded.resize(x.size() + from / 10, 0.f);  // push out the filter tails
+  down.Process(padded.data(), padded.size(), mid);
+  up.Process(mid.data(), mid.size(), out);
+  out.resize(x.size());
+  return out;
+}
+static std::vector<float> HighPart(const std::vector<float>& x) {  // above about 7.2 kHz
+  auto lo = LowPass(x, 48000, 16000);
+  for (size_t i = 0; i < x.size(); ++i) lo[i] = x[i] - lo[i];
+  return lo;
+}
+
+// Voiced bursts (140 Hz, harmonics up to |top_hz|), 300 ms on, 300 ms off.
+static std::vector<float> VoicedBursts(int n, double top_hz, double amp) {
+  std::vector<float> v(n, 0.f);
+  for (int h = 1; 140.0 * h <= top_hz; ++h)
+    for (int i = 0; i < n; ++i) v[i] += (float)(amp / std::sqrt((double)h) * std::sin(2 * M_PI * 140.0 * h * i / 48000 + h));
+  for (int i = 0; i < n; ++i)
+    if ((i / 14400) % 2) v[i] = 0.f;
+  return v;
+}
+
+static void TestWidebandIgnoresHighNoise() {
+  std::printf("rnnoise 48 kHz: noise above 8 kHz does not change how the band below is denoised\n");
+  const int n = 48000 * 4;
+  std::mt19937 rng(11);
+  std::normal_distribution<float> nd(0.f, 1000.f);
+  std::vector<float> w1(n), w2(n);
+  for (auto& s : w1) s = nd(rng);
+  for (auto& s : w2) s = nd(rng);
+  auto speech = VoicedBursts(n, 6000, 1500);
+  auto low_noise = LowPass(w1, 48000, 16000);  // below 7.2 kHz
+  // 10.4 to 17.6 kHz: a 0..3.6 kHz noise band moved up by 14 kHz
+  auto high_noise = LowPass(w2, 48000, 8000);
+  for (int i = 0; i < n; ++i) high_noise[i] *= (float)(2.0 * std::cos(2 * M_PI * 14000.0 * i / 48000));
+  std::vector<float> a(n), b(n);
+  for (int i = 0; i < n; ++i) {
+    a[i] = speech[i] + low_noise[i];
+    b[i] = a[i] + high_noise[i];
+  }
+  CapturePipeline pa, pb;
+  for (auto* p : {&pa, &pb}) {
+    p->Initialize(48000, 1);
+    p->SetRnnoiseEnabled(true);
+  }
+  auto oa = LowPass(RunPipeline(pa, a, 480), 48000, 16000);
+  auto ob = LowPass(RunPipeline(pb, b, 480), 48000, 16000);
+  std::vector<float> diff(n);
+  for (int i = 0; i < n; ++i) diff[i] = oa[i] - ob[i];
+  double rel = Rms(diff, 48000) / Rms(oa, 48000);
+  std::printf("  below 7.2 kHz, with vs without the high noise: difference %.1f dB\n", 20 * std::log10(rel + 1e-12));
+  // without the split it is about -21 dB: RNNoise's gains below 7.2 kHz follow the high noise
+  CHECK(rel < 0.01, "the high noise changed the band below by %.1f dB", 20 * std::log10(rel));
+}
+
+static void TestHighBandFollowsGains() {
+  std::printf("rnnoise 48 kHz: content above 8 kHz kept in speech, suppressed in steady noise\n");
+  // voiced bursts with harmonics up to 12 kHz: the part above 8 kHz must survive
+  const int n = 48000 * 3;
+  auto speech = VoicedBursts(n, 12000, 1500);
+  CapturePipeline p;
+  p.Initialize(48000, 1);
+  p.SetRnnoiseEnabled(true);
+  auto out = RunPipeline(p, speech, 480);
+  auto hi_in = HighPart(speech), hi_out = HighPart(out);
+  double kept = 0, sent = 0;  // second and third burst; the output lags 20 ms
+  for (int i = 28800 + 2400; i < 28800 + 12000; ++i) {
+    sent += (double)hi_in[i] * hi_in[i] + (double)hi_in[i + 57600] * hi_in[i + 57600];
+    kept += (double)hi_out[i + 1000] * hi_out[i + 1000] + (double)hi_out[i + 57600 + 1000] * hi_out[i + 57600 + 1000];
+  }
+  double kept_db = 10 * std::log10(kept / sent);
+  std::printf("  speech above 7.2 kHz: %.1f dB\n", kept_db);
+  CHECK(kept_db > -6.0, "speech above 7.2 kHz lost %.1f dB", kept_db);
+  // steady white noise: the part above 8 kHz goes down like the rest
+  std::mt19937 rng(3);
+  std::normal_distribution<float> nd(0.f, 1500.f);
+  std::vector<float> noise(n);
+  for (auto& s : noise) s = nd(rng);
+  CapturePipeline q;
+  q.Initialize(48000, 1);
+  q.SetRnnoiseEnabled(true);
+  auto nout = RunPipeline(q, noise, 480);
+  double cut_db = 20 * std::log10(Rms(HighPart(nout), 48000) / Rms(HighPart(noise), 48000));
+  std::printf("  steady noise above 7.2 kHz: %.1f dB\n", cut_db);
+  CHECK(cut_db < -10.0, "steady noise above 7.2 kHz only %.1f dB down", cut_db);
+}
+
 static void TestLevelsSlot() {
   std::printf("levels slot: a reader never sees a torn write\n");
   LevelsSlot slot;
@@ -517,6 +610,8 @@ static void TestLatency() {
     }
     std::printf("  %d Hz: output lags the input by %d samples = %.1f ms\n", rate, best, 1000.0 * best / rate);
     CHECK(best >= 0 && 1000.0 * best / rate < 35.0, "%d Hz: lag %d samples", rate, best);
+    // 48 kHz: RNNoise's 20 ms plus the band split's 54 samples, not a whole block more
+    if (rate == 48000) CHECK(1000.0 * best / rate < 22.0, "48 kHz: lag %d samples", best);
   }
 }
 
@@ -546,6 +641,8 @@ int main() {
   TestTailHold();
   TestTailSteadyNoise();
   TestTailSwitchLive();
+  TestWidebandIgnoresHighNoise();
+  TestHighBandFollowsGains();
   TestLevelsSlot();
   TestSharedSettings();
   TestLimiterAtUnity();
