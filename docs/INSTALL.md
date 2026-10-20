@@ -33,3 +33,13 @@ needs the AppIndicator shell extension. Screen sharing is not available on Wayla
 share carries the picture only, no sound.
 Linux does not update itself yet: to update, download the new AppImage from the latest release and
 replace the old one.
+
+## macOS
+
+Hubbub needs an Apple silicon Mac (M1 or later). Download **HubbubMac.pkg** and open it. Hubbub is not
+notarized by Apple, so macOS refuses it the first time: open System Settings → Privacy & Security, click
+**Open Anyway** next to the message about HubbubMac.pkg, and confirm. If macOS blocks Hubbub itself when
+it first starts, do the same again. macOS asks for the microphone, camera and screen recording the first
+time Hubbub uses each.
+macOS does not update itself yet: to update, download the new HubbubMac.pkg from the latest release and
+install it over the old one.

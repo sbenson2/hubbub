@@ -1,4 +1,4 @@
-# Releasing Hubbub (Windows, then Linux)
+# Releasing Hubbub (Windows, then Linux and macOS)
 
 Prerequisites: `vpk` (`dotnet tool install -g vpk`), the Flutter SDK, and `tools/fetch-livekit.sh`
 already run so `livekit-server.exe` is bundled. The update feed URL in `app/lib/install.dart`
@@ -35,3 +35,10 @@ at least always upload the newest `-full.nupkg`.
 
 In WSL: `cd ~/dev/hubbub/app && flutter build linux --release`, then `tools/package-linux.sh`.
 Upload `dist/linux/HubbubLinux.AppImage` to the same release.
+
+## macOS (manual download, no self-update yet)
+
+On an Apple silicon Mac with `vpk`: `tools/fetch-livekit.sh darwin arm64` once, then
+`cd app && flutter build macos --release` and `tools/package-macos.sh`. Upload `dist/macos/HubbubMac.pkg`
+to the same release. The app is ad-hoc signed, not notarized; notarizing needs an Apple Developer
+account and vpk's `--signAppIdentity`, `--signInstallIdentity` and `--notaryProfile`.

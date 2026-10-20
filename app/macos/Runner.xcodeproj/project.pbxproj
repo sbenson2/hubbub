@@ -452,7 +452,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\ndest=\"$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Resources/livekit-server\"\nmkdir -p \"$(dirname \"$dest\")\"\ncp \"$SRCROOT/../../vendor/livekit/darwin-arm64/livekit-server\" \"$dest\"\n# The sandboxed app launches this helper, so it must be signed to inherit the sandbox.\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" --entitlements \"$SRCROOT/Runner/LiveKitHelper.entitlements\" \"$dest\"\n";
+			shellScript = "set -e\ndest=\"$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Resources/livekit-server\"\nmkdir -p \"$(dirname \"$dest\")\"\n# The vendored binary is read-only, so an earlier build's copy cannot be overwritten in place.\nrm -f \"$dest\"\ncp \"$SRCROOT/../../vendor/livekit/darwin-arm64/livekit-server\" \"$dest\"\n# The sandboxed app launches this helper, so it must be signed to inherit the sandbox.\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" --entitlements \"$SRCROOT/Runner/LiveKitHelper.entitlements\" \"$dest\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
