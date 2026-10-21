@@ -59,6 +59,10 @@ impl Default for LkPorts {
 /// router mapping is needed; remote media comes in through the iroh tunnel (`media_tunnel`).
 /// `node_ip` is the address LiveKit advertises, which nobody dials directly.
 /// `rtc_tcp` of `LkPorts` is therefore unused.
+/// The `audio:` block makes the speaking indicator quick: LiveKit's defaults (400 ms windows,
+/// smoothed over two) light it 0.5 to 1.4 s after speech starts. Windows of 100 ms with no
+/// smoothing do it in about 100 ms but drop between syllables, so the client holds the ring
+/// briefly (`speaking_hold.dart`).
 pub fn render_config(ports: &LkPorts, node_ip: IpAddr, api_key: &str, api_secret: &str) -> String {
     format!(
         "port: {}\n\
@@ -66,6 +70,8 @@ pub fn render_config(ports: &LkPorts, node_ip: IpAddr, api_key: &str, api_secret
          rtc:\n  tcp_port: 0\n  udp_port: {}\n  use_external_ip: false\n  node_ip: {}\n  \
          enable_loopback_candidate: true\n  ips:\n    includes: [\"127.0.0.0/8\"]\n\
          keys:\n  {}: {}\n\
+         audio:\n  active_level: 40\n  min_percentile: 30\n  update_interval: 100\n  \
+         smooth_intervals: 1\n\
          logging:\n  level: info\n",
         ports.signal, ports.rtc_udp, node_ip, api_key, api_secret
     )
@@ -854,6 +860,10 @@ mod tests {
         assert!(y.contains("tcp_port: 0"), "no ICE-TCP listener on all interfaces");
         assert!(y.contains("includes: [\"127.0.0.0/8\"]"), "media sockets only on loopback");
         assert!(y.contains("enable_loopback_candidate: true"));
+        assert!(y.contains("active_level: 40"), "speaking indicator tuning");
+        assert!(y.contains("min_percentile: 30"));
+        assert!(y.contains("update_interval: 100"));
+        assert!(y.contains("smooth_intervals: 1"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ import 'package:livekit_client/livekit_client.dart';
 import 'audio_diagnostics.dart';
 import 'capture_options.dart';
 import 'publish_guard.dart';
+import 'speaking_hold.dart';
 import 'src/rust/api/hubbub.dart' show AppIceServer;
 import 'video_options.dart';
 
@@ -936,6 +937,8 @@ class LiveKitRoomAdapter implements RoomAdapter {
   Future<void> dispose() async {
     _levelTimer?.cancel();
     _levelTimer = null;
+    _holdTimer?.cancel();
+    _holdTimer = null;
     await _peakSub?.cancel();
     _peakSub = null;
     await _layoutSub?.cancel();
@@ -956,6 +959,9 @@ class LiveKitRoomAdapter implements RoomAdapter {
     }
     _statsTimer?.cancel();
     _statsTimer = null;
+    _holdTimer?.cancel();
+    _holdTimer = null;
+    _speaking.clear();
     await _listener?.dispose();
     _listener = null;
     _watchedShares.clear();
@@ -1187,6 +1193,11 @@ class LiveKitRoomAdapter implements RoomAdapter {
     return VideoFeed(pub.sid, track: video);
   }
 
+  /// Keeps a speaker lit for a moment after the server last reported them: the server's
+  /// windows are short, so it drops between words.
+  final _speaking = SpeakingHold();
+  Timer? _holdTimer;
+
   void _emitParticipants() {
     final room = _room;
     final list = <RoomParticipant>[];
@@ -1195,7 +1206,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
       list.add(RoomParticipant(
         id: local.identity,
         name: local.name.isEmpty ? local.identity : local.name,
-        speaking: local.isSpeaking,
+        speaking: _speaking.update(local.identity, local.isSpeaking),
         isLocal: true,
         muted: _micMuted(local),
         camera: _feed(local, TrackSource.camera),
@@ -1205,7 +1216,7 @@ class LiveKitRoomAdapter implements RoomAdapter {
         list.add(RoomParticipant(
           id: p.identity,
           name: p.name.isEmpty ? p.identity : p.name,
-          speaking: p.isSpeaking,
+          speaking: _speaking.update(p.identity, p.isSpeaking),
           isLocal: false,
           muted: _micMuted(p),
           camera: _feed(p, TrackSource.camera),
@@ -1213,7 +1224,15 @@ class LiveKitRoomAdapter implements RoomAdapter {
         ));
       }
     }
+    _speaking.retainOnly({for (final p in list) p.id});
     _participants.add(list);
+    _holdTimer?.cancel();
+    _holdTimer = null;
+    final expiry = _speaking.nextExpiry;
+    if (expiry != null) {
+      final wait = expiry.difference(DateTime.now());
+      _holdTimer = Timer(wait.isNegative ? Duration.zero : wait, _emitParticipants);
+    }
   }
 
   /// Bytes received and when, per subscribed video, for the bitrate between two samples.
