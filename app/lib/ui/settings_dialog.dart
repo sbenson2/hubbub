@@ -6,6 +6,7 @@ import '../audio_settings.dart';
 import '../capture_options.dart';
 import '../device_settings.dart';
 import '../install.dart';
+import '../overlay/overlay_prefs.dart';
 import '../room_adapter.dart';
 import 'context_menu.dart';
 import 'mic_meter.dart';
@@ -20,16 +21,17 @@ Future<void> showSettingsDialog(
   required AudioSettings audio,
   required ValueListenable<bool> inCall,
   WindowsSettings? windows,
+  OverlaySettings? overlay,
   bool voice = false,
 }) =>
     showDialog<void>(
       context: context,
       barrierColor: const Color(0xD9000000),
       builder: (context) => _SettingsDialog(
-          memberId: memberId, tag: tag, devices: devices, audio: audio, inCall: inCall, windows: windows, voice: voice),
+          memberId: memberId, tag: tag, devices: devices, audio: audio, inCall: inCall, windows: windows, overlay: overlay, voice: voice),
     );
 
-enum _Section { account, voice, windows }
+enum _Section { account, voice, overlay, windows }
 
 class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog({
@@ -39,6 +41,7 @@ class _SettingsDialog extends StatefulWidget {
     required this.audio,
     required this.inCall,
     required this.windows,
+    required this.overlay,
     required this.voice,
   });
 
@@ -50,6 +53,9 @@ class _SettingsDialog extends StatefulWidget {
 
   /// The Windows switches; the section is absent when null.
   final WindowsSettings? windows;
+
+  /// The in-game overlay choices; the section is absent when null.
+  final OverlaySettings? overlay;
   final bool voice;
 
   @override
@@ -81,6 +87,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     () => setState(() => _section = _Section.account)),
                 _NavItem('Voice & Video', _section == _Section.voice,
                     () => setState(() => _section = _Section.voice)),
+                if (widget.overlay != null)
+                  _NavItem('Game Overlay', _section == _Section.overlay,
+                      () => setState(() => _section = _Section.overlay)),
                 if (widget.windows != null)
                   _NavItem('Windows Settings', _section == _Section.windows,
                       () => setState(() => _section = _Section.windows)),
@@ -94,6 +103,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       switch (_section) {
                         _Section.account => 'My Account',
                         _Section.voice => 'Voice & Video',
+                        _Section.overlay => 'Game Overlay',
                         _Section.windows => 'Windows Settings',
                       },
                       style: const TextStyle(
@@ -110,6 +120,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         _Section.account => _Account(memberId: widget.memberId, tag: widget.tag),
                         _Section.voice => _VoiceVideo(
                             devices: widget.devices, audio: widget.audio, inCall: widget.inCall),
+                        _Section.overlay => _OverlaySection(settings: widget.overlay!),
                         _Section.windows => _WindowsSection(settings: widget.windows!),
                       },
                     ),
@@ -375,6 +386,80 @@ class _VoiceVideo extends StatelessWidget {
                 ),
             ],
           ],
+        ),
+      );
+}
+
+/// The Game Overlay section: rebuilds from [OverlaySettings] so every control shows the live state.
+class _OverlaySection extends StatelessWidget {
+  const _OverlaySection({required this.settings});
+  final OverlaySettings settings;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: settings,
+        builder: (context, _) {
+          final p = settings.prefs;
+          return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SwitchListTile(
+              key: const Key('overlay-enabled'),
+              contentPadding: EdgeInsets.zero,
+              activeThumbColor: HubColors.accent,
+              title: const Text('Enable in-game overlay', style: HubText.message),
+              value: p.enabled,
+              onChanged: (v) => settings.update(p.copyWith(enabled: v)),
+            ),
+            const SizedBox(height: 24),
+            const Text('AVATAR SIZE', style: HubText.category),
+            const SizedBox(height: 8),
+            for (final (v, label) in [(OverlayAvatarSize.large, 'Large'), (OverlayAvatarSize.small, 'Small')])
+              _ChoiceRow(label, p.avatarSize == v, () => settings.update(p.copyWith(avatarSize: v)),
+                  Key('overlay-size-${v.name}')),
+            const SizedBox(height: 24),
+            const Text('DISPLAY NAMES', style: HubText.category),
+            const SizedBox(height: 8),
+            for (final (v, label) in [
+              (OverlayNames.always, 'Always'),
+              (OverlayNames.whileSpeaking, 'Only while speaking'),
+              (OverlayNames.never, 'Never'),
+            ])
+              _ChoiceRow(label, p.names == v, () => settings.update(p.copyWith(names: v)),
+                  Key('overlay-names-${v.name}')),
+            const SizedBox(height: 24),
+            const Text('DISPLAY USERS', style: HubText.category),
+            const SizedBox(height: 8),
+            for (final (v, label) in [(OverlayUsers.always, 'Always'), (OverlayUsers.whileSpeaking, 'Only while speaking')])
+              _ChoiceRow(label, p.users == v, () => settings.update(p.copyWith(users: v)),
+                  Key('overlay-users-${v.name}')),
+            const SizedBox(height: 24),
+            const Text(
+                'The overlay shows in windowed and borderless games. '
+                'Some games in exclusive fullscreen need their display mode set to borderless.',
+                style: TextStyle(fontFamily: hubFont, fontSize: 14, height: 1.3, color: HubColors.muted)),
+          ]);
+        },
+      );
+}
+
+/// One radio row: a radio and its label.
+class _ChoiceRow extends StatelessWidget {
+  const _ChoiceRow(this.label, this.selected, this.onTap, Key key) : super(key: key);
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+          child: Row(children: [
+            Icon(selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                size: 20, color: selected ? HubColors.accent : HubColors.interactive),
+            const SizedBox(width: 10),
+            Text(label, style: HubText.message),
+          ]),
         ),
       );
 }
