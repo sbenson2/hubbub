@@ -1,5 +1,7 @@
 #include "overlay_window.h"
 
+#include <string>
+
 namespace {
 
 constexpr wchar_t kOverlayClassName[] = L"HubbubGameOverlay";
@@ -16,16 +18,23 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wparam,
       return MA_NOACTIVATE;
     case WM_DPICHANGED:
       return 0;  // SetImage alone sets the size
+    case WM_CLOSE:
+      // Only the app destroys the overlay. A stray WM_CLOSE would otherwise end it for good:
+      // .NET's Process.MainWindowHandle picks this window (visible, unowned, top-level).
+      return 0;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
-// The developer switch HUBBUB_OVERLAY_CAPTURABLE=1 keeps the overlay in screenshots.
+// The developer switch HUBBUB_OVERLAY_CAPTURABLE=1 keeps the overlay in screenshots. Only the
+// first character counts (cmd's `set X=1 && ...` leaves a trailing space), at any value length.
 bool CapturableForDevelopers() {
-  wchar_t value[32] = {};
-  const DWORD length = GetEnvironmentVariableW(L"HUBBUB_OVERLAY_CAPTURABLE",
-                                               value, 32);
-  return length > 0 && length < 32 && value[0] == L'1';
+  constexpr wchar_t kName[] = L"HUBBUB_OVERLAY_CAPTURABLE";
+  const DWORD size = GetEnvironmentVariableW(kName, nullptr, 0);  // with the null
+  if (size == 0) return false;
+  std::wstring value(size, L'\0');
+  const DWORD length = GetEnvironmentVariableW(kName, value.data(), size);
+  return length > 0 && length < size && value[0] == L'1';
 }
 
 }  // namespace

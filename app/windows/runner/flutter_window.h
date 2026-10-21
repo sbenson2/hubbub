@@ -9,11 +9,15 @@
 
 #include <memory>
 
+#include "foreground_watcher.h"
 #include "overlay_window.h"
 #include "win32_window.h"
 
 // Sent by `hubbub.exe --quit` to the running instance: do the tray Quit.
 constexpr UINT kQuitMessage = WM_APP + 0x51;
+
+// Posted by ForegroundWatcher::Schedule to itself through this window: send the facts now.
+constexpr UINT kOverlayFactsMessage = WM_APP + 0x52;
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
@@ -33,10 +37,14 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
-  // Handles dev.hubbub/overlay: setImage, place and hide.
+  // Handles dev.hubbub/overlay: setImage, place, hide, start, stop and knownGames.
   void HandleOverlayCall(
       const flutter::MethodCall<flutter::EncodableValue>& call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+  // overlay_ if its window exists; null before the first setImage, or when the window failed to
+  // create or was destroyed (the next setImage then makes a new one).
+  OverlayWindow* LiveOverlay() const;
 
   bool start_hidden_ = false;
 
@@ -54,6 +62,9 @@ class FlutterWindow : public Win32Window {
 
   // Created by the first setImage; until then place and hide do nothing.
   std::unique_ptr<OverlayWindow> overlay_;
+
+  // Sends `foreground` facts to Dart between `start` and `stop`.
+  std::unique_ptr<ForegroundWatcher> watcher_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

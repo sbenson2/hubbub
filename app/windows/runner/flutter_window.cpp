@@ -67,6 +67,13 @@ bool FlutterWindow::OnCreate() {
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
                  result) { HandleOverlayCall(call, std::move(result)); });
+  watcher_ = std::make_unique<ForegroundWatcher>(
+      GetHandle(), [this](flutter::EncodableValue facts) {
+        if (!overlay_channel_) return;
+        overlay_channel_->InvokeMethod(
+            "foreground",
+            std::make_unique<flutter::EncodableValue>(std::move(facts)));
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -82,6 +89,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  // Unhook before the channel goes; a kOverlayFactsMessage still queued then finds no watcher.
+  watcher_ = nullptr;
   if (flutter_controller_) {
     session_channel_ = nullptr;
     overlay_channel_ = nullptr;
@@ -105,7 +114,8 @@ void FlutterWindow::HandleOverlayCall(
       result->Error("bad_args");
       return;
     }
-    if (!overlay_) overlay_ = std::make_unique<OverlayWindow>();
+    // Also retries a window that failed to create (bad_image below), and replaces a destroyed one.
+    if (!LiveOverlay()) overlay_ = std::make_unique<OverlayWindow>();
     if (!overlay_->SetImage(*rgba, *width, *height)) {
       result->Error("bad_image");
       return;
@@ -119,14 +129,31 @@ void FlutterWindow::HandleOverlayCall(
       return;
     }
     // Before the first setImage there is nothing to show.
-    if (overlay_) overlay_->Place(*x, *y);
+    if (OverlayWindow* overlay = LiveOverlay()) overlay->Place(*x, *y);
     result->Success();
   } else if (method == "hide") {
-    if (overlay_) overlay_->Hide();
+    if (OverlayWindow* overlay = LiveOverlay()) overlay->Hide();
     result->Success();
+  } else if (method == "start") {
+    if (watcher_) watcher_->Start();
+    result->Success();
+  } else if (method == "stop") {
+    if (watcher_) watcher_->Stop();
+    if (OverlayWindow* overlay = LiveOverlay()) overlay->Hide();
+    result->Success();
+  } else if (method == "knownGames") {
+    flutter::EncodableList games;
+    for (std::string& path : KnownGamePaths()) {
+      games.emplace_back(std::move(path));
+    }
+    result->Success(flutter::EncodableValue(std::move(games)));
   } else {
     result->NotImplemented();
   }
+}
+
+OverlayWindow* FlutterWindow::LiveOverlay() const {
+  return overlay_ && IsWindow(overlay_->hwnd()) ? overlay_.get() : nullptr;
 }
 
 LRESULT
@@ -161,6 +188,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     session_channel_->InvokeMethod("quit", nullptr);
     return 0;
   }
+  if (message == kOverlayFactsMessage) {
+    if (watcher_) watcher_->Flush();
+    return 0;
+  }
+  // A resolution or monitor change moves the game's monitor rectangle; Flutter still gets it.
+  if (message == WM_DISPLAYCHANGE && watcher_) watcher_->Schedule();
 
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
