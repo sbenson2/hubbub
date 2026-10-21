@@ -4,6 +4,7 @@
 #include <flutter_windows.h>
 
 #include <cstdint>
+#include <cwchar>
 #include <utility>
 
 #include "flutter_window.h"  // kOverlayFactsMessage
@@ -52,6 +53,22 @@ std::string ClassName(HWND window) {
   return Utf8FromUtf16(name);
 }
 
+// An out-of-context hook for events |first|..|last| from |pid| (0: every process), or null after
+// logging the failure to the debugger.
+HWINEVENTHOOK HookEvents(DWORD first, DWORD last, DWORD pid, DWORD flags,
+                         WINEVENTPROC proc) {
+  const HWINEVENTHOOK hook = SetWinEventHook(first, last, nullptr, proc, pid, 0,
+                                             WINEVENT_OUTOFCONTEXT | flags);
+  if (!hook) {
+    wchar_t message[96];
+    swprintf_s(message,
+               L"Hubbub overlay: SetWinEventHook(0x%04lX-0x%04lX, pid %lu) failed\n",
+               first, last, pid);
+    OutputDebugStringW(message);
+  }
+  return hook;
+}
+
 }  // namespace
 
 ForegroundWatcher* ForegroundWatcher::active_ = nullptr;
@@ -63,15 +80,15 @@ ForegroundWatcher::ForegroundWatcher(
 ForegroundWatcher::~ForegroundWatcher() { Stop(); }
 
 void ForegroundWatcher::Start() {
-  if (!started_) {
-    started_ = true;
-    active_ = this;
-    foreground_hook_ = SetWinEventHook(
-        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnWinEvent,
-        0, 0, WINEVENT_OUTOFCONTEXT);
-    minimize_hook_ = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,
-                                     EVENT_SYSTEM_MINIMIZEEND, nullptr,
-                                     OnWinEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+  started_ = true;
+  active_ = this;
+  if (!foreground_hook_) {
+    foreground_hook_ = HookEvents(EVENT_SYSTEM_FOREGROUND,
+                                  EVENT_SYSTEM_FOREGROUND, 0, 0, OnWinEvent);
+  }
+  if (!minimize_hook_) {
+    minimize_hook_ = HookEvents(EVENT_SYSTEM_MINIMIZESTART,
+                                EVENT_SYSTEM_MINIMIZEEND, 0, 0, OnWinEvent);
   }
   Schedule();
 }
@@ -80,12 +97,12 @@ void ForegroundWatcher::Stop() {
   if (!started_) return;
   started_ = false;
   if (active_ == this) active_ = nullptr;
-  for (HWINEVENTHOOK* hook :
-       {&foreground_hook_, &minimize_hook_, &location_hook_}) {
+  for (HWINEVENTHOOK* hook : {&foreground_hook_, &minimize_hook_,
+                              &location_hook_, &visibility_hook_}) {
     if (*hook) UnhookWinEvent(*hook);
     *hook = nullptr;
   }
-  location_pid_ = 0;
+  hooked_pid_ = 0;
   tracked_ = nullptr;
 }
 
@@ -102,19 +119,26 @@ void ForegroundWatcher::Flush() {
   DWORD pid = 0;
   if (foreground) GetWindowThreadProcessId(foreground, &pid);
   tracked_ = foreground;
-  if (pid != location_pid_) HookLocation(pid);
+  if (pid != hooked_pid_) HookProcess(pid);
   on_facts_(FactsFor(foreground));
 }
 
-void ForegroundWatcher::HookLocation(DWORD pid) {
-  if (location_hook_) UnhookWinEvent(location_hook_);
-  location_hook_ = nullptr;
-  location_pid_ = pid;
+void ForegroundWatcher::HookProcess(DWORD pid) {
+  for (HWINEVENTHOOK* hook : {&location_hook_, &visibility_hook_}) {
+    if (*hook) UnhookWinEvent(*hook);
+    *hook = nullptr;
+  }
+  hooked_pid_ = pid;
   // Process 0 would mean every process, and this process's own windows are never games.
   if (pid == 0 || pid == GetCurrentProcessId()) return;
-  location_hook_ = SetWinEventHook(
-      EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr,
-      OnWinEvent, pid, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  location_hook_ =
+      HookEvents(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, pid,
+                 WINEVENT_SKIPOWNPROCESS, OnWinEvent);
+  // EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW and EVENT_OBJECT_HIDE. These arrive even when the
+  // process is killed.
+  visibility_hook_ = HookEvents(EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, pid,
+                                WINEVENT_SKIPOWNPROCESS, OnWinEvent);
+  if (!location_hook_ || !visibility_hook_) hooked_pid_ = 0;
 }
 
 void CALLBACK ForegroundWatcher::OnWinEvent(HWINEVENTHOOK, DWORD event,
@@ -122,8 +146,9 @@ void CALLBACK ForegroundWatcher::OnWinEvent(HWINEVENTHOOK, DWORD event,
                                             LONG id_child, DWORD, DWORD) {
   ForegroundWatcher* const self = active_;
   if (!self) return;
-  // Only the tracked window's own frame counts, not its carets, cursors or child windows.
-  if (event == EVENT_OBJECT_LOCATIONCHANGE &&
+  // Object events (from the per-process hooks) count only for the tracked window's own frame,
+  // not its carets, cursors or child windows.
+  if (event >= EVENT_OBJECT_CREATE &&
       (hwnd != self->tracked_ || id_object != OBJID_WINDOW ||
        id_child != CHILDID_SELF)) {
     return;
@@ -132,7 +157,8 @@ void CALLBACK ForegroundWatcher::OnWinEvent(HWINEVENTHOOK, DWORD event,
 }
 
 flutter::EncodableValue FactsFor(HWND foreground) {
-  if (!foreground) return flutter::EncodableValue();
+  // A closed or killed window can leave a handle that is already gone.
+  if (!foreground || !IsWindow(foreground)) return flutter::EncodableValue();
   DWORD pid = 0;
   GetWindowThreadProcessId(foreground, &pid);
 
@@ -176,8 +202,10 @@ flutter::EncodableValue FactsFor(HWND foreground) {
       {flutter::EncodableValue("window"), RectValue(window)},
       {flutter::EncodableValue("client"), RectValue(client)},
       {flutter::EncodableValue("monitor"), RectValue(monitor_rect)},
+      // Hidden without minimizing (SW_HIDE, or on its way to being destroyed) counts too.
       {flutter::EncodableValue("minimized"),
-       flutter::EncodableValue(IsIconic(foreground) != FALSE)},
+       flutter::EncodableValue(IsIconic(foreground) ||
+                               !IsWindowVisible(foreground))},
       {flutter::EncodableValue("dpi"),
        flutter::EncodableValue(
            static_cast<int32_t>(FlutterDesktopGetDpiForMonitor(monitor)))},

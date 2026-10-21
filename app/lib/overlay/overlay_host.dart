@@ -45,7 +45,11 @@ abstract class OverlayHost {
 /// | Dart → native | `start` | none | `null`; installs hooks, and current facts follow at once |
 /// | Dart → native | `stop` | none | `null`; unhooks and hides |
 /// | Dart → native | `knownGames` | none | `List<String>`: every `MatchedExeFullPath` under `HKCU\System\GameConfigStore\Children\*` |
-/// | native → Dart | `foreground` | facts map (see [ForegroundFacts.fromMap]), or `null` when there's no foreground window | ignored |
+/// | native → Dart | `foreground` | facts map (see [ForegroundFacts.fromMap]), or `null` when there's no foreground window or it no longer exists | ignored |
+///
+/// `foreground` also follows when the foreground window is destroyed, hidden or shown, because a
+/// game that closes, is killed or hides often leaves no foreground window and no foreground
+/// event. Its `minimized` is true for a hidden window too.
 ///
 /// `place` and `hide` before the first image succeed and do nothing. `bad_image` means the image
 /// is empty or `rgba.length != width*height*4`, but also that the native draw failed (the window

@@ -13,7 +13,9 @@ import 'support/fake_overlay.dart';
 
 const mon = Rectangle<int>(0, 0, 1920, 1080);
 
-ForegroundFacts game({int hwnd = 1, int dpi = 96, Rectangle<int> client = mon}) => ForegroundFacts(
+ForegroundFacts game(
+        {int hwnd = 1, int dpi = 96, Rectangle<int> client = mon, bool minimized = false}) =>
+    ForegroundFacts(
       hwnd: hwnd,
       path: r'C:\Games\Foo\Foo.exe',
       own: false,
@@ -22,7 +24,7 @@ ForegroundFacts game({int hwnd = 1, int dpi = 96, Rectangle<int> client = mon}) 
       window: mon,
       client: client,
       monitor: mon,
-      minimized: false,
+      minimized: minimized,
       dpi: dpi,
     );
 
@@ -149,6 +151,20 @@ void main() {
     await see(game(dpi: 144));
     expect(host.calls.last, 'show 24,24');
     expect(host.scenes.last.pixelRatio, 1.5);
+  });
+
+  test('a_game_that_closes_or_hides_hides_the_overlay', () async {
+    await inCall([me()]);
+    await see(game());
+    // Closed, crashed or killed: no foreground window, or one already gone (both arrive as null).
+    await see(null);
+    expect(host.calls.last, 'hide');
+    await see(game());
+    expect(host.calls.last, 'move 16,16');
+    // Hidden without minimizing: the runner reports it as minimized.
+    await see(game(minimized: true));
+    expect(host.calls.last, 'hide');
+    expect(host.scenes.length, 1);
   });
 
   test('switching_between_two_games_reasserts_the_window', () async {

@@ -25,6 +25,8 @@ class ForegroundFacts {
   final String windowClass;
   final bool caption;
   final Rectangle<int> window, client, monitor;
+
+  /// Minimized, or hidden without being minimized.
   final bool minimized;
   final int dpi;
 
