@@ -1,8 +1,38 @@
 #include "flutter_window.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
+#include <variant>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+// The int at |key| in |args|. Dart sends an int as int32 when it fits and as int64 otherwise.
+std::optional<int> IntArg(const flutter::EncodableMap& args, const char* key) {
+  const auto it = args.find(flutter::EncodableValue(key));
+  if (it == args.end()) return std::nullopt;
+  if (const auto* value = std::get_if<int32_t>(&it->second)) return *value;
+  if (const auto* value = std::get_if<int64_t>(&it->second)) {
+    if (*value >= std::numeric_limits<int>::min() &&
+        *value <= std::numeric_limits<int>::max()) {
+      return static_cast<int>(*value);
+    }
+  }
+  return std::nullopt;
+}
+
+// The Uint8List at |key| in |args|, or null.
+const std::vector<uint8_t>* BytesArg(const flutter::EncodableMap& args,
+                                     const char* key) {
+  const auto it = args.find(flutter::EncodableValue(key));
+  return it == args.end() ? nullptr
+                          : std::get_if<std::vector<uint8_t>>(&it->second);
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -29,6 +59,14 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "dev.hubbub/session",
           &flutter::StandardMethodCodec::GetInstance());
+  overlay_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "dev.hubbub/overlay",
+          &flutter::StandardMethodCodec::GetInstance());
+  overlay_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) { HandleOverlayCall(call, std::move(result)); });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -46,10 +84,49 @@ bool FlutterWindow::OnCreate() {
 void FlutterWindow::OnDestroy() {
   if (flutter_controller_) {
     session_channel_ = nullptr;
+    overlay_channel_ = nullptr;
     flutter_controller_ = nullptr;
   }
+  overlay_ = nullptr;
 
   Win32Window::OnDestroy();
+}
+
+void FlutterWindow::HandleOverlayCall(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  const std::string& method = call.method_name();
+  const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+  if (method == "setImage") {
+    const auto* rgba = args ? BytesArg(*args, "rgba") : nullptr;
+    const auto width = args ? IntArg(*args, "width") : std::nullopt;
+    const auto height = args ? IntArg(*args, "height") : std::nullopt;
+    if (!rgba || !width || !height) {
+      result->Error("bad_args");
+      return;
+    }
+    if (!overlay_) overlay_ = std::make_unique<OverlayWindow>();
+    if (!overlay_->SetImage(*rgba, *width, *height)) {
+      result->Error("bad_image");
+      return;
+    }
+    result->Success();
+  } else if (method == "place") {
+    const auto x = args ? IntArg(*args, "x") : std::nullopt;
+    const auto y = args ? IntArg(*args, "y") : std::nullopt;
+    if (!x || !y) {
+      result->Error("bad_args");
+      return;
+    }
+    // Before the first setImage there is nothing to show.
+    if (overlay_) overlay_->Place(*x, *y);
+    result->Success();
+  } else if (method == "hide") {
+    if (overlay_) overlay_->Hide();
+    result->Success();
+  } else {
+    result->NotImplemented();
+  }
 }
 
 LRESULT

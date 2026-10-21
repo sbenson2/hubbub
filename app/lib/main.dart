@@ -14,6 +14,7 @@ import 'hub_controller.dart';
 import 'install.dart';
 import 'links.dart';
 import 'node_controller.dart';
+import 'overlay/overlay_spike.dart';
 import 'plugin_shell.dart';
 import 'room_adapter.dart';
 import 'src/rust/api/hubbub.dart';
@@ -109,6 +110,7 @@ Future<void> main(List<String> args) async {
       navigatorKey: navigator,
       devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json'),
       audio: AudioPrefsStore.file('$root${Platform.pathSeparator}audio.json')));
+  if (Platform.isWindows && Platform.environment['HUBBUB_OVERLAY_SPIKE'] == '1') unawaited(runOverlaySpike());
 }
 
 /// The once-only "still running" notice (the tray package has no balloon), shown just before the
