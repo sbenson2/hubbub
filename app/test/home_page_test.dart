@@ -33,7 +33,8 @@ void main() {
     });
   }
 
-  Future<void> pumpShell(WidgetTester tester, {Size size = const Size(1280, 800)}) async {
+  Future<void> pumpShell(WidgetTester tester,
+      {Size size = const Size(1280, 800), void Function(List<VoiceMember>? members)? onCallMembers}) async {
     arrange();
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -44,6 +45,7 @@ void main() {
         controller: node,
         room: room,
         loadConfig: () => throw StateError('a started node needs no config'),
+        onCallMembers: onCallMembers,
       ),
     ));
     events.add(AppNodeEvent.hostChanged(host: node.me.id, term: BigInt.one, isMe: true));
@@ -76,6 +78,32 @@ void main() {
     await tester.pumpAndSettle();
     expect(room.calls, ['disconnect']);
     expect(find.text('Voice Connected'), findsNothing);
+  });
+
+  testWidgets('the_overlay_hears_the_call_speaking_mute_and_leave', (tester) async {
+    final seen = <List<VoiceMember>?>[];
+    await pumpShell(tester, onCallMembers: seen.add);
+    expect(seen.isEmpty || seen.last == null, isTrue);
+
+    await joinLobby(tester);
+    expect(seen.last!.single.isMe, isTrue);
+    expect(seen.last!.single.name, 'Shawn');
+
+    room.emitParticipants([
+      RoomParticipant(id: node.me.id, name: 'Shawn', speaking: true, isLocal: true),
+      RoomParticipant(id: memberIdFor('bbbb'), name: 'Bob', speaking: false, isLocal: false),
+    ]);
+    await tester.pump();
+    expect([for (final m in seen.last!) (m.name, m.speaking)], [('Shawn', true), ('Bob', false)]);
+
+    await tester.tap(find.byTooltip('Mute').first);
+    await tester.pumpAndSettle();
+    expect(seen.last!.first.muted, isTrue);
+
+    await tester.tap(find.descendant(
+        of: find.byType(VoiceConnectedBar), matching: find.byTooltip('Disconnect')));
+    await tester.pumpAndSettle();
+    expect(seen.last, isNull);
   });
 
   testWidgets('the_core_is_told_about_join_mute_deafen_and_leave', (tester) async {

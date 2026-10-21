@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -8,9 +9,20 @@ import 'game_rules.dart';
 import 'overlay_host.dart';
 import 'overlay_prefs.dart';
 import 'overlay_scene.dart';
+import 'overlay_view.dart';
 
 /// How long a game list read stays fresh before an unknown windowed exe triggers a re-read.
 const gameListRefresh = Duration(seconds: 30);
+
+/// The overlay for this process, or null off Windows (where no `dev.hubbub/overlay` call is ever
+/// made). Its settings live in `overlay.json` under [root].
+GameOverlayController? gameOverlayFor({required bool isWindows, required String root}) {
+  if (!isWindows) return null;
+  return GameOverlayController(
+    host: ChannelOverlayHost(rasterize: rasterizeScene),
+    settings: OverlaySettings(OverlayPrefsStore.file('$root${Platform.pathSeparator}overlay.json')),
+  );
+}
 
 /// Decides when the in-game overlay shows, where it sits and what it draws.
 ///

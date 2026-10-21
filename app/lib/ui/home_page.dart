@@ -12,6 +12,7 @@ import '../install.dart';
 import '../links.dart';
 import '../media_link.dart';
 import '../node_controller.dart';
+import '../overlay/overlay_prefs.dart';
 import '../room_adapter.dart';
 import '../share_sources.dart';
 import '../src/rust/api/hubbub.dart';
@@ -59,6 +60,8 @@ class HomePage extends StatefulWidget {
     this.audioStore,
     this.updates,
     this.windowsSettings,
+    this.onCallMembers,
+    this.overlaySettings,
     this.shareSources = desktopShareSources,
     this.shareStillExists = desktopSourceExists,
     this.screenShareAvailable,
@@ -70,6 +73,13 @@ class HomePage extends StatefulWidget {
   /// A single server (the pre-hub path); [hub] holds every server.
   final NodeController? controller;
   final HubController? hub;
+
+  /// Told who is in the call (null when not in one) after every state change; the in-game overlay
+  /// listens.
+  final void Function(List<VoiceMember>? members)? onCallMembers;
+
+  /// The in-game overlay's settings; the settings dialog shows its section when given.
+  final OverlaySettings? overlaySettings;
 
   /// Replaces the rail's "+" (Create a server); tests use it.
   final VoidCallback? onAddServer;
@@ -439,6 +449,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.onCallMembers?.call(null);
     _devices.dispose();
     _audio.removeListener(_onAudioChanged);
     _audio.dispose();
@@ -1065,6 +1076,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     };
   }
 
+  // Frames are off while the window is hidden, so build() doesn't run then; every member,
+  // speaking, mute and call change goes through setState, which is where the overlay is told.
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _syncOverlay();
+  }
+
+  void _syncOverlay() => widget.onCallMembers?.call(_call == null ? null : _voiceMembers);
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, box) {
@@ -1185,6 +1206,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         inCall: _inCall,
         windows: widget.windowsSettings,
         voice: voice,
+        overlay: widget.overlaySettings,
       );
 
   Widget _header({required bool narrow}) {

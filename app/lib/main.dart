@@ -14,7 +14,7 @@ import 'hub_controller.dart';
 import 'install.dart';
 import 'links.dart';
 import 'node_controller.dart';
-import 'overlay/overlay_spike.dart';
+import 'overlay/game_overlay.dart';
 import 'plugin_shell.dart';
 import 'room_adapter.dart';
 import 'src/rust/api/hubbub.dart';
@@ -101,6 +101,8 @@ Future<void> main(List<String> args) async {
   // tray there would be no way to bring it back, so show it then.
   if (args.contains('--background') && !shell.hasTray) await shell.showWindow();
   updates?.start();
+  final overlay = gameOverlayFor(isWindows: Platform.isWindows, root: root);
+  unawaited(overlay?.settings.start());
   runApp(HubbubApp(
       updates: updates,
       windowsSettings: installedVersion != null ? RustWindowsSettings() : null,
@@ -109,8 +111,8 @@ Future<void> main(List<String> args) async {
       links: WindowRevealingLinks(AppLinkSource(), shell),
       navigatorKey: navigator,
       devices: DevicePrefsStore.file('$root${Platform.pathSeparator}devices.json'),
-      audio: AudioPrefsStore.file('$root${Platform.pathSeparator}audio.json')));
-  if (Platform.isWindows && Platform.environment['HUBBUB_OVERLAY_SPIKE'] == '1') unawaited(runOverlaySpike());
+      audio: AudioPrefsStore.file('$root${Platform.pathSeparator}audio.json'),
+      overlay: overlay));
 }
 
 /// The once-only "still running" notice (the tray package has no balloon), shown just before the
@@ -158,6 +160,7 @@ class HubbubApp extends StatelessWidget {
       this.links,
       this.devices,
       this.audio,
+      this.overlay,
       this.navigatorKey});
 
   final UpdateController? updates;
@@ -167,6 +170,9 @@ class HubbubApp extends StatelessWidget {
   final LinkSource? links;
   final DevicePrefsStore? devices;
   final AudioPrefsStore? audio;
+
+  /// The in-game overlay (Windows only); null elsewhere.
+  final GameOverlayController? overlay;
   final GlobalKey<NavigatorState>? navigatorKey;
 
   @override
@@ -184,7 +190,9 @@ class HubbubApp extends StatelessWidget {
           deviceStore: devices,
           audioStore: audio,
           updates: updates,
-          windowsSettings: windowsSettings),
+          windowsSettings: windowsSettings,
+          onCallMembers: overlay?.setCall,
+          overlaySettings: overlay?.settings),
     );
   }
 }

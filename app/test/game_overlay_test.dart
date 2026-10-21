@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -294,5 +295,12 @@ void main() {
     expect(game(), isNot(game(hwnd: 2)));
     expect(game(), isNot(game(dpi: 144)));
     expect(game(), isNot(game(client: const Rectangle(1, 0, 1919, 1080))));
+  });
+
+  test('no_overlay_off_windows', () {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final tmp = Directory.systemTemp.path;
+    expect(gameOverlayFor(isWindows: false, root: tmp), isNull);
+    expect(gameOverlayFor(isWindows: true, root: tmp), isNotNull);
   });
 }
