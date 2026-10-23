@@ -66,6 +66,11 @@ class ForegroundWatcher {
   DWORD hooked_pid_ = 0;
   // The foreground window at the last Flush; only its own object events count.
   HWND tracked_ = nullptr;
+  // The window the last EVENT_SYSTEM_FOREGROUND named. That event, and the Flush it posts, can
+  // run while GetForegroundWindow() still returns the previous window, and nothing fires once
+  // it catches up, so Flush trusts this window until GetForegroundWindow() returns it too or
+  // it is gone.
+  HWND event_foreground_ = nullptr;
 };
 
 // The `foreground` contract map for |foreground| (see overlay_host.dart), or EncodableValue()

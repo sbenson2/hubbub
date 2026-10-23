@@ -104,6 +104,7 @@ void ForegroundWatcher::Stop() {
   }
   hooked_pid_ = 0;
   tracked_ = nullptr;
+  event_foreground_ = nullptr;
 }
 
 void ForegroundWatcher::Schedule() {
@@ -115,7 +116,11 @@ void ForegroundWatcher::Schedule() {
 void ForegroundWatcher::Flush() {
   pending_ = false;
   if (!started_) return;
-  const HWND foreground = GetForegroundWindow();
+  HWND foreground = GetForegroundWindow();
+  if (event_foreground_ == foreground || !IsWindow(event_foreground_)) {
+    event_foreground_ = nullptr;
+  }
+  if (event_foreground_) foreground = event_foreground_;
   DWORD pid = 0;
   if (foreground) GetWindowThreadProcessId(foreground, &pid);
   tracked_ = foreground;
@@ -152,6 +157,17 @@ void CALLBACK ForegroundWatcher::OnWinEvent(HWINEVENTHOOK, DWORD event,
       (hwnd != self->tracked_ || id_object != OBJID_WINDOW ||
        id_child != CHILDID_SELF)) {
     return;
+  }
+  if (event == EVENT_SYSTEM_FOREGROUND) {
+    // Anything but a top-level window event falls back to GetForegroundWindow().
+    self->event_foreground_ =
+        hwnd && id_object == OBJID_WINDOW && id_child == CHILDID_SELF
+            ? GetAncestor(hwnd, GA_ROOT)
+            : nullptr;
+  }
+  // A destroyed handle can be reused by an unrelated window.
+  if (event == EVENT_OBJECT_DESTROY && hwnd == self->event_foreground_) {
+    self->event_foreground_ = nullptr;
   }
   self->Schedule();
 }
